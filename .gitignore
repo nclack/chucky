@@ -1,0 +1,5 @@
+target
+.ninja_log
+.clangd
+.claude
+.envrc

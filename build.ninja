@@ -1,0 +1,62 @@
+cxxflags = -std=c++20 -fPIC -Wall -Wextra -Wpedantic -O2 -g -I./src
+cflags = -std=c17 -fPIC -Wall -Wextra -Wpedantic -O2 -g -I./src
+cuflags = -std=c++20 -O2 -g --compiler-options=-fPIC -I./src
+target = target
+
+# Dependency paths
+cuda_lib = -L$$CUDA_NVCC_PATH/lib -lcudart_static -lpthread -ldl -lrt
+nvcomp_include = -I$$NVCOMP_INCLUDE
+nvcomp_lib = -L$$NVCOMP_LIB/lib -lnvcomp_static
+
+rule cc
+  command = clang $cflags -c $in -o $out
+
+rule cxx
+  command = clang++ $cxxflags -c $in -o $out
+
+rule cu
+  command = nvcc $cuflags $nvcomp_include -c $in -o $out
+
+rule link
+  command = clang++ $ldflags $in -o $out $cuda_lib $nvcomp_lib
+
+rule link_so
+  command = clang++ -shared $ldflags $in -o $out $cuda_lib $nvcomp_lib
+
+rule md
+  command = mkdir -p $out
+
+# library
+
+build $target: md
+build $target/src/lib.o: cxx src/lib.cc || $target
+build $target/src/writer.o: cxx src/writer.cc || $target
+build $target/libchuck.so: link_so $target/src/lib.o $target/src/writer.o || $target
+
+# tests
+
+build $target/tests: md || $target
+build $target/tests/driver.o: cc tests/driver.c || $target/tests
+build $target/test: link $target/tests/driver.o $target/src/lib.o || $target/tests 
+
+rule run_test
+   command = $in
+   description = Running tests
+
+build run_test: run_test $target/test
+build test: phony run_test
+
+# helpers
+
+rule clean
+  command = rm -rf $target 
+
+rule compdb
+  command = ninja -t compdb > $out
+  description = Generating compile_commands.json
+
+build clean: clean
+build $target/compile_commands.json: compdb | build.ninja || $target
+build config: phony $target/compile_commands.json
+
+default config test $target/libchuck.so

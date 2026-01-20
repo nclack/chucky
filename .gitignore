@@ -1,5 +1,8 @@
 target
+build
+result
 .ninja_log
 .clangd
 .claude
 .envrc
+.cache

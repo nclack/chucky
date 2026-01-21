@@ -1,5 +1,6 @@
 add_library(transpose STATIC
     transpose.cu
+    transpose.h
 )
 
 target_include_directories(transpose

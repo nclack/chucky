@@ -1,8 +1,8 @@
+#include "transpose.h"
 #include <stdint.h>
-#include <cuda_runtime.h>
 
 __global__ void
-fill(uint16_t* beg, uint16_t* end)
+fill_k(uint16_t* beg, uint16_t* end)
 {
   const int i = blockIdx.x * blockDim.x + threadIdx.x;
   if (beg + i < end) {
@@ -10,10 +10,14 @@ fill(uint16_t* beg, uint16_t* end)
   }
 }
 
-// C-callable wrapper to launch the fill kernel
-extern "C" cudaError_t
-launch_fill(uint16_t* d_beg, uint16_t* d_end, int grid_size, int block_size)
+extern "C" void
+fill(CUdeviceptr d_beg,
+     CUdeviceptr d_end,
+     int grid_size,
+     int block_size,
+     CUstream stream)
 {
-  fill<<<grid_size, block_size>>>(d_beg, d_end);
-  return cudaGetLastError();
+  cudaStream_t cuda_stream = (cudaStream_t)stream;
+  fill_k<<<grid_size, block_size, 0, cuda_stream>>>((uint16_t*)d_beg,
+                                                    (uint16_t*)d_end);
 }

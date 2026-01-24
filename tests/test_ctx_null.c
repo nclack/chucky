@@ -1,7 +1,7 @@
 #include <cuda.h>
 #include <stdio.h>
 
-int main() {
+int main(void) {
   CUresult res;
   const char *name = NULL, *desc = NULL;
 

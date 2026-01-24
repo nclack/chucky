@@ -11,4 +11,6 @@ set(CMAKE_CUDA_ARCHITECTURES 100)
 find_package(CUDAToolkit REQUIRED)
 
 add_subdirectory(src)
+
+enable_testing()
 add_subdirectory(tests)

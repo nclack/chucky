@@ -1,55 +1,33 @@
-add_executable(test_cuda
-    test.c
-)
+# Helper function to create test executables with common settings
+function(add_my_test TGT SOURCE_FILE)
+    add_executable(${TGT} ${SOURCE_FILE})
 
-target_link_libraries(test_cuda
-    PRIVATE
-        transpose
-        CUDA::cuda_driver
-        CUDA::cudart
-)
+    target_link_libraries(${TGT}
+        PRIVATE
+            CUDA::cuda_driver
+            ${ARGN}
+    )
 
-target_compile_options(test_cuda
-    PRIVATE
-        $<$<COMPILE_LANGUAGE:C>:-Wall -Wextra -Wpedantic>
-)
+    set_target_properties(${TGT} PROPERTIES
+        BUILD_RPATH "/run/opengl-driver/lib"
+        INSTALL_RPATH "/run/opengl-driver/lib"
+    )
 
-set_target_properties(test_cuda PROPERTIES
-    POSITION_INDEPENDENT_CODE ON
-    BUILD_RPATH "/run/opengl-driver/lib"
-    INSTALL_RPATH "/run/opengl-driver/lib"
-)
+    target_compile_options(${TGT}
+        PRIVATE
+            $<$<COMPILE_LANGUAGE:C>:-Wall -Wextra -Wpedantic>
+    )
 
-add_executable(test_ctx_null
-    test_ctx_null.c
-)
+    set_target_properties(${TGT} PROPERTIES
+        POSITION_INDEPENDENT_CODE ON
+    )
+    
+    add_test(NAME "test-${TGT}" COMMAND ${TGT})
+endfunction()
 
-target_link_libraries(test_ctx_null
-    PRIVATE
-        CUDA::cuda_driver
-)
+add_my_test(test_cuda test.c transpose CUDA::cudart)
+add_my_test(test_ctx_null test_ctx_null.c)
 
-set_target_properties(test_ctx_null PROPERTIES
-    BUILD_RPATH "/run/opengl-driver/lib"
-    INSTALL_RPATH "/run/opengl-driver/lib"
-)
+find_package(OpenMP REQUIRED)
+add_my_test(index.ops index.ops.c OpenMP::OpenMP_C)
 
-enable_testing()
-add_test(NAME test_cuda COMMAND test_cuda)
-
-add_executable(index.ops
-    index.ops.c
-)
-
-target_link_libraries(index.ops
-    PRIVATE
-        CUDA::cuda_driver
-)
-
-set_target_properties(index.ops PROPERTIES
-    BUILD_RPATH "/run/opengl-driver/lib"
-    INSTALL_RPATH "/run/opengl-driver/lib"
-)
-
-enable_testing()
-add_test(NAME test_index_ops COMMAND test_index_ops)

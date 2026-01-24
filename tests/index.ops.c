@@ -1,7 +1,30 @@
 #include <bits/posix1_lim.h>
+#include <stdalign.h>
+#include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <time.h>
+#include <unistd.h>
+
+struct clock
+{
+  struct timespec last;
+};
+
+// Returns elapsed time in seconds since last toc()
+static float
+toc(struct clock* clock)
+{
+  struct timespec now;
+  clock_gettime(CLOCK_MONOTONIC, &now);
+
+  float elapsed = (now.tv_sec - clock->last.tv_sec) +
+                  (now.tv_nsec - clock->last.tv_nsec) / 1e9f;
+
+  clock->last = now;
+  return elapsed;
+}
 
 // # add
 //
@@ -52,7 +75,7 @@ vadd(int rank,
     return 0;
 
   // init out with deltas - later we'll do a scan
-  for (int i = 0; i < n; ++i) {
+  for (size_t i = 0; i < n; ++i) {
     out[i] = strides[rank - 1];
   }
 
@@ -65,14 +88,14 @@ vadd(int rank,
 
     for (int d = rank - 1; d > 0; --d) {
       const int e = shape[d];
-      const int r = rest % e;
       rest /= e;
       // Q: Over the next n elements, where will there be a carry from d to d-1?
       // A: Every input_stride*shape[d] elements starting at first_carry.
       const int next_input_stride = input_stride * shape[d];
-      for (int i = first_carry; i < n; i += next_input_stride) {
-        // correct for carry from d to d-1
-        out[i] += strides[d - 1] - shape[d] * strides[d];
+      // correct for carry from d to d-1
+      const uint64_t correction = strides[d - 1] - shape[d] * strides[d];
+      for (size_t i = first_carry; i < n; i += next_input_stride) {
+        out[i] += correction;
       }
 
       // Compute first_carry for the next dimension (d - 1)
@@ -87,9 +110,11 @@ vadd(int rank,
   }
 
   // prefix sum
-  out[0] = o;
-  for (int i = 1; i < n; ++i)
-    out[i] += out[i - 1];
+  {
+    out[0] = o;
+    for (size_t i = 1; i < n; ++i)
+      out[i] += out[i - 1];
+  }
   return out;
 }
 
@@ -108,24 +133,6 @@ static void
 println_vi32(int n, int* v)
 {
   print_vi32(n, v);
-  putc('\n', stdout);
-}
-
-static void
-print_vu64(int n, const uint64_t* v)
-{
-  putc('[', stdout);
-  if (n)
-    printf("%d", (int)v[0]);
-  for (int i = 1; i < n; ++i)
-    printf(", %d", (int)v[i]);
-  putc(']', stdout);
-}
-
-static void
-println_vu64(int n, const uint64_t* v)
-{
-  print_vu64(n, v);
   putc('\n', stdout);
 }
 
@@ -168,7 +175,7 @@ make_expected(int rank,
   return out;
 }
 
-// Helper to compare arrays and report first mismatch
+// Compare arrays and report first mismatch
 // Returns 0 if arrays match, 1 if they differ
 static int
 expect_arrays_equal(const uint64_t* expected,
@@ -189,15 +196,27 @@ expect_arrays_equal(const uint64_t* expected,
   return 0;
 }
 
+static uint64_t*
+random_vu64(int count, uint64_t max)
+{
+  uint64_t* cases = (uint64_t*)malloc(count * sizeof(uint64_t));
+  if (!cases)
+    return 0;
+  for (int i = 0; i < count; ++i) {
+    cases[i] = (uint64_t)rand() % max;
+  }
+  return cases;
+}
+
 static int
-vadd_agrees_with_add()
+vadd_agrees_with_add(void)
 {
   // Setup a tiling of a 640x480x3 array into tiles of size 10x10x1
   const int rank = 6;
   const int shape[] = { 48, 10, 64, 10, 3, 1 };
-  int transposed_strides[6] = {};
+  int transposed_strides[6] = { 0 };
   {
-    int strides[6] = {};
+    int strides[6] = { 0 };
     compute_strides(rank, shape, strides);
     println_vi32(rank, strides);
     {
@@ -207,47 +226,83 @@ vadd_agrees_with_add()
     println_vi32(rank, transposed_strides);
   }
 
-  int ecode = 0;
   const int n = transposed_strides[0] * shape[0];
+  const int num_tests = 10000;
 
-  // Test case 1: beg = 0
-  {
-    const uint64_t* actual = vadd(rank, shape, transposed_strides, 0, n);
-    const uint64_t* expected = make_expected(rank, shape, transposed_strides, 0, n);
+  const uint64_t* expected_all =
+    make_expected(rank, shape, transposed_strides, 0, n);
+  if (!expected_all)
+    return 1;
 
-    if (!actual || !expected) {
-      free((void*)actual);
-      free((void*)expected);
-      return 1;
-    }
-
-    println_vu64(15, actual);
-    ecode |= expect_arrays_equal(expected, actual, n, "beg=0");
-
-    free((void*)actual);
-    free((void*)expected);
+  uint64_t* test_cases = random_vu64(num_tests, n);
+  if (!test_cases) {
+    free((void*)expected_all);
+    return 1;
   }
 
-  // Test case 2: beg = 110
+  struct
   {
-    const uint64_t beg = 110;
-    const uint64_t* actual = vadd(rank, shape, transposed_strides, beg, n);
-    const uint64_t* expected = make_expected(rank, shape, transposed_strides, beg, n);
+    alignas(64) _Atomic int completed;
+    alignas(64) _Atomic int ecode;
+  } state = { 0 };
 
-    if (!actual || !expected) {
-      free((void*)actual);
-      free((void*)expected);
-      return 1;
+#pragma omp parallel
+  {
+#pragma omp master
+    {
+      struct clock clk = { 0 };
+      toc(&clk);
+      int last_completed = 0;
+
+      while (state.completed < num_tests) {
+        float dt = toc(&clk);
+        int delta = state.completed - last_completed;
+        float velocity = dt > 0 ? delta / dt : 0;
+        last_completed = state.completed;
+
+        printf("\rProgress: %d/%d (%.1f%%) - %.0f/s",
+               state.completed,
+               num_tests,
+               100.0 * state.completed / num_tests,
+               velocity);
+        fflush(stdout);
+        usleep(500000);
+      }
+      printf("\n");
     }
 
-    println_vu64(15, actual);
-    ecode |= expect_arrays_equal(expected, actual, n - beg, "beg=110");
+#pragma omp for schedule(guided)
+    for (int i = 0; i < num_tests; ++i) {
+      if (state.ecode)
+        continue;
 
-    free((void*)actual);
-    free((void*)expected);
+      const uint64_t beg = test_cases[i];
+      const uint64_t* actual = vadd(rank, shape, transposed_strides, beg, n);
+      if (!actual) {
+        state.ecode = 1;
+        continue;
+      }
+
+      const uint64_t* expected = expected_all + beg;
+
+      {
+        char buf[64] = { 0 };
+        snprintf(buf, sizeof(buf), "beg=%lu", beg);
+        int err = expect_arrays_equal(expected, actual, n - beg, buf);
+        if (err) {
+          state.ecode |= err;
+        }
+      }
+
+      free((void*)actual);
+
+      atomic_fetch_add_explicit(&state.completed, 1, memory_order_relaxed);
+    }
   }
 
-  return ecode;
+  free(test_cases);
+  free((void*)expected_all);
+  return state.ecode;
 }
 
 int
@@ -255,6 +310,8 @@ main(int ac, char* av[])
 {
   (void)ac;
   (void)av;
+
+  srand(42);
 
   int ecode = 0;
 

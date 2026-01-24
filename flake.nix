@@ -27,30 +27,19 @@
           name = "chucky";
 
           buildInputs = with pkgs; [
-            # clang-tools
             cmake
             cudatoolkit
             gh
-            # entr
-            # lldb
+            llvmPackages.openmp
             man-pages
             man-pages-posix
+            neocmakelsp
             ninja
             nixd
+            perf
             pkg-config
             spdlog
           ];
-
-          # CPATH = "${pkgs.llvmPackages.libcxx.dev}/include/c++/v1";
-          # CPLUS_INCLUDE_PATH = "${pkgs.llvmPackages.libcxx.dev}/include/c++/v1";
-
-          # LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
-          # NVCOMP_LIB = "${pkgs.cudaPackages.nvcomp.static}";
-          # NVCOMP_INCLUDE = "${pkgs.cudaPackages.nvcomp.include}/include";
-          # CUDA_NVCC_PATH = "${pkgs.cudaPackages.cuda_nvcc}";
-
-          # CUDA_RUNTIME_INCLUDE = "${pkgs.cudatoolkit}/include";
-          # CUDA_RUNTIME_LIB = "${pkgs.cudatoolkit}/lib";
         };
       }
     );

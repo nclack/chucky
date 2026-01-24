@@ -1,5 +1,13 @@
 # dev log
 
+## 2026-01-024
+
+Trying to see if I can get non-unit step sizes to work. The idea is that the
+step should translate into a $\delta r$ in the input array. Each step we're
+adding $\delta r$ in the input array space with carries. To compute the output
+indices we just keep track of the effect of those carries, just like we did for
+the unit-step case.
+
 ## 2026-01-23
 
 Working out the output index computation that needs to happen in the kernel.
@@ -21,8 +29,6 @@ deltas. It's possible to do this without storing a coordinate array.
 I've tested it for unit step sizes of the input index. I think there's a way
 to get that approach to work for larger steps. That's important because we
 have to know the output offsets where each warp starts.
-
-
 
 ## 2026-01-20
 

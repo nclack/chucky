@@ -36,3 +36,20 @@ set_target_properties(test_ctx_null PROPERTIES
 
 enable_testing()
 add_test(NAME test_cuda COMMAND test_cuda)
+
+add_executable(index.ops
+    index.ops.c
+)
+
+target_link_libraries(index.ops
+    PRIVATE
+        CUDA::cuda_driver
+)
+
+set_target_properties(index.ops PROPERTIES
+    BUILD_RPATH "/run/opengl-driver/lib"
+    INSTALL_RPATH "/run/opengl-driver/lib"
+)
+
+enable_testing()
+add_test(NAME test_index_ops COMMAND test_index_ops)

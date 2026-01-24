@@ -11,11 +11,11 @@ fill_k(uint16_t* beg, uint16_t* end)
 }
 
 extern "C" void
-fill(CUdeviceptr d_beg,
-     CUdeviceptr d_end,
-     int grid_size,
-     int block_size,
-     CUstream stream)
+fill_u16(CUdeviceptr d_beg,
+         CUdeviceptr d_end,
+         int grid_size,
+         int block_size,
+         CUstream stream)
 {
   cudaStream_t cuda_stream = (cudaStream_t)stream;
   fill_k<<<grid_size, block_size, 0, cuda_stream>>>((uint16_t*)d_beg,

@@ -1,0 +1,54 @@
+# dev log
+
+## 2026-01-23
+
+Working out the output index computation that needs to happen in the kernel.
+I'm doing this by prototyping in `tests/index.op.c`.
+
+The easy way to compute the output index is to just take the input index,
+unravel it into a coordinate vector, and then project that vector with the
+output strides.
+
+However, in the kernel each thread would need O(rank) space and O(rank) time.
+
+The idea is to use a prefix sum approach instead. If we track the change in the
+output index for each step along the input index, then we just have to watch
+for when the input index reaches a boundary in the array shape. When those
+boundaries are hit, we can look up the effect in the output strides and correct
+the steps. To get the final output index we just do a cumulative sum over the
+deltas. It's possible to do this without storing a coordinate array.
+
+I've tested it for unit step sizes of the input index. I think there's a way
+to get that approach to work for larger steps. That's important because we
+have to know the output offsets where each warp starts.
+
+
+
+## 2026-01-20
+
+Got a simple kernel running in test with a basic cmake-based build. The
+kernel just fills a buffer and then it gets streamed back. D2H transfers
+happen at around 13 GB/s. This machine has a 4x PCIe Gen4 link to the GPU.
+I believe that's a 16 GB/s theoretical max (~83%).
+
+Next is to actually try to write the transpose. I should just try the basic
+thing without trying to optimally fill output lines.
+
+What do I want to do first?
+
+The input is going to be a 1GB buffers that contain samples starting at some
+offset relative to the beginning of a contiguous array. 
+
+We'll process the data in 32x32 warps. Each warp is responsible for loading
+a contiguous 128 bytes (1024 bits) of data: 32 lanes/warp * 4 bytes per lane.
+Depending on the sample type, there will be from 32-128 samples per warp.
+Let's call that number $B$: the number of samples handled by a warp.
+
+Note that the data we load from warp-to-warp doesn't have to be contiguous.
+To keep things simple, we won't worry about that right now: warp $i$ should
+load elements from $i*B$ to $(i+1)*B-1$.
+
+Note that at this point we haven't used any information about the shape of
+the array.
+
+Then we need to compute where there should go.

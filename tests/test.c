@@ -101,7 +101,7 @@ main(int argc, char* argv[])
 
     CU(Fail, cuEventRecord(event_kernel_start[buf_idx], stream_compute));
     CUdeviceptr d_end = d_data[buf_idx] + nbytes;
-    fill(d_data[buf_idx], d_end, grid_size, block_size, stream_compute);
+    fill_u16(d_data[buf_idx], d_end, grid_size, block_size, stream_compute);
     CU(Fail, cuEventRecord(event_kernel_end[buf_idx], stream_compute));
 
     CU(Fail, cuStreamWaitEvent(stream_transfer, event_kernel_end[buf_idx], 0));

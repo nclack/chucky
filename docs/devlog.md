@@ -8,6 +8,9 @@ adding $\delta r$ in the input array space with carries. To compute the output
 indices we just keep track of the effect of those carries, just like we did for
 the unit-step case.
 
+At the end of the day, I feel like I'm close. I'm stuck on how to handle
+carries. I think this probably ends up being another scan.
+
 ## 2026-01-23
 
 Working out the output index computation that needs to happen in the kernel.

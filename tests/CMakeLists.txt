@@ -29,7 +29,14 @@ add_my_test(test_cuda test.c transpose CUDA::cudart)
 add_my_test(test_ctx_null test_ctx_null.c)
 
 find_package(OpenMP REQUIRED)
+
+# Index operations utility library (shared between scalar and AVX2 tests)
+add_library(index_ops_util STATIC index.ops.util.c)
+target_compile_options(index_ops_util PRIVATE -Wall -Wextra -Wpedantic)
+target_include_directories(index_ops_util PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+
 add_my_test(index.ops index.ops.c OpenMP::OpenMP_C)
+target_link_libraries(index.ops PRIVATE index_ops_util)
 
 # AVX2 helper library
 add_library(div_avx2 STATIC div.avx2.c)
@@ -39,7 +46,7 @@ target_include_directories(div_avx2 PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 # AVX2 test - always build, runtime check will skip if CPU doesn't support
 add_my_test(index.ops.avx2 index.ops.avx2.c OpenMP::OpenMP_C)
 target_compile_options(index.ops.avx2 PRIVATE -mavx2)
-target_link_libraries(index.ops.avx2 PRIVATE div_avx2)
+target_link_libraries(index.ops.avx2 PRIVATE div_avx2 index_ops_util)
 
 # Magic division test
 add_executable(test_magic_div test_magic_div.c)

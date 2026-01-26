@@ -150,23 +150,13 @@ vadd2(int rank,
     }
   }
 
-  // transposed carries
+  // transposed carries - variable-radix arithmetic
   {
-    // Allocate carry stencil (tracks carries from previous dimension iteration)
-    int* carry = (int*)calloc(n, sizeof(int));
+    // carry: tracks cumulative carries from dimension d+1
+    uint64_t* carry = (uint64_t*)calloc(n, sizeof(uint64_t));
     if (!carry) {
-      free(carry);
       free(out);
       return 0;
-    }
-
-    // Initialize carry stencil for dimensions with extent 1
-    // When shape[rank-1] == 1, we can't move within that dimension,
-    // so every step produces a carry
-    if (shape[rank - 1] == 1 && step > 0) {
-      for (size_t i = 1; i < n; ++i) {
-        carry[i] = 1;
-      }
     }
 
     uint64_t rest_beg = beg;
@@ -180,40 +170,21 @@ vadd2(int rank,
 
       const uint64_t correction = strides[d - 1] - shape[d] * strides[d];
 
-      for (size_t i = 1; i < n; ++i) {
-        // Check for natural carry
-        const uint64_t quot_prev = (e + (i - 1) * s) / shape[d];
-        const uint64_t quot_curr = (e + i * s) / shape[d];
-        const int is_natural_carry = (quot_prev < quot_curr);
+      for (size_t i = 0; i < n; ++i) {
+        // Compute current coordinate including incoming carry
+        const uint64_t total = e + i * s + carry[i];
 
-        // Check if coordinate at i-1 is at boundary (would carry if
-        // incremented)
-        const uint64_t coord_prev = (e + (i - 1) * s) % shape[d];
-        const int almost_carry = (coord_prev + 1 == (uint64_t)shape[d]);
+        // Count cumulative wraps in this dimension
+        const uint64_t wraps = total / shape[d];
 
-        // Update carry stencil: natural carry OR (almost-carry AND carry from
-        // d+1)
-        const int has_carry = is_natural_carry || (almost_carry && carry[i]);
-        carry[i] = has_carry;
+        // Compute delta (new wraps at this step)
+        const uint64_t delta_wraps = wraps - (i > 0 ? carry[i - 1] : 0);
 
-        if (has_carry) {
-          out[i] += correction;
-        }
+        // Apply correction for each wrap
+        out[i] += delta_wraps * correction;
 
-        if (i == 1920) {
-#define XXX(e) printf("%-20s: %d\n", #e, (int)e)
-          printf("--- %d\n", (int)i);
-          XXX(d);
-          XXX(e);
-          XXX(s);
-          XXX(is_natural_carry);
-          XXX(almost_carry);
-          XXX(carry[i]);
-          XXX(has_carry);
-          XXX(shape[d]);
-          XXX(correction);
-#undef XXX
-        }
+        // Store cumulative wraps for next dimension
+        carry[i] = wraps;
       }
     }
 
@@ -493,8 +464,8 @@ vadd2_agrees_with_add(void)
   }
 
   const int n = transposed_strides[0] * shape[0];
-  const int num_tests = 1;
-  const uint64_t steps[] = { 1 }; //, 2, 3, 5, 7, 11, 32, 100, 1000 };
+  const int num_tests = 1000;
+  const uint64_t steps[] = { 1, 2, 3, 5, 7, 11, 32, 100, 1000 };
   const int num_steps = sizeof(steps) / sizeof(steps[0]);
 
   struct
@@ -503,10 +474,9 @@ vadd2_agrees_with_add(void)
     _Atomic int ecode;
   } state = { 0 };
 
-  // #pragma omp parallel
+#pragma omp parallel
   {
-#if 0
-// #pragma omp master
+#pragma omp master
     {
       struct clock clk = { 0 };
       toc(&clk);
@@ -529,16 +499,15 @@ vadd2_agrees_with_add(void)
       }
       printf("\n");
     }
-#endif
 
-    // #pragma omp for schedule(guided) collapse(2)
+#pragma omp for schedule(guided) collapse(2)
     for (int step_idx = 0; step_idx < num_steps; ++step_idx) {
       for (int i = 0; i < num_tests; ++i) {
         if (state.ecode)
           continue;
 
         const uint64_t step = steps[step_idx];
-        const uint64_t beg = 0; //(uint64_t)rand() % n;
+        const uint64_t beg = (uint64_t)rand() % n;
         const uint64_t* expected =
           make_expected_step(rank, shape, transposed_strides, beg, n, step);
         if (!expected) {

@@ -1,6 +1,31 @@
 # dev log
 
-## 2026-01-024
+## 2026-01-25
+
+Realized I've been making all of this too complicated. The vadd() algorithm
+is nice off of the gpu, or when you have a big buffer of indices you write to.
+It ends up collapsing the complexity of the loop over dimensions into what
+would normally be the loop over elements, so you end up with something O(n)
+rather than O(n x d).
+
+But, we're not doing that on the gpu, so the simple unravel-and-accumulate
+strides algorithm works. It's O(d) per thread.
+
+Anyway, next step is to actually do the transpose without thinking too much
+about memory coherence.
+
+## 2026-01-24
+
+Ok, it turned out to be very easy. I just need to stick to the mixed-radix
+addition algorithm.
+
+Added avx2 versions of `vadd` and `vadd2` to make sure I understood how
+the vectorization works. The approach in `vadd2` is probably better forev
+vectorization and it's simpler to understand, so I used this for both
+of the vectorized implementations. They're not very fast - the non-vectorized
+`vadd` is very fast. But that's not the point here. 
+
+## 2026-01-24
 
 Trying to see if I can get non-unit step sizes to work. The idea is that the
 step should translate into a $\delta r$ in the input array. Each step we're

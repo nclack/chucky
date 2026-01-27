@@ -58,3 +58,6 @@ add_executable(test_avx2_div test_avx2_div.c)
 target_compile_options(test_avx2_div PRIVATE -mavx2 -Wall -Wextra -Wpedantic)
 target_link_libraries(test_avx2_div PRIVATE div_avx2)
 
+# Transpose indices CUDA test
+add_my_test(index.ops.cuda index.ops.cuda.c transpose index_ops_util CUDA::cudart)
+

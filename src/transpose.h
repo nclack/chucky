@@ -29,7 +29,6 @@ extern "C"
                         CUdeviceptr d_src_beg,
                         CUdeviceptr d_src_end,
                         uint64_t i_offset,
-                        uint8_t elements_per_warp,
                         uint8_t rank,
                         const uint64_t* __restrict__ shape,
                         const int64_t* __restrict__ strides,

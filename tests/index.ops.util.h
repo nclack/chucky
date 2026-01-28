@@ -54,6 +54,9 @@ permute_i32(int n,
             const int* __restrict__ in,
             int* __restrict__ out);
 
+void
+inverse_permutation_i32(int n, const int* __restrict__ p, int* __restrict__ inv);
+
 // Test utilities
 // Helper to create expected array using add()
 uint64_t*

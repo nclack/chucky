@@ -93,6 +93,14 @@ permute_i32(int n,
   }
 }
 
+void
+inverse_permutation_i32(int n, const int* __restrict__ p, int* __restrict__ inv)
+{
+  for (int i = 0; i < n; ++i) {
+    inv[p[i]] = i;
+  }
+}
+
 // Helper to create expected array using add()
 uint64_t*
 make_expected(int rank,

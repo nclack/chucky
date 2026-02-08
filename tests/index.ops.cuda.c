@@ -163,7 +163,7 @@ test_transpose_indices_basic(void)
   printf("%30s", "Transposed strides: ");
   println_vi32(rank, transposed_strides);
 
-  CUdeviceptr d_out = 0;
+  CUdeviceptr d_out = 0, d_shape = 0, d_strides = 0;
   uint64_t *actual = 0l, *expected = 0;
 
   const int n = transposed_strides[0] * shape[0];
@@ -181,14 +181,20 @@ test_transpose_indices_basic(void)
     strides64[i] = transposed_strides[i];
   }
 
+  // Copy shape and strides to device
+  CU(Fail, cuMemAlloc(&d_shape, rank * sizeof(uint64_t)));
+  CU(Fail, cuMemAlloc(&d_strides, rank * sizeof(int64_t)));
+  CU(Fail, cuMemcpyHtoD(d_shape, shape64, rank * sizeof(uint64_t)));
+  CU(Fail, cuMemcpyHtoD(d_strides, strides64, rank * sizeof(int64_t)));
+
   // Call the CUDA kernel on default stream
   CUstream stream = 0;
   transpose_indices(d_out,
                     d_out + n * sizeof(uint64_t),
                     0, // i_offset (start at input index 0)
                     rank,
-                    shape64,
-                    strides64,
+                    (const uint64_t*)d_shape,
+                    (const int64_t*)d_strides,
                     stream);
 
   // Copy results back to host
@@ -209,6 +215,8 @@ test_transpose_indices_basic(void)
   }
 
 Finalize:
+  cuMemFree(d_shape);
+  cuMemFree(d_strides);
   cuMemFree(d_out);
   free(actual);
   free((void*)expected);
@@ -276,7 +284,7 @@ test_transpose_u16_basic(void)
   printf("%30s", "Transposed strides: ");
   println_vi32(rank, transposed_strides);
 
-  CUdeviceptr d_src = 0, d_dst = 0;
+  CUdeviceptr d_src = 0, d_dst = 0, d_shape = 0, d_strides = 0;
   uint16_t *src = 0, *actual = 0, *expected = 0;
 
   const int n = transposed_strides[0] * shape[0];
@@ -311,6 +319,12 @@ test_transpose_u16_basic(void)
     strides64[i] = transposed_strides[i];
   }
 
+  // Copy shape and strides to device
+  CU(Fail, cuMemAlloc(&d_shape, rank * sizeof(uint64_t)));
+  CU(Fail, cuMemAlloc(&d_strides, rank * sizeof(int64_t)));
+  CU(Fail, cuMemcpyHtoD(d_shape, shape64, rank * sizeof(uint64_t)));
+  CU(Fail, cuMemcpyHtoD(d_strides, strides64, rank * sizeof(int64_t)));
+
   // Call the CUDA transpose kernel
   transpose_u16_v0(d_dst,
                    d_dst + n * sizeof(uint16_t),
@@ -318,8 +332,8 @@ test_transpose_u16_basic(void)
                    d_src + n * sizeof(uint16_t),
                    0, // i_offset (start at input index 0)
                    rank,
-                   shape64,
-                   strides64,
+                   (const uint64_t*)d_shape,
+                   (const int64_t*)d_strides,
                    stream);
 
   // Copy results back to host
@@ -358,6 +372,8 @@ test_transpose_u16_basic(void)
   }
 
 Finalize:
+  cuMemFree(d_shape);
+  cuMemFree(d_strides);
   cuMemFree(d_src);
   cuMemFree(d_dst);
   free(src);
@@ -383,7 +399,7 @@ test_transpose_u16_with_offset(void)
 
   setup_transpose_strides(rank, shape, p, transposed_shape, transposed_strides);
 
-  CUdeviceptr d_src = 0, d_dst = 0;
+  CUdeviceptr d_src = 0, d_dst = 0, d_shape = 0, d_strides = 0;
   uint16_t *src = 0, *actual = 0, *expected = 0;
 
   const int n = transposed_strides[0] * shape[0];
@@ -440,6 +456,12 @@ test_transpose_u16_with_offset(void)
     strides64[i] = transposed_strides[i];
   }
 
+  // Copy shape and strides to device
+  CU(Fail, cuMemAlloc(&d_shape, rank * sizeof(uint64_t)));
+  CU(Fail, cuMemAlloc(&d_strides, rank * sizeof(int64_t)));
+  CU(Fail, cuMemcpyHtoD(d_shape, shape64, rank * sizeof(uint64_t)));
+  CU(Fail, cuMemcpyHtoD(d_strides, strides64, rank * sizeof(int64_t)));
+
   // Call the CUDA transpose kernel with offset
   transpose_u16_v0(d_dst,
                    d_dst + n * sizeof(uint16_t),
@@ -447,8 +469,8 @@ test_transpose_u16_with_offset(void)
                    d_src + count * sizeof(uint16_t),
                    i_offset,
                    rank,
-                   shape64,
-                   strides64,
+                   (const uint64_t*)d_shape,
+                   (const int64_t*)d_strides,
                    stream);
 
   // Copy results back to host
@@ -479,6 +501,8 @@ test_transpose_u16_with_offset(void)
   }
 
 Finalize:
+  cuMemFree(d_shape);
+  cuMemFree(d_strides);
   cuMemFree(d_src);
   cuMemFree(d_dst);
   free(src);
@@ -504,7 +528,7 @@ test_transpose_indices_with_offset(void)
 
   setup_transpose_strides(rank, shape, p, transposed_shape, transposed_strides);
 
-  CUdeviceptr d_out = 0;
+  CUdeviceptr d_out = 0, d_shape = 0, d_strides = 0;
   uint64_t *actual = 0, *expected_all = 0;
 
   const int n = transposed_strides[0] * shape[0];
@@ -531,14 +555,20 @@ test_transpose_indices_with_offset(void)
     strides64[i] = transposed_strides[i];
   }
 
+  // Copy shape and strides to device
+  CU(Fail, cuMemAlloc(&d_shape, rank * sizeof(uint64_t)));
+  CU(Fail, cuMemAlloc(&d_strides, rank * sizeof(int64_t)));
+  CU(Fail, cuMemcpyHtoD(d_shape, shape64, rank * sizeof(uint64_t)));
+  CU(Fail, cuMemcpyHtoD(d_strides, strides64, rank * sizeof(int64_t)));
+
   // Call the CUDA kernel with offset on default stream
   CUstream stream = 0;
   transpose_indices(d_out,
                     d_out + count * sizeof(uint64_t),
                     i_offset,
                     rank,
-                    shape64,
-                    strides64,
+                    (const uint64_t*)d_shape,
+                    (const int64_t*)d_strides,
                     stream);
 
   // Copy results back to host
@@ -565,6 +595,8 @@ test_transpose_indices_with_offset(void)
   }
 
 Finalize:
+  cuMemFree(d_shape);
+  cuMemFree(d_strides);
   cuMemFree(d_out);
   free(actual);
   free((void*)expected_all);

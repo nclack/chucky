@@ -20,8 +20,8 @@ extern "C"
                          CUdeviceptr d_end,
                          uint64_t i_offset,
                          uint8_t rank,
-                         const uint64_t* __restrict__ shape,
-                         const int64_t* __restrict__ strides,
+                         const uint64_t* d_shape,
+                         const int64_t* d_strides,
                          CUstream stream);
 
   void transpose_u16_v0(CUdeviceptr d_dst_beg,
@@ -30,8 +30,8 @@ extern "C"
                         CUdeviceptr d_src_end,
                         uint64_t i_offset,
                         uint8_t rank,
-                        const uint64_t* __restrict__ shape,
-                        const int64_t* __restrict__ strides,
+                        const uint64_t* d_shape,
+                        const int64_t* d_strides,
                         CUstream stream);
 #ifdef __cplusplus
 }

@@ -87,15 +87,14 @@ buffer_free(struct buffer* buffer)
 }
 
 static struct buffer
-buffer_new(size_t capacity, enum domain domain)
+buffer_new(size_t capacity, enum domain domain, unsigned int host_flags)
 {
   struct buffer buf = { 0 };
   buf.domain = domain;
 
   switch (domain) {
     case host:
-      CU(Fail,
-         cuMemHostAlloc(&buf.data, capacity, CU_MEMHOSTALLOC_WRITECOMBINED));
+      CU(Fail, cuMemHostAlloc(&buf.data, capacity, host_flags));
       break;
     case device:
       CU(Fail, cuMemAlloc((CUdeviceptr*)&buf.data, capacity));
@@ -142,8 +141,8 @@ dispatch_scatter(struct transpose_stream* s)
                    (CUdeviceptr)s->d_in.data + s->stage_fill,
                    s->cursor,
                    s->lifted_rank,
-                   s->lifted_shape,
-                   s->lifted_strides,
+                   s->d_lifted_shape,
+                   s->d_lifted_strides,
                    s->compute);
   CUWARN(cuEventRecord(s->d_tiles.ready, s->compute));
 
@@ -231,6 +230,11 @@ transpose_stream_destroy(struct transpose_stream* stream)
   CUWARN(cuStreamDestroy(stream->compute));
   CUWARN(cuStreamDestroy(stream->d2h));
 
+  if (stream->d_lifted_shape)
+    CUWARN(cuMemFree((CUdeviceptr)stream->d_lifted_shape));
+  if (stream->d_lifted_strides)
+    CUWARN(cuMemFree((CUdeviceptr)stream->d_lifted_strides));
+
   buffer_free(&stream->h_in);
   buffer_free(&stream->d_in);
   buffer_free(&stream->d_tiles);
@@ -300,17 +304,39 @@ transpose_stream_create(const struct transpose_stream_configuration* config,
   // so its stride is zero in the kernel.
   out->lifted_strides[0] = 0;
 
+  // Allocate device copies of lifted shape and strides
+  {
+    const size_t shape_bytes = out->lifted_rank * sizeof(uint64_t);
+    const size_t strides_bytes = out->lifted_rank * sizeof(int64_t);
+    CU(Fail, cuMemAlloc((CUdeviceptr*)&out->d_lifted_shape, shape_bytes));
+    CU(Fail, cuMemAlloc((CUdeviceptr*)&out->d_lifted_strides, strides_bytes));
+    CU(Fail,
+       cuMemcpyHtoD(
+         (CUdeviceptr)out->d_lifted_shape, out->lifted_shape, shape_bytes));
+    CU(Fail,
+       cuMemcpyHtoD((CUdeviceptr)out->d_lifted_strides,
+                     out->lifted_strides,
+                     strides_bytes));
+  }
+
   // Allocate input staging buffers
+  // h_in: host writes sequentially, GPU reads via H2D -> write-combined
+  CHECK(
+    Fail,
+    (out->h_in =
+       buffer_new(config->buffer_capacity_bytes, host, CU_MEMHOSTALLOC_WRITECOMBINED))
+      .data);
   CHECK(Fail,
-        (out->h_in = buffer_new(config->buffer_capacity_bytes, host)).data);
-  CHECK(Fail,
-        (out->d_in = buffer_new(config->buffer_capacity_bytes, device)).data);
+        (out->d_in = buffer_new(config->buffer_capacity_bytes, device, 0))
+          .data);
 
   // Allocate tile pool
   const size_t tile_pool_bytes =
     out->slot_count * out->tile_elements * config->bytes_per_element;
-  CHECK(Fail, (out->d_tiles = buffer_new(tile_pool_bytes, device)).data);
-  CHECK(Fail, (out->h_tiles = buffer_new(tile_pool_bytes, host)).data);
+  CHECK(Fail,
+        (out->d_tiles = buffer_new(tile_pool_bytes, device, 0)).data);
+  // h_tiles: GPU writes via D2H, host reads -> normal pinned (no WC)
+  CHECK(Fail, (out->h_tiles = buffer_new(tile_pool_bytes, host, 0)).data);
 
   // Zero the tile pool initially
   CU(Fail,

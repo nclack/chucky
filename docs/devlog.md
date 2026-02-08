@@ -4,9 +4,11 @@
 
 Refactor to rely on the writer interface more. Decide on some compositional
 boundaries. Might be some useful writers for testing. Think about getting the
-compression in.
+compression in. I'd like to refactor the platform specific code (timers) as
+well.
 
-I'd like to refactor the platform specific code (timers) as well.
+After that, I think the plan will be to implement compression, and finally to
+start looking at streaming performance/overlapping the pipeline.
 
 ## 2026-02-07
 

@@ -69,6 +69,10 @@ struct transpose_stream
   uint64_t lifted_shape[2 * MAX_RANK];
   int64_t lifted_strides[2 * MAX_RANK]; // strides[0] = 0
 
+  // Device copies (allocated once, used by every kernel dispatch)
+  uint64_t* d_lifted_shape;
+  int64_t* d_lifted_strides;
+
   uint64_t tile_elements;  // elements per tile
   uint64_t slot_count;     // M = prod of tile_count[i] for i > 0
   uint64_t epoch_elements; // elements per epoch = M * tile_elements

@@ -58,13 +58,12 @@ transpose_indices(CUdeviceptr d_beg,
                   CUdeviceptr d_end,
                   uint64_t i_offset,
                   uint8_t rank,
-                  const uint64_t* __restrict__ shape,
-                  const int64_t* __restrict__ strides,
+                  const uint64_t* d_shape,
+                  const int64_t* d_strides,
                   CUstream stream)
 {
   cudaStream_t cuda_stream = (cudaStream_t)stream;
 
-  // Compute grid dimensions
   uint64_t* out_beg = (uint64_t*)d_beg;
   uint64_t* out_end = (uint64_t*)d_end;
   const uint64_t n = out_end - out_beg;
@@ -72,28 +71,8 @@ transpose_indices(CUdeviceptr d_beg,
   const int block_size = 256;
   const int grid_size = (n + block_size - 1) / block_size;
 
-  // Async copy shape and strides to device
-  uint64_t* d_shape;
-  int64_t* d_strides;
-  cudaMallocAsync(&d_shape, rank * sizeof(uint64_t), cuda_stream);
-  cudaMallocAsync(&d_strides, rank * sizeof(int64_t), cuda_stream);
-  cudaMemcpyAsync(d_shape,
-                  shape,
-                  rank * sizeof(uint64_t),
-                  cudaMemcpyHostToDevice,
-                  cuda_stream);
-  cudaMemcpyAsync(d_strides,
-                  strides,
-                  rank * sizeof(int64_t),
-                  cudaMemcpyHostToDevice,
-                  cuda_stream);
-
-  // Launch kernel
   transpose_indices_k<<<grid_size, block_size, 0, cuda_stream>>>(
     out_beg, i_offset, i_offset + n, rank, d_shape, d_strides);
-
-  cudaFreeAsync(d_shape, cuda_stream);
-  cudaFreeAsync(d_strides, cuda_stream);
 }
 
 // Transpose u16 data kernel - v0
@@ -151,15 +130,14 @@ transpose_u16_v0(CUdeviceptr d_dst_beg,
                  CUdeviceptr d_src_end,
                  uint64_t i_offset,
                  uint8_t rank,
-                 const uint64_t* __restrict__ shape,
-                 const int64_t* __restrict__ strides,
+                 const uint64_t* d_shape,
+                 const int64_t* d_strides,
                  CUstream stream)
 {
   (void)d_dst_end; // UNUSED
 
   cudaStream_t cuda_stream = (cudaStream_t)stream;
 
-  // Compute number of elements to transpose
   uint16_t* src_beg = (uint16_t*)d_src_beg;
   uint16_t* src_end = (uint16_t*)d_src_end;
   const uint64_t src_size = src_end - src_beg;
@@ -167,29 +145,11 @@ transpose_u16_v0(CUdeviceptr d_dst_beg,
   if (src_size == 0)
     return;
 
-  // Launch configuration:
-  // Must matches ELEMENTS_PER_BLOCK in kernel (2048)
   const int block_size = 256;
   const int elements_per_block = (1 << 12) / sizeof(uint16_t);
   const int grid_size =
     (src_size + elements_per_block - 1) / elements_per_block;
 
-  uint64_t* d_shape;
-  int64_t* d_strides;
-  cudaMallocAsync(&d_shape, rank * sizeof(uint64_t), cuda_stream);
-  cudaMallocAsync(&d_strides, rank * sizeof(int64_t), cuda_stream);
-  cudaMemcpyAsync(d_shape,
-                  shape,
-                  rank * sizeof(uint64_t),
-                  cudaMemcpyHostToDevice,
-                  cuda_stream);
-  cudaMemcpyAsync(d_strides,
-                  strides,
-                  rank * sizeof(int64_t),
-                  cudaMemcpyHostToDevice,
-                  cuda_stream);
-
-  // Launch kernel
   transpose_v0_k<uint16_t>
     <<<grid_size, block_size, 0, cuda_stream>>>((uint16_t*)d_dst_beg,
                                                 src_beg,
@@ -198,7 +158,4 @@ transpose_u16_v0(CUdeviceptr d_dst_beg,
                                                 rank,
                                                 d_shape,
                                                 d_strides);
-
-  cudaFreeAsync(d_shape, cuda_stream);
-  cudaFreeAsync(d_strides, cuda_stream);
 }

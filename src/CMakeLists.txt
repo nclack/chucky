@@ -18,6 +18,43 @@ target_compile_options(transpose
         $<$<COMPILE_LANGUAGE:CUDA>:--compiler-options=-Wall,-Wextra>
 )
 
+# nvcomp — find_package(nvcomp) is broken on Nix (split outputs),
+# so locate headers and library manually.
+find_path(NVCOMP_INCLUDE_DIR NAMES nvcomp.h REQUIRED)
+find_library(NVCOMP_LIBRARY NAMES nvcomp REQUIRED)
+
+add_library(nvcomp::nvcomp SHARED IMPORTED)
+set_target_properties(nvcomp::nvcomp PROPERTIES
+    IMPORTED_LOCATION "${NVCOMP_LIBRARY}"
+    INTERFACE_INCLUDE_DIRECTORIES "${NVCOMP_INCLUDE_DIR}"
+)
+
+add_library(compress STATIC
+    compress.cu
+    compress.h
+)
+
+target_include_directories(compress
+    PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}
+)
+
+target_link_libraries(compress
+    PUBLIC
+        nvcomp::nvcomp
+        CUDA::cudart
+)
+
+set_target_properties(compress PROPERTIES
+    POSITION_INDEPENDENT_CODE ON
+    CUDA_SEPARABLE_COMPILATION ON
+)
+
+target_compile_options(compress
+    PRIVATE
+        $<$<COMPILE_LANGUAGE:CUDA>:--compiler-options=-Wall,-Wextra>
+)
+
 add_library(stream STATIC
     stream.c
     stream.h
@@ -35,6 +72,7 @@ target_include_directories(stream
 target_link_libraries(stream
     PUBLIC
         transpose
+        compress
         CUDA::cuda_driver
 )
 

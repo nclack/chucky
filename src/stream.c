@@ -1,7 +1,9 @@
+#include "compress.h"
 #include "log/log.h"
 #include "platform.h"
 #include "stream.h"
 
+#include <stdlib.h>
 #include <string.h>
 
 #define container_of(ptr, type, member)                                        \
@@ -117,6 +119,28 @@ ceildiv(uint64_t a, uint64_t b)
   return (a + b - 1) / b;
 }
 
+static size_t
+align_up(size_t x, size_t alignment)
+{
+  return (x + alignment - 1) / alignment * alignment;
+}
+
+// Free a device pointer if non-NULL.
+static void
+device_free(void* ptr)
+{
+  if (ptr)
+    CUWARN(cuMemFree((CUdeviceptr)ptr));
+}
+
+// Free a host-pinned pointer if non-NULL.
+static void
+host_free(void* ptr)
+{
+  if (ptr)
+    cuMemFreeHost(ptr);
+}
+
 // Dispatch staged data: H2D transfer + scatter kernel
 // Returns 0 on success, 1 on error.
 static int
@@ -129,7 +153,6 @@ dispatch_scatter(struct transpose_stream* s)
 
   const int idx = s->stage_idx;
   const int tidx = s->tile_idx;
-  const size_t tile_pool_bytes = s->slot_count * s->tile_elements * bpe;
 
   // H2D
   CU(Error,
@@ -142,7 +165,7 @@ dispatch_scatter(struct transpose_stream* s)
   // Kernel waits for H2D, then scatters into tile pool
   CU(Error, cuStreamWaitEvent(s->compute, s->h_in[idx].ready, 0));
   transpose_u16_v0((CUdeviceptr)s->d_tiles[tidx].data,
-                   (CUdeviceptr)s->d_tiles[tidx].data + tile_pool_bytes,
+                   (CUdeviceptr)s->d_tiles[tidx].data + s->tile_pool_bytes,
                    (CUdeviceptr)s->d_in[idx].data,
                    (CUdeviceptr)s->d_in[idx].data + s->stage_fill,
                    s->cursor,
@@ -201,6 +224,27 @@ writer_append_wait(struct writer* w, struct slice data)
   return (struct writer_result){ 0 };
 }
 
+// Deliver compressed tiles from the previous epoch to the compressed_sink.
+static int
+deliver_compressed_tiles(struct transpose_stream* s, int pool)
+{
+  const uint64_t M = s->slot_count;
+  const void** tile_ptrs = (const void**)malloc(M * sizeof(void*));
+  CHECK(Error, tile_ptrs);
+
+  for (uint64_t i = 0; i < M; ++i)
+    tile_ptrs[i] =
+      (char*)s->h_compressed[pool].data + i * s->max_comp_chunk_bytes;
+
+  int err = s->config.compressed_sink->append(
+    s->config.compressed_sink, tile_ptrs, s->h_comp_sizes[pool], M);
+  free((void*)tile_ptrs);
+  return err;
+
+Error:
+  return 1;
+}
+
 // Deliver the previous epoch's tiles if an async D2H is still pending.
 static struct writer_result
 drain_pending_flush(struct transpose_stream* s)
@@ -208,20 +252,23 @@ drain_pending_flush(struct transpose_stream* s)
   if (!s->flush_pending)
     return (struct writer_result){ 0 };
 
-  const size_t bpe = s->config.bytes_per_element;
-  const size_t tile_pool_bytes = s->slot_count * s->tile_elements * bpe;
   const int prev = s->tile_idx ^ 1;
 
-  CU(Error, cuEventSynchronize(s->h_tiles[prev].ready));
-
-  s->flush_pending = 0;
-
-  if (s->config.sink) {
-    struct slice tiles = {
-      .beg = s->h_tiles[prev].data,
-      .end = (char*)s->h_tiles[prev].data + tile_pool_bytes,
-    };
-    return writer_append_wait(s->config.sink, tiles);
+  if (s->config.compress && s->config.compressed_sink) {
+    CU(Error, cuEventSynchronize(s->h_compressed[prev].ready));
+    s->flush_pending = 0;
+    if (deliver_compressed_tiles(s, prev))
+      goto Error;
+  } else {
+    CU(Error, cuEventSynchronize(s->h_tiles[prev].ready));
+    s->flush_pending = 0;
+    if (s->config.sink) {
+      struct slice tiles = {
+        .beg = s->h_tiles[prev].data,
+        .end = (char*)s->h_tiles[prev].data + s->tile_pool_bytes,
+      };
+      return writer_append_wait(s->config.sink, tiles);
+    }
   }
 
   return (struct writer_result){ 0 };
@@ -234,24 +281,56 @@ Error:
 static struct writer_result
 flush_epoch_sync(struct transpose_stream* s)
 {
-  const size_t bpe = s->config.bytes_per_element;
-  const size_t tile_pool_bytes = s->slot_count * s->tile_elements * bpe;
   const int cur = s->tile_idx;
 
-  CU(Error, cuStreamWaitEvent(s->d2h, s->d_tiles[cur].ready, 0));
-  CU(Error,
-     cuMemcpyDtoHAsync(s->h_tiles[cur].data,
-                        (CUdeviceptr)s->d_tiles[cur].data,
-                        tile_pool_bytes,
-                        s->d2h));
-  CU(Error, cuStreamSynchronize(s->d2h));
+  if (s->config.compress && s->config.compressed_sink) {
+    // Compress on compute (ordered after scatter on same stream)
+    CHECK(Error,
+          compress_batch_async(
+            (const void* const*)s->d_uncomp_ptrs[cur],
+            s->d_uncomp_sizes,
+            s->tile_stride * s->config.bytes_per_element,
+            s->slot_count,
+            s->d_comp_temp,
+            s->comp_temp_bytes,
+            s->d_comp_ptrs[cur],
+            s->d_comp_sizes[cur],
+            s->compute) == 0);
+    CU(Error, cuEventRecord(s->d_compressed[cur].ready, s->compute));
 
-  if (s->config.sink) {
-    struct slice tiles = {
-      .beg = s->h_tiles[cur].data,
-      .end = (char*)s->h_tiles[cur].data + tile_pool_bytes,
-    };
-    return writer_append_wait(s->config.sink, tiles);
+    // D2H waits for compress, then transfers
+    CU(Error,
+       cuStreamWaitEvent(s->d2h, s->d_compressed[cur].ready, 0));
+    CU(Error,
+       cuMemcpyDtoHAsync(s->h_compressed[cur].data,
+                          (CUdeviceptr)s->d_compressed[cur].data,
+                          s->comp_pool_bytes,
+                          s->d2h));
+    CU(Error,
+       cuMemcpyDtoHAsync(s->h_comp_sizes[cur],
+                          (CUdeviceptr)s->d_comp_sizes[cur],
+                          s->slot_count * sizeof(size_t),
+                          s->d2h));
+    CU(Error, cuStreamSynchronize(s->d2h));
+
+    if (deliver_compressed_tiles(s, cur))
+      goto Error;
+  } else {
+    CU(Error, cuStreamWaitEvent(s->d2h, s->d_tiles[cur].ready, 0));
+    CU(Error,
+       cuMemcpyDtoHAsync(s->h_tiles[cur].data,
+                          (CUdeviceptr)s->d_tiles[cur].data,
+                          s->tile_pool_bytes,
+                          s->d2h));
+    CU(Error, cuStreamSynchronize(s->d2h));
+
+    if (s->config.sink) {
+      struct slice tiles = {
+        .beg = s->h_tiles[cur].data,
+        .end = (char*)s->h_tiles[cur].data + s->tile_pool_bytes,
+      };
+      return writer_append_wait(s->config.sink, tiles);
+    }
   }
 
   return (struct writer_result){ 0 };
@@ -264,8 +343,6 @@ Error:
 static struct writer_result
 flush_epoch(struct transpose_stream* s)
 {
-  const size_t bpe = s->config.bytes_per_element;
-  const size_t tile_pool_bytes = s->slot_count * s->tile_elements * bpe;
   const int cur = s->tile_idx;
 
   // Deliver the previous epoch if its D2H is still in flight
@@ -273,21 +350,51 @@ flush_epoch(struct transpose_stream* s)
   if (r.error)
     return r;
 
-  // Start async D2H for the current epoch
-  CU(Error, cuStreamWaitEvent(s->d2h, s->d_tiles[cur].ready, 0));
-  CU(Error,
-     cuMemcpyDtoHAsync(s->h_tiles[cur].data,
-                        (CUdeviceptr)s->d_tiles[cur].data,
-                        tile_pool_bytes,
-                        s->d2h));
-  CU(Error, cuEventRecord(s->h_tiles[cur].ready, s->d2h));
+  if (s->config.compress && s->config.compressed_sink) {
+    // Compress on compute (ordered after scatter on same stream)
+    CHECK(Error,
+          compress_batch_async(
+            (const void* const*)s->d_uncomp_ptrs[cur],
+            s->d_uncomp_sizes,
+            s->tile_stride * s->config.bytes_per_element,
+            s->slot_count,
+            s->d_comp_temp,
+            s->comp_temp_bytes,
+            s->d_comp_ptrs[cur],
+            s->d_comp_sizes[cur],
+            s->compute) == 0);
+    CU(Error, cuEventRecord(s->d_compressed[cur].ready, s->compute));
+
+    // D2H waits for compress, then transfers
+    CU(Error,
+       cuStreamWaitEvent(s->d2h, s->d_compressed[cur].ready, 0));
+    CU(Error,
+       cuMemcpyDtoHAsync(s->h_compressed[cur].data,
+                          (CUdeviceptr)s->d_compressed[cur].data,
+                          s->comp_pool_bytes,
+                          s->d2h));
+    CU(Error,
+       cuMemcpyDtoHAsync(s->h_comp_sizes[cur],
+                          (CUdeviceptr)s->d_comp_sizes[cur],
+                          s->slot_count * sizeof(size_t),
+                          s->d2h));
+    CU(Error, cuEventRecord(s->h_compressed[cur].ready, s->d2h));
+  } else {
+    CU(Error, cuStreamWaitEvent(s->d2h, s->d_tiles[cur].ready, 0));
+    CU(Error,
+       cuMemcpyDtoHAsync(s->h_tiles[cur].data,
+                          (CUdeviceptr)s->d_tiles[cur].data,
+                          s->tile_pool_bytes,
+                          s->d2h));
+    CU(Error, cuEventRecord(s->h_tiles[cur].ready, s->d2h));
+  }
 
   // Switch to other pool and zero it for next epoch
   s->tile_idx ^= 1;
   CU(Error,
      cuMemsetD8Async((CUdeviceptr)s->d_tiles[s->tile_idx].data,
                       0,
-                      tile_pool_bytes,
+                      s->tile_pool_bytes,
                       s->compute));
 
   s->flush_pending = 1;
@@ -321,6 +428,21 @@ transpose_stream_destroy(struct transpose_stream* stream)
   buffer_free(&stream->h_tiles[0]);
   buffer_free(&stream->h_tiles[1]);
 
+  // Compression buffers
+  buffer_free(&stream->d_compressed[0]);
+  buffer_free(&stream->d_compressed[1]);
+  buffer_free(&stream->h_compressed[0]);
+  buffer_free(&stream->h_compressed[1]);
+
+  for (int i = 0; i < 2; ++i) {
+    device_free(stream->d_uncomp_ptrs[i]);
+    device_free(stream->d_comp_ptrs[i]);
+    device_free(stream->d_comp_sizes[i]);
+    host_free(stream->h_comp_sizes[i]);
+  }
+  device_free(stream->d_uncomp_sizes);
+  device_free(stream->d_comp_temp);
+
   *stream = (struct transpose_stream){ 0 };
 }
 
@@ -353,6 +475,7 @@ transpose_stream_create(const struct transpose_stream_configuration* config,
   CU(Fail, cuStreamCreate(&out->d2h, CU_STREAM_NON_BLOCKING));
 
   const uint8_t rank = config->rank;
+  const size_t bpe = config->bytes_per_element;
   const struct dimension* dims = config->dimensions;
 
   // Lifted shape (row-major, slowest first): (t_{D-1}, n_{D-1}, ..., t_0, n_0)
@@ -367,12 +490,21 @@ transpose_stream_create(const struct transpose_stream_configuration* config,
     out->tile_elements *= dims[i].tile_size;
   }
 
+  // Compute tile_stride: pad tile_elements so each tile starts at an aligned
+  // byte address when compression is enabled.
+  {
+    size_t alignment = config->compress ? compress_get_input_alignment() : 1;
+    size_t tile_bytes = out->tile_elements * bpe;
+    size_t padded_bytes = align_up(tile_bytes, alignment);
+    out->tile_stride = padded_bytes / bpe;
+  }
+
   // Build lifted strides
   //   n_stride: within-tile element stride, accumulates tile_size
   //   t_stride: tile-pool element stride, accumulates tile_count
   {
     int64_t n_stride = 1;
-    int64_t t_stride = (int64_t)out->tile_elements;
+    int64_t t_stride = (int64_t)out->tile_stride;
 
     for (int i = rank - 1; i >= 0; --i) {
       out->lifted_strides[2 * i + 1] = n_stride;
@@ -386,12 +518,14 @@ transpose_stream_create(const struct transpose_stream_configuration* config,
   // An epoch is one slice of the array along the outermost tile dimension —
   // all the tiles excluding that slowest-varying tile index. The tile pool
   // holds exactly one epoch, so we flush after every tile_count[0] steps.
-  out->slot_count = out->lifted_strides[0] / out->tile_elements;
-  out->epoch_elements = (uint64_t)out->lifted_strides[0];
+  out->slot_count = out->lifted_strides[0] / out->tile_stride;
+  out->epoch_elements = out->slot_count * out->tile_elements;
 
   // Collapse epoch dimension: the outermost tile index wraps via flush,
   // so its stride is zero in the kernel.
   out->lifted_strides[0] = 0;
+
+  out->tile_pool_bytes = out->slot_count * out->tile_stride * bpe;
 
   // Allocate device copies of lifted shape and strides
   {
@@ -422,16 +556,114 @@ transpose_stream_create(const struct transpose_stream_configuration* config,
   }
 
   // Allocate tile pools (double-buffered)
-  const size_t tile_pool_bytes =
-    out->slot_count * out->tile_elements * config->bytes_per_element;
   for (int i = 0; i < 2; ++i) {
-    CHECK(Fail,
-          (out->d_tiles[i] = buffer_new(tile_pool_bytes, device, 0)).data);
+    CHECK(
+      Fail,
+      (out->d_tiles[i] = buffer_new(out->tile_pool_bytes, device, 0)).data);
     // h_tiles: GPU writes via D2H, host reads -> normal pinned (no WC)
-    CHECK(Fail, (out->h_tiles[i] = buffer_new(tile_pool_bytes, host, 0)).data);
+    CHECK(Fail,
+          (out->h_tiles[i] = buffer_new(out->tile_pool_bytes, host, 0)).data);
     CU(Fail,
-       cuMemsetD8Async(
-         (CUdeviceptr)out->d_tiles[i].data, 0, tile_pool_bytes, out->compute));
+       cuMemsetD8Async((CUdeviceptr)out->d_tiles[i].data,
+                        0,
+                        out->tile_pool_bytes,
+                        out->compute));
+  }
+
+  // Compression buffers
+  if (config->compress) {
+    const uint64_t M = out->slot_count;
+    const size_t tile_bytes = out->tile_stride * bpe;
+
+    out->max_comp_chunk_bytes = align_up(
+      compress_get_max_output_size(tile_bytes),
+      compress_get_input_alignment());
+    CHECK(Fail, out->max_comp_chunk_bytes > 0);
+    out->comp_pool_bytes = M * out->max_comp_chunk_bytes;
+
+    out->comp_temp_bytes = compress_get_temp_size(M, tile_bytes);
+    if (out->comp_temp_bytes > 0) {
+      CU(Fail,
+         cuMemAlloc((CUdeviceptr*)&out->d_comp_temp, out->comp_temp_bytes));
+    }
+
+    for (int i = 0; i < 2; ++i) {
+      CHECK(Fail,
+            (out->d_compressed[i] =
+               buffer_new(out->comp_pool_bytes, device, 0))
+              .data);
+      CHECK(
+        Fail,
+        (out->h_compressed[i] = buffer_new(out->comp_pool_bytes, host, 0))
+          .data);
+
+      // Per-chunk compressed sizes
+      CU(Fail,
+         cuMemAlloc((CUdeviceptr*)&out->d_comp_sizes[i],
+                     M * sizeof(size_t)));
+      CU(Fail,
+         cuMemHostAlloc(
+           (void**)&out->h_comp_sizes[i], M * sizeof(size_t), 0));
+    }
+
+    // Build device pointer arrays for nvcomp batch API
+    {
+      void** h_ptrs = (void**)malloc(M * sizeof(void*));
+      CHECK(Fail, h_ptrs);
+
+      for (int i = 0; i < 2; ++i) {
+        CU(Fail2,
+           cuMemAlloc((CUdeviceptr*)&out->d_uncomp_ptrs[i],
+                       M * sizeof(void*)));
+        CU(Fail2,
+           cuMemAlloc((CUdeviceptr*)&out->d_comp_ptrs[i],
+                       M * sizeof(void*)));
+
+        // Uncompressed pointers: offsets into d_tiles[i]
+        for (uint64_t k = 0; k < M; ++k)
+          h_ptrs[k] = (char*)out->d_tiles[i].data + k * tile_bytes;
+        CU(Fail2,
+           cuMemcpyHtoD((CUdeviceptr)out->d_uncomp_ptrs[i],
+                         h_ptrs,
+                         M * sizeof(void*)));
+
+        // Compressed pointers: offsets into d_compressed[i]
+        for (uint64_t k = 0; k < M; ++k)
+          h_ptrs[k] =
+            (char*)out->d_compressed[i].data + k * out->max_comp_chunk_bytes;
+        CU(Fail2,
+           cuMemcpyHtoD((CUdeviceptr)out->d_comp_ptrs[i],
+                         h_ptrs,
+                         M * sizeof(void*)));
+      }
+
+      // Uncompressed sizes: all the same
+      {
+        size_t* h_sizes = (size_t*)malloc(M * sizeof(size_t));
+        if (!h_sizes) {
+          free(h_ptrs);
+          goto Fail;
+        }
+        for (uint64_t k = 0; k < M; ++k)
+          h_sizes[k] = tile_bytes;
+
+        CU(Fail, cuMemAlloc((CUdeviceptr*)&out->d_uncomp_sizes,
+                              M * sizeof(size_t)));
+        CUresult rc = cuMemcpyHtoD(
+          (CUdeviceptr)out->d_uncomp_sizes, h_sizes, M * sizeof(size_t));
+        free(h_sizes);
+        free(h_ptrs);
+        h_ptrs = NULL;
+        CU(Fail, rc);
+      }
+
+      if (h_ptrs)
+        free(h_ptrs);
+    }
+
+    // Record initial events for compressed host buffers
+    CU(Fail, cuEventRecord(out->h_compressed[0].ready, out->compute));
+    CU(Fail, cuEventRecord(out->h_compressed[1].ready, out->compute));
   }
 
   // Record initial events so first cuEventSynchronize / cuStreamWaitEvent
@@ -451,6 +683,9 @@ transpose_stream_create(const struct transpose_stream_configuration* config,
 
   return 0;
 
+Fail2:
+  // h_ptrs leaked if we jump here — but the destroy path will clean up
+  // all device allocations, and destroy is called from Fail.
 Fail:
   transpose_stream_destroy(out);
   return 1;
@@ -544,6 +779,11 @@ transpose_stream_flush(struct writer* self)
     if (r.error)
       return r;
   }
+
+  if (s->config.compress && s->config.compressed_sink)
+    return s->config.compressed_sink->flush(s->config.compressed_sink)
+             ? (struct writer_result){ .error = 1 }
+             : (struct writer_result){ 0 };
 
   if (s->config.sink)
     return writer_flush(s->config.sink);

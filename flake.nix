@@ -28,7 +28,8 @@
 
           buildInputs = with pkgs; [
             cmake
-            cudatoolkit
+            cudaPackages.nvcomp
+            cudaPackages.cudatoolkit
             gdb
             gh
             llvmPackages.openmp
@@ -40,6 +41,7 @@
             perf
             pkg-config
             spdlog
+            zstd
           ];
         };
       }

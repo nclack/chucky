@@ -62,7 +62,11 @@ target_link_libraries(test_avx2_div PRIVATE div_avx2)
 add_my_test(index.ops.cuda index.ops.cuda.c transpose index_ops_util CUDA::cudart)
 
 # Streaming tiled transpose test
+find_path(ZSTD_INCLUDE_DIR NAMES zstd.h REQUIRED)
+find_library(ZSTD_LIBRARY NAMES zstd REQUIRED)
+
 add_my_test(test_stream test_stream.c stream CUDA::cudart)
-target_link_libraries(test_stream PRIVATE index_ops_util)
+target_link_libraries(test_stream PRIVATE index_ops_util ${ZSTD_LIBRARY})
+target_include_directories(test_stream PRIVATE ${ZSTD_INCLUDE_DIR})
 target_sources(test_stream PRIVATE writer.mem.c)
 

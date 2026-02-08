@@ -22,6 +22,15 @@ struct writer
   struct writer_result (*flush)(struct writer* self);
 };
 
+struct tile_writer
+{
+  int (*append)(struct tile_writer* self,
+                const void* const* tiles, // array of pointers to tile data
+                const size_t* sizes,      // array of byte counts per tile
+                size_t count);            // number of tiles (= slot_count)
+  int (*flush)(struct tile_writer* self);
+};
+
 enum domain
 {
   host,
@@ -47,7 +56,9 @@ struct transpose_stream_configuration
   size_t bytes_per_element;
   uint8_t rank;
   const struct dimension* dimensions;
-  struct writer* sink; // downstream writer, not owned
+  struct writer* sink;              // downstream writer (uncompressed), not owned
+  struct tile_writer* compressed_sink; // downstream writer (compressed), not owned
+  int compress;                     // enable nvcomp zstd compression
 };
 
 struct transpose_stream
@@ -62,8 +73,8 @@ struct transpose_stream
   int stage_idx;         // 0 or 1: which buffer the host is filling
 
   // Tile pool (double-buffered: scatter into one while flushing the other)
-  struct buffer d_tiles[2]; // device: slot_count * tile_elements * bpe
-  struct buffer h_tiles[2]; // host:   slot_count * tile_elements * bpe
+  struct buffer d_tiles[2]; // device: tile_pool_bytes
+  struct buffer h_tiles[2]; // host:   tile_pool_bytes
   int tile_idx;             // which pool scatter writes to
   int flush_pending;        // async D2H in flight, not yet delivered to sink
 
@@ -77,8 +88,24 @@ struct transpose_stream
   int64_t* d_lifted_strides;
 
   uint64_t tile_elements;  // elements per tile
+  uint64_t tile_stride;    // elements between tile starts (>= tile_elements)
   uint64_t slot_count;     // M = prod of tile_count[i] for i > 0
   uint64_t epoch_elements; // elements per epoch = M * tile_elements
+  size_t tile_pool_bytes;  // slot_count * tile_stride * bpe
+
+  // Compression state (all zero when compress == 0)
+  struct buffer d_compressed[2]; // device: comp_pool_bytes
+  struct buffer h_compressed[2]; // host:   comp_pool_bytes
+
+  void** d_uncomp_ptrs[2]; // device arrays of pointers into d_tiles[i]
+  void** d_comp_ptrs[2];   // device arrays of pointers into d_compressed[i]
+  size_t* d_uncomp_sizes;  // device: all = tile_stride * bpe
+  size_t* d_comp_sizes[2]; // device: actual compressed sizes per tile
+  size_t* h_comp_sizes[2]; // host (pinned): compressed sizes per tile
+  void* d_comp_temp;       // device scratch workspace
+  size_t comp_temp_bytes;
+  size_t max_comp_chunk_bytes; // per-tile max compressed size
+  size_t comp_pool_bytes;      // slot_count * max_comp_chunk_bytes
 
   // Runtime state
   uint64_t cursor;   // current element position in input stream

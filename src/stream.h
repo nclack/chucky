@@ -56,9 +56,10 @@ struct transpose_stream
 
   CUstream h2d, compute, d2h;
 
-  // Input staging (single-buffered)
-  struct buffer h_in; // pinned host, size = buffer_capacity_bytes
-  struct buffer d_in; // device, size = buffer_capacity_bytes
+  // Input staging (double-buffered)
+  struct buffer h_in[2]; // pinned host WC, size = buffer_capacity_bytes
+  struct buffer d_in[2]; // device, size = buffer_capacity_bytes
+  int stage_idx;         // 0 or 1: which buffer the host is filling
 
   // Tile pool (one epoch at a time)
   struct buffer d_tiles; // device: slot_count * tile_elements * bpe

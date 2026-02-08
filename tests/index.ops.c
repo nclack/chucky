@@ -1,9 +1,9 @@
 #include "index.ops.util.h"
+#include "platform.h"
 #include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <unistd.h>
 
 // # vadd
 // Return the output offsets corresponding to input offsets beg..end
@@ -15,7 +15,7 @@ vadd(int rank,
      uint64_t end)
 {
   // get the output offset corresponding to beg
-  uint64_t o = add(rank, shape, strides, beg, 0);
+  uint64_t o = ravel_i32(rank, shape, strides, beg);
 
   const size_t n = end - beg;
   uint64_t* out = (uint64_t*)malloc((end - beg) * sizeof(uint64_t));
@@ -83,7 +83,7 @@ vadd2(int rank,
       uint64_t step)
 {
   // get the output offset corresponding to beg
-  uint64_t o = add(rank, shape, strides, beg, 0);
+  uint64_t o = ravel_i32(rank, shape, strides, beg);
 
   const size_t n = (end - beg + step - 1) / step;
   uint64_t* out = (uint64_t*)malloc(n * sizeof(uint64_t));
@@ -92,7 +92,7 @@ vadd2(int rank,
 
   {
     // delta: output offset corresponding to a `step` in the input index space
-    const uint64_t delta = add(rank, shape, strides, 0, step);
+    const uint64_t delta = ravel_i32(rank, shape, strides, step);
 
     // init out with delta - later we'll apply carry corrections
     for (size_t i = 0; i < n; ++i) {
@@ -202,12 +202,12 @@ vadd_agrees_with_add(void)
   {
 #pragma omp master
     {
-      struct clock clk = { 0 };
-      toc(&clk);
+      struct platform_clock clk = { 0 };
+      platform_toc(&clk);
       int last_completed = 0;
 
       while (state.completed < num_tests) {
-        float dt = toc(&clk);
+        float dt = platform_toc(&clk);
         int delta = state.completed - last_completed;
         float velocity = dt > 0 ? delta / dt : 0;
         last_completed = state.completed;
@@ -218,7 +218,7 @@ vadd_agrees_with_add(void)
                100.0 * state.completed / num_tests,
                velocity);
         fflush(stdout);
-        usleep(500000);
+        platform_sleep_ns(500000000LL);
       }
       printf("\n");
     }
@@ -300,13 +300,13 @@ vadd2_agrees_with_add(void)
   {
 #pragma omp master
     {
-      struct clock clk = { 0 };
-      toc(&clk);
+      struct platform_clock clk = { 0 };
+      platform_toc(&clk);
       int last_completed = 0;
       const int total_tests = num_tests * num_steps;
 
       while (state.completed < total_tests) {
-        float dt = toc(&clk);
+        float dt = platform_toc(&clk);
         int delta = state.completed - last_completed;
         float velocity = dt > 0 ? delta / dt : 0;
         last_completed = state.completed;
@@ -317,7 +317,7 @@ vadd2_agrees_with_add(void)
                100.0 * state.completed / total_tests,
                velocity);
         fflush(stdout);
-        usleep(500000);
+        platform_sleep_ns(500000000LL);
       }
       printf("\n");
     }

@@ -1,5 +1,13 @@
 # dev log
 
+## 2026-02-08
+
+Refactor to rely on the writer interface more. Decide on some compositional
+boundaries. Might be some useful writers for testing. Think about getting the
+compression in.
+
+I'd like to refactor the platform specific code (timers) as well.
+
 ## 2026-02-07
 
 I'm trying to get the simplest end-to-end pipeline I can for a streaming

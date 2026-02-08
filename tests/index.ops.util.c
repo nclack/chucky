@@ -1,39 +1,36 @@
 #include "index.ops.util.h"
 #include <stdio.h>
 #include <stdlib.h>
-#include <time.h>
 
-// Returns elapsed time in seconds since last toc()
-float
-toc(struct clock* clock)
+uint64_t
+ravel_i32(int rank,
+          const int* __restrict__ shape,
+          const int* __restrict__ strides,
+          uint64_t idx)
 {
-  struct timespec now;
-  clock_gettime(CLOCK_MONOTONIC, &now);
-
-  float elapsed = (now.tv_sec - clock->last.tv_sec) +
-                  (now.tv_nsec - clock->last.tv_nsec) / 1e9f;
-
-  clock->last = now;
-  return elapsed;
+  uint64_t o = 0;
+  uint64_t rest = idx;
+  for (int d = rank - 1; d >= 0; --d) {
+    const int r = rest % shape[d];
+    o += r * strides[d];
+    rest /= shape[d];
+  }
+  return o;
 }
 
 uint64_t
-add(int rank,
-    const int* __restrict__ shape,
-    const int* __restrict__ strides,
-    uint64_t a,
-    uint64_t b)
+ravel(int rank,
+      const uint64_t* shape,
+      const int64_t* strides,
+      uint64_t idx)
 {
   uint64_t o = 0;
-  {
-    uint64_t rest = a + b;
-    for (int d = rank - 1; d >= 0; --d) {
-      const int r = rest % shape[d];
-      o += r * strides[d];
-      rest /= shape[d];
-    }
+  uint64_t rest = idx;
+  for (int d = rank - 1; d >= 0; --d) {
+    uint64_t coord = rest % shape[d];
+    rest /= shape[d];
+    o += coord * (uint64_t)strides[d];
   }
-
   return o;
 }
 
@@ -74,6 +71,24 @@ println_vu64(int n, const uint64_t* v)
 }
 
 void
+print_vi64(int n, const int64_t* v)
+{
+  putc('[', stdout);
+  if (n)
+    printf("%ld", v[0]);
+  for (int i = 1; i < n; ++i)
+    printf(", %ld", v[i]);
+  putc(']', stdout);
+}
+
+void
+println_vi64(int n, const int64_t* v)
+{
+  print_vi64(n, v);
+  putc('\n', stdout);
+}
+
+void
 compute_strides(int rank, const int* shape, int* strides)
 {
   strides[rank - 1] = 1;
@@ -101,7 +116,7 @@ inverse_permutation_i32(int n, const int* __restrict__ p, int* __restrict__ inv)
   }
 }
 
-// Helper to create expected array using add()
+// Helper to create expected array using ravel_i32()
 uint64_t*
 make_expected(int rank,
               const int* shape,
@@ -115,12 +130,12 @@ make_expected(int rank,
     return 0;
 
   for (uint64_t i = 0; i < n; ++i) {
-    out[i] = add(rank, shape, strides, beg, i);
+    out[i] = ravel_i32(rank, shape, strides, beg + i);
   }
   return out;
 }
 
-// Helper to create expected array using add() with step
+// Helper to create expected array using ravel_i32() with step
 uint64_t*
 make_expected_step(int rank,
                    const int* shape,
@@ -135,7 +150,7 @@ make_expected_step(int rank,
     return 0;
 
   for (uint64_t i = 0; i < n; ++i) {
-    out[i] = add(rank, shape, strides, beg, i * step);
+    out[i] = ravel_i32(rank, shape, strides, beg + i * step);
   }
   return out;
 }

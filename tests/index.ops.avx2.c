@@ -1,11 +1,11 @@
 #include "div.avx2.h"
 #include "index.ops.util.h"
+#include "platform.h"
 #include <immintrin.h>
 #include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <unistd.h>
 
 // AVX2 version of vadd - processes 4 elements at a time
 // Specialized version of vadd2_avx2 for step=1
@@ -17,7 +17,7 @@ vadd_avx2(int rank,
           uint64_t end)
 {
   // get the output offset corresponding to beg
-  uint64_t o = add(rank, shape, strides, beg, 0);
+  uint64_t o = ravel_i32(rank, shape, strides, beg);
 
   const size_t n_actual = end - beg;
   // Pad n to nearest multiple of 4 for SIMD processing
@@ -139,7 +139,7 @@ vadd2_avx2(int rank,
            uint64_t step)
 {
   // get the output offset corresponding to beg
-  uint64_t o = add(rank, shape, strides, beg, 0);
+  uint64_t o = ravel_i32(rank, shape, strides, beg);
 
   size_t n = (end - beg + step - 1) / step;
   // Pad n to nearest multiple of 4 for SIMD processing
@@ -151,7 +151,7 @@ vadd2_avx2(int rank,
 
   {
     // delta: output offset corresponding to a `step` in the input index space
-    const uint64_t delta = add(rank, shape, strides, 0, step);
+    const uint64_t delta = ravel_i32(rank, shape, strides, step);
 
     // init out with delta - later we'll apply carry corrections
     const __m256i vdelta = _mm256_set1_epi64x(delta);
@@ -301,12 +301,12 @@ vadd_avx2_agrees_with_add(void)
   {
 #pragma omp master
     {
-      struct clock clk = { 0 };
-      toc(&clk);
+      struct platform_clock clk = { 0 };
+      platform_toc(&clk);
       int last_completed = 0;
 
       while (state.completed < num_tests) {
-        float dt = toc(&clk);
+        float dt = platform_toc(&clk);
         int delta = state.completed - last_completed;
         float velocity = dt > 0 ? delta / dt : 0;
         last_completed = state.completed;
@@ -317,7 +317,7 @@ vadd_avx2_agrees_with_add(void)
                100.0 * state.completed / num_tests,
                velocity);
         fflush(stdout);
-        usleep(500000);
+        platform_sleep_ns(500000000LL);
       }
       printf("\n");
     }
@@ -407,13 +407,13 @@ vadd2_avx2_agrees_with_add(void)
 #if 1
 #pragma omp master
     {
-      struct clock clk = { 0 };
-      toc(&clk);
+      struct platform_clock clk = { 0 };
+      platform_toc(&clk);
       int last_completed = 0;
       const int total_tests = num_tests * num_steps;
 
       while (state.completed < total_tests) {
-        float dt = toc(&clk);
+        float dt = platform_toc(&clk);
         int delta = state.completed - last_completed;
         float velocity = dt > 0 ? delta / dt : 0;
         last_completed = state.completed;
@@ -424,7 +424,7 @@ vadd2_avx2_agrees_with_add(void)
                100.0 * state.completed / total_tests,
                velocity);
         fflush(stdout);
-        usleep(500000);
+        platform_sleep_ns(500000000LL);
       }
       printf("\n");
     }

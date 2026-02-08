@@ -2,6 +2,7 @@
 
 #include "transpose.h"
 #include <cuda.h>
+#include <stddef.h>
 
 struct slice
 {
@@ -9,7 +10,7 @@ struct slice
   const void* end;
 };
 
-struct stream_result
+struct writer_result
 {
   int error;
   struct slice rest; // unconsumed input (empty on success for append)
@@ -17,8 +18,8 @@ struct stream_result
 
 struct writer
 {
-  struct stream_result (*append)(struct writer* self, struct slice data);
-  struct stream_result (*flush)(struct writer* self);
+  struct writer_result (*append)(struct writer* self, struct slice data);
+  struct writer_result (*flush)(struct writer* self);
 };
 
 enum domain
@@ -51,7 +52,7 @@ struct transpose_stream_configuration
 
 struct transpose_stream
 {
-  struct writer base; // must be first for writer* casting
+  struct writer writer;
 
   CUstream h2d, compute, d2h;
 
@@ -88,13 +89,14 @@ transpose_stream_create(const struct transpose_stream_configuration* config,
 void
 transpose_stream_destroy(struct transpose_stream* stream);
 
-// Appends the bytes [beg,end) to the stream.
-// Handles epoch boundaries internally: when an epoch completes, flushes
-// the tile pool (D2H) and resets it before continuing.
-struct stream_result
-transpose_stream_append(struct transpose_stream* stream, struct slice input);
+// Dispatch to the writer's append method.
+struct writer_result
+writer_append(struct writer* w, struct slice data);
 
-// Flushes any remaining staged data and the current partial epoch.
-// Will block until all data is transferred.
-struct stream_result
-transpose_stream_flush(struct transpose_stream* stream);
+// Dispatch to the writer's flush method.
+struct writer_result
+writer_flush(struct writer* w);
+
+// Append data to a writer, retrying with exponential back-off on stall.
+struct writer_result
+writer_append_wait(struct writer* w, struct slice data);

@@ -21,6 +21,8 @@ target_compile_options(transpose
 add_library(stream STATIC
     stream.c
     stream.h
+    platform.posix.c
+    platform.h
     log/log.c
     log/log.h
 )

@@ -1,9 +1,14 @@
+#include "index.ops.util.h"
+#include "log/log.h"
 #include "stream.h"
+#include "writer.mem.h"
 #include <cuda.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#define countof(e) (sizeof(e) / sizeof(e[0]))
 
 #define CU(lbl, e)                                                             \
   do {                                                                         \
@@ -14,11 +19,7 @@
 #define CHECK(lbl, expr)                                                       \
   do {                                                                         \
     if (!(expr)) {                                                             \
-      fprintf(stderr,                                                          \
-              "%s(%d): Check failed: (%s)\n",                                  \
-              __FILE__,                                                        \
-              __LINE__,                                                        \
-              #expr);                                                          \
+      log_error("%s(%d): Check failed: (%s)", __FILE__, __LINE__, #expr);      \
       goto lbl;                                                                \
     }                                                                          \
   } while (0)
@@ -32,87 +33,17 @@ handle_curesult(CUresult ecode, const char* file, int line)
   cuGetErrorName(ecode, &name);
   cuGetErrorString(ecode, &desc);
   if (name && desc) {
-    fprintf(stderr, "%s(%d): CUDA error: %s %s\n", file, line, name, desc);
+    log_error("%s(%d): CUDA error: %s %s", file, line, name, desc);
   } else {
-    fprintf(stderr,
-            "%s(%d): Failed to retrieve error info for CUresult: %d\n",
-            file,
-            line,
-            ecode);
+    log_error("%s(%d): Failed to retrieve error info for CUresult: %d",
+              file,
+              line,
+              ecode);
   }
   return 1;
 }
 
-// --- mem_writer: collects tile data into a malloc'd buffer for verification ---
-
-struct mem_writer
-{
-  struct writer base;
-  uint8_t* buf;
-  size_t capacity;
-  size_t cursor;
-};
-
-static struct stream_result
-mem_writer_append(struct writer* self, struct slice data)
-{
-  struct mem_writer* w = (struct mem_writer*)self;
-  size_t n = (const uint8_t*)data.end - (const uint8_t*)data.beg;
-  if (w->cursor + n > w->capacity) {
-    fprintf(stderr, "mem_writer: overflow (%zu + %zu > %zu)\n",
-            w->cursor, n, w->capacity);
-    return (struct stream_result){ .error = 1, .rest = data };
-  }
-  memcpy(w->buf + w->cursor, data.beg, n);
-  w->cursor += n;
-  return (struct stream_result){ 0 };
-}
-
-static struct stream_result
-mem_writer_flush(struct writer* self)
-{
-  (void)self;
-  return (struct stream_result){ 0 };
-}
-
-static struct mem_writer
-mem_writer_new(size_t capacity)
-{
-  struct mem_writer w = {
-    .base = { .append = mem_writer_append, .flush = mem_writer_flush },
-    .buf = (uint8_t*)malloc(capacity),
-    .capacity = capacity,
-    .cursor = 0,
-  };
-  return w;
-}
-
-static void
-mem_writer_free(struct mem_writer* w)
-{
-  free(w->buf);
-  *w = (struct mem_writer){ 0 };
-}
-
 // --- tile pool verification helpers ---
-
-// Compute the tile-pool offset for a given input index using the lifted layout.
-// This mirrors what the kernel does.
-static uint64_t
-tile_pool_offset(uint64_t input_idx,
-                 uint8_t lifted_rank,
-                 const uint64_t* lifted_shape,
-                 const int64_t* lifted_strides)
-{
-  uint64_t out = 0;
-  uint64_t rest = input_idx;
-  for (int d = lifted_rank - 1; d >= 0; --d) {
-    uint64_t coord = rest % lifted_shape[d];
-    rest /= lifted_shape[d];
-    out += coord * (uint64_t)lifted_strides[d];
-  }
-  return out;
-}
 
 // Build expected tile pool for one epoch.
 static uint16_t*
@@ -131,7 +62,7 @@ make_expected_tiles(uint64_t epoch_start,
 
   for (uint64_t i = 0; i < epoch_elements; ++i) {
     uint64_t idx = epoch_start + i;
-    uint64_t off = tile_pool_offset(idx, lifted_rank, lifted_shape, lifted_strides);
+    uint64_t off = ravel(lifted_rank, lifted_shape, lifted_strides, idx);
     expected[off] = (uint16_t)(idx % 65536);
   }
   return expected;
@@ -150,24 +81,22 @@ verify_tiles(const uint16_t* actual,
   for (uint64_t i = 0; i < pool_size; ++i) {
     if (actual[i] != expected[i]) {
       if (mismatch_count < 10) {
-        fprintf(stderr,
-                "%s epoch %d: mismatch at pool[%lu]: expected %u, got %u\n",
-                label,
-                epoch,
-                (unsigned long)i,
-                expected[i],
-                actual[i]);
+        log_error("%s epoch %d: mismatch at pool[%lu]: expected %u, got %u",
+                  label,
+                  epoch,
+                  (unsigned long)i,
+                  expected[i],
+                  actual[i]);
       }
       mismatch_count++;
       ecode = 1;
     }
   }
   if (mismatch_count > 10) {
-    fprintf(stderr,
-            "%s epoch %d: ... %d total mismatches\n",
-            label,
-            epoch,
-            mismatch_count);
+    log_warn("%s epoch %d: ... %d total mismatches",
+             label,
+             epoch,
+             mismatch_count);
   }
   return ecode;
 }
@@ -178,12 +107,12 @@ verify_tiles(const uint16_t* actual,
 static int
 test_stream_single_append(void)
 {
-  printf("=== test_stream_single_append ===\n");
+  log_info("=== test_stream_single_append ===");
 
   const struct dimension dims[] = {
-    { .size = 4, .tile_size = 2 },  // slowest (dim 0)
-    { .size = 4, .tile_size = 2 },  // dim 1
-    { .size = 6, .tile_size = 3 },  // fastest (dim 2)
+    { .size = 4, .tile_size = 2 }, // slowest (dim 0)
+    { .size = 4, .tile_size = 2 }, // dim 1
+    { .size = 6, .tile_size = 3 }, // fastest (dim 2)
   };
 
   // 2 epochs * 4 slots * 12 elements * 2 bytes = 192 bytes
@@ -203,33 +132,30 @@ test_stream_single_append(void)
   CHECK(Fail0, transpose_stream_create(&config, &s) == 0);
 
   // Verify computed layout
-  printf("  tile_elements=%lu  slot_count=%lu  epoch_elements=%lu\n",
-         (unsigned long)s.tile_elements,
-         (unsigned long)s.slot_count,
-         (unsigned long)s.epoch_elements);
+  log_info("  tile_elements=%lu  slot_count=%lu  epoch_elements=%lu",
+           (unsigned long)s.tile_elements,
+           (unsigned long)s.slot_count,
+           (unsigned long)s.epoch_elements);
   CHECK(Fail, s.tile_elements == 12);
   CHECK(Fail, s.slot_count == 4);
   CHECK(Fail, s.epoch_elements == 48);
 
-  printf("  lifted_shape: [");
-  for (int i = 0; i < s.lifted_rank; ++i)
-    printf("%s%lu", i ? ", " : "", (unsigned long)s.lifted_shape[i]);
-  printf("]\n");
-  printf("  lifted_strides: [");
-  for (int i = 0; i < s.lifted_rank; ++i)
-    printf("%s%ld", i ? ", " : "", (long)s.lifted_strides[i]);
-  printf("]\n");
+  {
+    printf("  lifted_shape: ");
+    println_vu64(s.lifted_rank, s.lifted_shape);
+    printf("  lifted_strides: ");
+    println_vi64(s.lifted_rank, s.lifted_strides);
+  }
 
   // Fill source with sequential u16 values
-  const int total = 96;
   uint16_t src[96];
-  for (int i = 0; i < total; ++i)
+  for (size_t i = 0; i < countof(src); ++i)
     src[i] = (uint16_t)i;
 
   // Append all data — this processes epoch 0, flushes it to the writer,
   // then processes epoch 1's data.
-  struct slice input = { .beg = src, .end = src + total };
-  struct stream_result r = transpose_stream_append(&s, input);
+  struct slice input = { .beg = src, .end = src + countof(src) };
+  struct writer_result r = writer_append(&s.writer, input);
   CHECK(Fail, r.error == 0);
 
   // Epoch 0 was flushed to mw during append.
@@ -250,14 +176,14 @@ test_stream_single_append(void)
                            "single_append");
     free(expected);
     if (err) {
-      printf("  FAIL: epoch 0 verification\n");
+      log_error("  FAIL: epoch 0 verification");
       goto Fail;
     }
-    printf("  epoch 0: OK\n");
+    log_info("  epoch 0: OK");
   }
 
   // Flush to get epoch 1
-  r = transpose_stream_flush(&s);
+  r = writer_flush(&s.writer);
   CHECK(Fail, r.error == 0);
 
   CHECK(Fail, mw.cursor == 2 * pool_bytes);
@@ -277,22 +203,22 @@ test_stream_single_append(void)
                            "single_append");
     free(expected);
     if (err) {
-      printf("  FAIL: epoch 1 verification\n");
+      log_error("  FAIL: epoch 1 verification");
       goto Fail;
     }
-    printf("  epoch 1: OK\n");
+    log_info("  epoch 1: OK");
   }
 
   transpose_stream_destroy(&s);
   mem_writer_free(&mw);
-  printf("  PASS\n");
+  log_info("  PASS");
   return 0;
 
 Fail:
   transpose_stream_destroy(&s);
 Fail0:
   mem_writer_free(&mw);
-  printf("  FAIL\n");
+  log_error("  FAIL");
   return 1;
 }
 
@@ -301,7 +227,7 @@ Fail0:
 static int
 test_stream_chunked_append(void)
 {
-  printf("=== test_stream_chunked_append ===\n");
+  log_info("=== test_stream_chunked_append ===");
 
   const struct dimension dims[] = {
     { .size = 4, .tile_size = 2 },
@@ -339,7 +265,7 @@ test_stream_chunked_append(void)
       n = total - off;
 
     struct slice input = { .beg = src + off, .end = src + off + n };
-    struct stream_result r = transpose_stream_append(&s, input);
+    struct writer_result r = writer_append(&s.writer, input);
     CHECK(Fail, r.error == 0);
   }
 
@@ -361,15 +287,15 @@ test_stream_chunked_append(void)
                            "chunked_append");
     free(expected);
     if (err) {
-      printf("  FAIL: epoch 0 verification\n");
+      log_error("  FAIL: epoch 0 verification");
       goto Fail;
     }
-    printf("  epoch 0: OK\n");
+    log_info("  epoch 0: OK");
   }
 
   // Flush remaining data (epoch 1)
   {
-    struct stream_result r = transpose_stream_flush(&s);
+    struct writer_result r = writer_flush(&s.writer);
     CHECK(Fail, r.error == 0);
   }
 
@@ -390,22 +316,22 @@ test_stream_chunked_append(void)
                            "chunked_append");
     free(expected);
     if (err) {
-      printf("  FAIL: epoch 1 verification\n");
+      log_error("  FAIL: epoch 1 verification");
       goto Fail;
     }
-    printf("  epoch 1: OK\n");
+    log_info("  epoch 1: OK");
   }
 
   transpose_stream_destroy(&s);
   mem_writer_free(&mw);
-  printf("  PASS\n");
+  log_info("  PASS");
   return 0;
 
 Fail:
   transpose_stream_destroy(&s);
 Fail0:
   mem_writer_free(&mw);
-  printf("  FAIL\n");
+  log_error("  FAIL");
   return 1;
 }
 
@@ -424,7 +350,7 @@ main(int ac, char* av[])
   CU(Fail, cuCtxCreate(&ctx, 0, dev));
 
   ecode |= test_stream_single_append();
-  printf("\n");
+  log_info("");
   ecode |= test_stream_chunked_append();
 
   cuCtxDestroy(ctx);

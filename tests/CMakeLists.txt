@@ -36,7 +36,7 @@ target_compile_options(index_ops_util PRIVATE -Wall -Wextra -Wpedantic)
 target_include_directories(index_ops_util PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 
 add_my_test(index.ops index.ops.c OpenMP::OpenMP_C)
-target_link_libraries(index.ops PRIVATE index_ops_util)
+target_link_libraries(index.ops PRIVATE index_ops_util stream)
 
 # AVX2 helper library
 add_library(div_avx2 STATIC div.avx2.c)
@@ -46,7 +46,7 @@ target_include_directories(div_avx2 PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 # AVX2 test - always build, runtime check will skip if CPU doesn't support
 add_my_test(index.ops.avx2 index.ops.avx2.c OpenMP::OpenMP_C)
 target_compile_options(index.ops.avx2 PRIVATE -mavx2)
-target_link_libraries(index.ops.avx2 PRIVATE div_avx2 index_ops_util)
+target_link_libraries(index.ops.avx2 PRIVATE div_avx2 index_ops_util stream)
 
 # Magic division test
 add_executable(test_magic_div test_magic_div.c)
@@ -63,4 +63,6 @@ add_my_test(index.ops.cuda index.ops.cuda.c transpose index_ops_util CUDA::cudar
 
 # Streaming tiled transpose test
 add_my_test(test_stream test_stream.c stream CUDA::cudart)
+target_link_libraries(test_stream PRIVATE index_ops_util)
+target_sources(test_stream PRIVATE writer.mem.c)
 

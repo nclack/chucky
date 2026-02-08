@@ -29,6 +29,7 @@
           buildInputs = with pkgs; [
             cmake
             cudatoolkit
+            gdb
             gh
             llvmPackages.openmp
             man-pages

@@ -1,5 +1,50 @@
 # dev log
 
+## 2026-02-07
+
+I'm trying to get the simplest end-to-end pipeline I can for a streaming
+transpose of multidimensional arrays/tensors. I think for streaming, I'll have
+to introduce the concept of tiling.
+
+The reason for that is that I need to define when to stream things back to the
+host. Tile's make sense, and that's what I want to work toward anyway. Input
+data comes in, gets scattered to different tiles, and then when a tile is filled
+up, we should transfer it back. It'll probably be the case that many tiles get
+filled up at once.
+
+When we push some buffer to the transpose it represents some [beg,end) range of
+input indices. These map to an ordered set of coordinates r(beg)..r(end) where
+r=(t_{d-1},n_{d-1},...,t_0,n_0). If we just consider the tile indices, we can
+write r_t=(t_{d-1},...,t_1,t_0). The sequence r_t(beg)...r_t(end) corresponds
+to an ordered set of tiles - with tile indices corresponding to the tile-only
+stride projection in the row-major input space.
+
+The input sequence beg..end will map to a corresponding sequence of tile
+indices beg_t..end_t. The sequence of tile indices is not strictly increasing.
+That's because a carry in one of the n_i dimensions, will carry into t_i and
+that in turn might induce a carry (to n_i+1), causing t_i to reset to 0
+(decreasing the tile index).
+
+But we should be able to track the min and max tile indices that might be hit
+by [beg,end). Let's say u_t is the index of the first element of the input to
+hit tile t, and v_t is the last. If beg>v_t, then we know t won't be hit again
+and can flush the tile.
+
+The max t for which v_t < beg should be strictly increasing. Similarly the min
+t for which u_t < end should be strictly increasing. I'm thinking we'll need to
+maintain a ring-buffer of tiles. Tiles finish in the same order they start, so
+we can think about a fifo.
+
+The input partitions in to non-overlapping epochs - these are "layers" of tiles
+formed from all the dimensions except $$t_{D-1}$$. This gives the size of
+fifo. It needs to hold that layer of tiles.
+
+Actually, we need to keep the layer around anyway for compression, which means
+we don't really need to think of this as a ring-buffer type of fifo. We just
+need to make sure the append() call enforcese the split across layers. Will
+need to rezero layers for padding tiles.
+
+
 ## 2026-01-25
 
 Realized I've been making all of this too complicated. The vadd() algorithm

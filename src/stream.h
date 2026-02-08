@@ -1,17 +1,24 @@
 #pragma once
 
+#include "transpose.h"
 #include <cuda.h>
 
-enum result_status
+struct slice
 {
-  result_ok = 0,
-  result_err = 1
+  const void* beg;
+  const void* end;
 };
 
-enum error_code
+struct stream_result
 {
-  error_code_ok = 0,
-  error_code_fail = 1
+  int error;
+  struct slice rest; // unconsumed input (empty on success for append)
+};
+
+struct writer
+{
+  struct stream_result (*append)(struct writer* self, struct slice data);
+  struct stream_result (*flush)(struct writer* self);
 };
 
 enum domain
@@ -27,117 +34,67 @@ struct buffer
   enum domain domain;
 };
 
-struct transpose_pipeline
+struct dimension
 {
-  struct buffer h_in, d_in, d_out, h_out;
+  uint64_t size;
+  uint64_t tile_size;
 };
 
 struct transpose_stream_configuration
 {
   size_t buffer_capacity_bytes;
+  size_t bytes_per_element;
   uint8_t rank;
-  const uint64_t* shape;
-  const int64_t* strides;
+  const struct dimension* dimensions;
+  struct writer* sink; // downstream writer, not owned
 };
 
 struct transpose_stream
 {
+  struct writer base; // must be first for writer* casting
+
   CUstream h2d, compute, d2h;
-  struct transpose_pipeline pipeline[2];
+
+  // Input staging (single-buffered)
+  struct buffer h_in; // pinned host, size = buffer_capacity_bytes
+  struct buffer d_in; // device, size = buffer_capacity_bytes
+
+  // Tile pool (one epoch at a time)
+  struct buffer d_tiles; // device: slot_count * tile_elements * bpe
+  struct buffer h_tiles; // host:   slot_count * tile_elements * bpe
+
+  // Precomputed layout (lifted rank = 2 * config.rank)
+  uint8_t lifted_rank;
+  uint64_t lifted_shape[2 * MAX_RANK];
+  int64_t lifted_strides[2 * MAX_RANK]; // strides[0] = 0
+
+  uint64_t tile_elements;  // elements per tile
+  uint64_t slot_count;     // M = prod of tile_count[i] for i > 0
+  uint64_t epoch_elements; // elements per epoch = M * tile_elements
+
+  // Runtime state
+  uint64_t cursor;   // current element position in input stream
+  size_t stage_fill; // bytes written to h_in so far
+
   struct transpose_stream_configuration config;
 };
 
-struct transpose_stream_result
-{
-  enum result_status tag;
-  union
-  {
-    struct transpose_stream stream;
-    enum error_code ecode;
-  };
-};
-
-struct transpose_stream_result
-transpose_stream_create(const struct transpose_stream_configuration* config);
+// Initialize a transpose_stream. Returns 0 on success, non-zero on error.
+// On failure, *out is zeroed and safe to pass to transpose_stream_destroy.
+int
+transpose_stream_create(const struct transpose_stream_configuration* config,
+                        struct transpose_stream* out);
 
 void
 transpose_stream_destroy(struct transpose_stream* stream);
 
-// # stream
-// Buffered writer using host-pinned memory for streaming to a cuda device.
-struct writer
-{
-  void* __restrict__ d_out;
-  void* __restrict__ h_in[2];
-  size_t capacity, bytes_written;
-  CUstream stream;
-  CUevent done[2], // done[i] signals when h_in[i] is done transfering, ready to
-                   // be used again
-    ready;         // ready indicates when d_out
-};
+// Appends the bytes [beg,end) to the stream.
+// Handles epoch boundaries internally: when an epoch completes, flushes
+// the tile pool (D2H) and resets it before continuing.
+struct stream_result
+transpose_stream_append(struct transpose_stream* stream, struct slice input);
 
-struct writer_result
-{
-  enum result_status tag;
-  union
-  {
-    size_t nbytes;
-    int ecode;
-  };
-};
-
-// Allocates resources and returns the writer.
-struct writer
-writer_create(size_t capacity);
-
-// Flushes and releases resources.
-void
-writer_destroy(struct writer* writer);
-
-// Trys to appends the bytes [beg,end) to the stream.
-// Returns the number of bytes appended to the writer.
-// Only appends up to the available buffering capacity.
-struct writer_result
-writer_append(struct writer* writer, void* beg, void* end);
-
-// Empties the writer of any buffered bytes by flushing them to their
-// destination. Returns the number of bytes written if any.
-// Will block until all buffered bytes are flushed.
-struct writer_result
-writer_flush(struct writer* writer);
-
-/*
-# Notes
-
-## Single transfer stream
-Back-pressure.
-- Only two buffers so need to be able to queue the next one while one finishes
-  and in enough time to avoid any scheduling jitter.
-
-No back-pressure
-- will see some scheduling latency
-
-At 64GB/s, and 100 ms jitter, would want something like 6.4 GB buffers.
-
-Instead of making bigger double buffers, more buffers is probably better.
-I bet there's an interesting analysis here.
-
-## Writer composition
-
-struct transposer {
-  struct writer writer;
-  struct CUstream stream;
-  ...
-};
-
-struct writer_result
-tranposer_append(self, void *beg, void *end) {
-  struct writer_result res = writer_write(writer,beg,end); // fills up d_dst
-sometimes? if(writer indicates another "capacity" worth of bytes was written) {
-    barrier()
-  }
-
-}
-
-
-*/
+// Flushes any remaining staged data and the current partial epoch.
+// Will block until all data is transferred.
+struct stream_result
+transpose_stream_flush(struct transpose_stream* stream);

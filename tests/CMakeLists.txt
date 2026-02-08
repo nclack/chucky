@@ -61,3 +61,6 @@ target_link_libraries(test_avx2_div PRIVATE div_avx2)
 # Transpose indices CUDA test
 add_my_test(index.ops.cuda index.ops.cuda.c transpose index_ops_util CUDA::cudart)
 
+# Streaming tiled transpose test
+add_my_test(test_stream test_stream.c stream CUDA::cudart)
+

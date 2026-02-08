@@ -61,9 +61,11 @@ struct transpose_stream
   struct buffer d_in[2]; // device, size = buffer_capacity_bytes
   int stage_idx;         // 0 or 1: which buffer the host is filling
 
-  // Tile pool (one epoch at a time)
-  struct buffer d_tiles; // device: slot_count * tile_elements * bpe
-  struct buffer h_tiles; // host:   slot_count * tile_elements * bpe
+  // Tile pool (double-buffered: scatter into one while flushing the other)
+  struct buffer d_tiles[2]; // device: slot_count * tile_elements * bpe
+  struct buffer h_tiles[2]; // host:   slot_count * tile_elements * bpe
+  int tile_idx;             // which pool scatter writes to
+  int flush_pending;        // async D2H in flight, not yet delivered to sink
 
   // Precomputed layout (lifted rank = 2 * config.rank)
   uint8_t lifted_rank;

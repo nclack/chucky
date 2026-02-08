@@ -128,6 +128,7 @@ dispatch_scatter(struct transpose_stream* s)
     return 0;
 
   const int idx = s->stage_idx;
+  const int tidx = s->tile_idx;
   const size_t tile_pool_bytes = s->slot_count * s->tile_elements * bpe;
 
   // H2D
@@ -140,8 +141,8 @@ dispatch_scatter(struct transpose_stream* s)
 
   // Kernel waits for H2D, then scatters into tile pool
   CU(Error, cuStreamWaitEvent(s->compute, s->h_in[idx].ready, 0));
-  transpose_u16_v0((CUdeviceptr)s->d_tiles.data,
-                   (CUdeviceptr)s->d_tiles.data + tile_pool_bytes,
+  transpose_u16_v0((CUdeviceptr)s->d_tiles[tidx].data,
+                   (CUdeviceptr)s->d_tiles[tidx].data + tile_pool_bytes,
                    (CUdeviceptr)s->d_in[idx].data,
                    (CUdeviceptr)s->d_in[idx].data + s->stage_fill,
                    s->cursor,
@@ -149,7 +150,7 @@ dispatch_scatter(struct transpose_stream* s)
                    s->d_lifted_shape,
                    s->d_lifted_strides,
                    s->compute);
-  CU(Error, cuEventRecord(s->d_tiles.ready, s->compute));
+  CU(Error, cuEventRecord(s->d_tiles[tidx].ready, s->compute));
 
   s->cursor += elements;
   s->stage_idx ^= 1;
@@ -200,36 +201,97 @@ writer_append_wait(struct writer* w, struct slice data)
   return (struct writer_result){ 0 };
 }
 
-// Flush the current epoch's tile pool: D2H, sync, zero
+// Deliver the previous epoch's tiles if an async D2H is still pending.
+static struct writer_result
+drain_pending_flush(struct transpose_stream* s)
+{
+  if (!s->flush_pending)
+    return (struct writer_result){ 0 };
+
+  const size_t bpe = s->config.bytes_per_element;
+  const size_t tile_pool_bytes = s->slot_count * s->tile_elements * bpe;
+  const int prev = s->tile_idx ^ 1;
+
+  CU(Error, cuEventSynchronize(s->h_tiles[prev].ready));
+
+  s->flush_pending = 0;
+
+  if (s->config.sink) {
+    struct slice tiles = {
+      .beg = s->h_tiles[prev].data,
+      .end = (char*)s->h_tiles[prev].data + tile_pool_bytes,
+    };
+    return writer_append_wait(s->config.sink, tiles);
+  }
+
+  return (struct writer_result){ 0 };
+
+Error:
+  return (struct writer_result){ .error = 1 };
+}
+
+// Synchronously flush the current tile pool (used for the final partial epoch).
+static struct writer_result
+flush_epoch_sync(struct transpose_stream* s)
+{
+  const size_t bpe = s->config.bytes_per_element;
+  const size_t tile_pool_bytes = s->slot_count * s->tile_elements * bpe;
+  const int cur = s->tile_idx;
+
+  CU(Error, cuStreamWaitEvent(s->d2h, s->d_tiles[cur].ready, 0));
+  CU(Error,
+     cuMemcpyDtoHAsync(s->h_tiles[cur].data,
+                        (CUdeviceptr)s->d_tiles[cur].data,
+                        tile_pool_bytes,
+                        s->d2h));
+  CU(Error, cuStreamSynchronize(s->d2h));
+
+  if (s->config.sink) {
+    struct slice tiles = {
+      .beg = s->h_tiles[cur].data,
+      .end = (char*)s->h_tiles[cur].data + tile_pool_bytes,
+    };
+    return writer_append_wait(s->config.sink, tiles);
+  }
+
+  return (struct writer_result){ 0 };
+
+Error:
+  return (struct writer_result){ .error = 1 };
+}
+
+// Flush the current epoch's tile pool: async D2H, swap pools, zero next.
 static struct writer_result
 flush_epoch(struct transpose_stream* s)
 {
   const size_t bpe = s->config.bytes_per_element;
   const size_t tile_pool_bytes = s->slot_count * s->tile_elements * bpe;
+  const int cur = s->tile_idx;
 
-  // Wait for compute to finish, then D2H
-  CU(Error, cuStreamWaitEvent(s->d2h, s->d_tiles.ready, 0));
+  // Deliver the previous epoch if its D2H is still in flight
+  struct writer_result r = drain_pending_flush(s);
+  if (r.error)
+    return r;
+
+  // Start async D2H for the current epoch
+  CU(Error, cuStreamWaitEvent(s->d2h, s->d_tiles[cur].ready, 0));
   CU(Error,
-     cuMemcpyDtoHAsync(
-       s->h_tiles.data, (CUdeviceptr)s->d_tiles.data, tile_pool_bytes, s->d2h));
-  CU(Error, cuStreamSynchronize(s->d2h));
+     cuMemcpyDtoHAsync(s->h_tiles[cur].data,
+                        (CUdeviceptr)s->d_tiles[cur].data,
+                        tile_pool_bytes,
+                        s->d2h));
+  CU(Error, cuEventRecord(s->h_tiles[cur].ready, s->d2h));
 
-  // Deliver tiles to downstream writer
-  struct writer_result r = { 0 };
-  if (s->config.sink) {
-    struct slice tiles = {
-      .beg = s->h_tiles.data,
-      .end = (char*)s->h_tiles.data + tile_pool_bytes,
-    };
-    r = writer_append_wait(s->config.sink, tiles);
-  }
-
-  // Zero tile pool for next epoch
+  // Switch to other pool and zero it for next epoch
+  s->tile_idx ^= 1;
   CU(Error,
-     cuMemsetD8Async(
-       (CUdeviceptr)s->d_tiles.data, 0, tile_pool_bytes, s->compute));
+     cuMemsetD8Async((CUdeviceptr)s->d_tiles[s->tile_idx].data,
+                      0,
+                      tile_pool_bytes,
+                      s->compute));
 
-  return r;
+  s->flush_pending = 1;
+  return (struct writer_result){ 0 };
 
 Error:
   return (struct writer_result){ .error = 1 };
@@ -254,8 +316,10 @@ transpose_stream_destroy(struct transpose_stream* stream)
   buffer_free(&stream->h_in[1]);
   buffer_free(&stream->d_in[0]);
   buffer_free(&stream->d_in[1]);
-  buffer_free(&stream->d_tiles);
-  buffer_free(&stream->h_tiles);
+  buffer_free(&stream->d_tiles[0]);
+  buffer_free(&stream->d_tiles[1]);
+  buffer_free(&stream->h_tiles[0]);
+  buffer_free(&stream->h_tiles[1]);
 
   *stream = (struct transpose_stream){ 0 };
 }
@@ -270,6 +334,14 @@ int
 transpose_stream_create(const struct transpose_stream_configuration* config,
                         struct transpose_stream* out)
 {
+  CHECK(Fail, config);
+  CHECK(Fail, out);
+  CHECK(Fail, config->bytes_per_element > 0);
+  CHECK(Fail, config->buffer_capacity_bytes > 0);
+  CHECK(Fail, config->rank > 0);
+  CHECK(Fail, config->rank <= MAX_RANK / 2); // lifted rank = 2 * rank
+  CHECK(Fail, config->dimensions);
+
   *out = (struct transpose_stream){
     .writer = { .append = transpose_stream_append,
                 .flush = transpose_stream_flush },
@@ -349,29 +421,33 @@ transpose_stream_create(const struct transpose_stream_configuration* config,
             .data);
   }
 
-  // Allocate tile pool
+  // Allocate tile pools (double-buffered)
   const size_t tile_pool_bytes =
     out->slot_count * out->tile_elements * config->bytes_per_element;
-  CHECK(Fail,
-        (out->d_tiles = buffer_new(tile_pool_bytes, device, 0)).data);
-  // h_tiles: GPU writes via D2H, host reads -> normal pinned (no WC)
-  CHECK(Fail, (out->h_tiles = buffer_new(tile_pool_bytes, host, 0)).data);
+  for (int i = 0; i < 2; ++i) {
+    CHECK(Fail,
+          (out->d_tiles[i] = buffer_new(tile_pool_bytes, device, 0)).data);
+    // h_tiles: GPU writes via D2H, host reads -> normal pinned (no WC)
+    CHECK(Fail, (out->h_tiles[i] = buffer_new(tile_pool_bytes, host, 0)).data);
+    CU(Fail,
+       cuMemsetD8Async(
+         (CUdeviceptr)out->d_tiles[i].data, 0, tile_pool_bytes, out->compute));
+  }
 
-  // Zero the tile pool initially
-  CU(Fail,
-     cuMemsetD8Async(
-       (CUdeviceptr)out->d_tiles.data, 0, tile_pool_bytes, out->compute));
-
-  // Record initial events for h_in buffers so the first
-  // cuEventSynchronize in append succeeds immediately.
+  // Record initial events so first cuEventSynchronize / cuStreamWaitEvent
+  // calls succeed immediately.
   CU(Fail, cuEventRecord(out->h_in[0].ready, out->compute));
   CU(Fail, cuEventRecord(out->h_in[1].ready, out->compute));
+  CU(Fail, cuEventRecord(out->d_tiles[0].ready, out->compute));
+  CU(Fail, cuEventRecord(out->d_tiles[1].ready, out->compute));
 
   CU(Fail, cuStreamSynchronize(out->compute));
 
   out->cursor = 0;
   out->stage_fill = 0;
   out->stage_idx = 0;
+  out->tile_idx = 0;
+  out->flush_pending = 0;
 
   return 0;
 
@@ -408,7 +484,8 @@ transpose_stream_append(struct writer* self, struct slice input)
         const size_t chunk = space < remaining ? space : (size_t)remaining;
 
         // Wait for this staging buffer's prior H2D to finish
-        CU(Error, cuEventSynchronize(s->h_in[s->stage_idx].ready));
+        if (s->stage_fill == 0)
+          CU(Error, cuEventSynchronize(s->h_in[s->stage_idx].ready));
 
         memcpy(
           (uint8_t*)s->h_in[s->stage_idx].data + s->stage_fill,
@@ -455,10 +532,15 @@ transpose_stream_flush(struct writer* self)
     s->stage_fill = 0;
   }
 
-  // Flush partial epoch (skip if cursor is on an epoch boundary — that
-  // epoch was already flushed during append)
+  // Drain any pending async epoch flush
+  struct writer_result r = drain_pending_flush(s);
+  if (r.error)
+    return r;
+
+  // Flush current partial epoch synchronously (skip if cursor is on an
+  // epoch boundary — that epoch was already flushed during append)
   if (s->cursor % s->epoch_elements != 0 || s->cursor == 0) {
-    struct writer_result r = flush_epoch(s);
+    r = flush_epoch_sync(s);
     if (r.error)
       return r;
   }

@@ -70,3 +70,7 @@ target_link_libraries(test_stream PRIVATE index_ops_util ${ZSTD_LIBRARY})
 target_include_directories(test_stream PRIVATE ${ZSTD_INCLUDE_DIR})
 target_sources(test_stream PRIVATE writer.mem.c)
 
+add_my_test(test_bench test_bench.c stream CUDA::cudart)
+target_link_libraries(test_bench PRIVATE index_ops_util ${ZSTD_LIBRARY})
+target_include_directories(test_bench PRIVATE ${ZSTD_INCLUDE_DIR})
+

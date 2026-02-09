@@ -155,6 +155,7 @@ dispatch_scatter(struct transpose_stream* s)
   const int tidx = s->tile_idx;
 
   // H2D
+  CU(Error, cuEventRecord(s->t_h2d_start[idx], s->h2d));
   CU(Error,
      cuMemcpyHtoDAsync((CUdeviceptr)s->d_in[idx].data,
                         s->h_in[idx].data,
@@ -164,6 +165,7 @@ dispatch_scatter(struct transpose_stream* s)
 
   // Kernel waits for H2D, then scatters into tile pool
   CU(Error, cuStreamWaitEvent(s->compute, s->h_in[idx].ready, 0));
+  CU(Error, cuEventRecord(s->t_scatter_start[tidx], s->compute));
   transpose_u16_v0((CUdeviceptr)s->d_tiles[tidx].data,
                    (CUdeviceptr)s->d_tiles[tidx].data + s->tile_pool_bytes,
                    (CUdeviceptr)s->d_in[idx].data,
@@ -256,11 +258,46 @@ drain_pending_flush(struct transpose_stream* s)
 
   if (s->config.compress && s->config.compressed_sink) {
     CU(Error, cuEventSynchronize(s->h_compressed[prev].ready));
+    // Accumulate scatter, compress, and D2H timing
+    {
+      float sc = 0, co = 0, dh = 0;
+      cuEventElapsedTime(
+        &sc, s->t_scatter_start[prev], s->d_tiles[prev].ready);
+      s->metrics.scatter_ms += sc;
+      cuEventElapsedTime(
+        &co, s->t_compress_start[prev], s->d_compressed[prev].ready);
+      s->metrics.compress_ms += co;
+      cuEventElapsedTime(
+        &dh, s->t_d2h_start[prev], s->h_compressed[prev].ready);
+      s->metrics.d2h_ms += dh;
+      if (sc < s->metrics.scatter_best_ms)
+        s->metrics.scatter_best_ms = sc;
+      if (co < s->metrics.compress_best_ms)
+        s->metrics.compress_best_ms = co;
+      if (dh < s->metrics.d2h_best_ms)
+        s->metrics.d2h_best_ms = dh;
+      s->metrics.epoch_count++;
+    }
     s->flush_pending = 0;
     if (deliver_compressed_tiles(s, prev))
       goto Error;
   } else {
     CU(Error, cuEventSynchronize(s->h_tiles[prev].ready));
+    // Accumulate scatter and D2H timing
+    {
+      float sc = 0, dh = 0;
+      cuEventElapsedTime(
+        &sc, s->t_scatter_start[prev], s->d_tiles[prev].ready);
+      s->metrics.scatter_ms += sc;
+      cuEventElapsedTime(
+        &dh, s->t_d2h_start[prev], s->h_tiles[prev].ready);
+      s->metrics.d2h_ms += dh;
+      if (sc < s->metrics.scatter_best_ms)
+        s->metrics.scatter_best_ms = sc;
+      if (dh < s->metrics.d2h_best_ms)
+        s->metrics.d2h_best_ms = dh;
+      s->metrics.epoch_count++;
+    }
     s->flush_pending = 0;
     if (s->config.sink) {
       struct slice tiles = {
@@ -285,6 +322,7 @@ flush_epoch_sync(struct transpose_stream* s)
 
   if (s->config.compress && s->config.compressed_sink) {
     // Compress on compute (ordered after scatter on same stream)
+    CU(Error, cuEventRecord(s->t_compress_start[cur], s->compute));
     CHECK(Error,
           compress_batch_async(
             (const void* const*)s->d_uncomp_ptrs[cur],
@@ -301,6 +339,7 @@ flush_epoch_sync(struct transpose_stream* s)
     // D2H waits for compress, then transfers
     CU(Error,
        cuStreamWaitEvent(s->d2h, s->d_compressed[cur].ready, 0));
+    CU(Error, cuEventRecord(s->t_d2h_start[cur], s->d2h));
     CU(Error,
        cuMemcpyDtoHAsync(s->h_compressed[cur].data,
                           (CUdeviceptr)s->d_compressed[cur].data,
@@ -311,18 +350,58 @@ flush_epoch_sync(struct transpose_stream* s)
                           (CUdeviceptr)s->d_comp_sizes[cur],
                           s->slot_count * sizeof(size_t),
                           s->d2h));
+    CU(Error, cuEventRecord(s->h_compressed[cur].ready, s->d2h));
     CU(Error, cuStreamSynchronize(s->d2h));
+
+    // Accumulate scatter, compress, and D2H timing
+    {
+      float sc = 0, co = 0, dh = 0;
+      cuEventElapsedTime(
+        &sc, s->t_scatter_start[cur], s->d_tiles[cur].ready);
+      s->metrics.scatter_ms += sc;
+      cuEventElapsedTime(
+        &co, s->t_compress_start[cur], s->d_compressed[cur].ready);
+      s->metrics.compress_ms += co;
+      cuEventElapsedTime(
+        &dh, s->t_d2h_start[cur], s->h_compressed[cur].ready);
+      s->metrics.d2h_ms += dh;
+      if (sc < s->metrics.scatter_best_ms)
+        s->metrics.scatter_best_ms = sc;
+      if (co < s->metrics.compress_best_ms)
+        s->metrics.compress_best_ms = co;
+      if (dh < s->metrics.d2h_best_ms)
+        s->metrics.d2h_best_ms = dh;
+      s->metrics.epoch_count++;
+    }
 
     if (deliver_compressed_tiles(s, cur))
       goto Error;
   } else {
     CU(Error, cuStreamWaitEvent(s->d2h, s->d_tiles[cur].ready, 0));
+    CU(Error, cuEventRecord(s->t_d2h_start[cur], s->d2h));
     CU(Error,
        cuMemcpyDtoHAsync(s->h_tiles[cur].data,
                           (CUdeviceptr)s->d_tiles[cur].data,
                           s->tile_pool_bytes,
                           s->d2h));
+    CU(Error, cuEventRecord(s->h_tiles[cur].ready, s->d2h));
     CU(Error, cuStreamSynchronize(s->d2h));
+
+    // Accumulate scatter and D2H timing
+    {
+      float sc = 0, dh = 0;
+      cuEventElapsedTime(
+        &sc, s->t_scatter_start[cur], s->d_tiles[cur].ready);
+      s->metrics.scatter_ms += sc;
+      cuEventElapsedTime(
+        &dh, s->t_d2h_start[cur], s->h_tiles[cur].ready);
+      s->metrics.d2h_ms += dh;
+      if (sc < s->metrics.scatter_best_ms)
+        s->metrics.scatter_best_ms = sc;
+      if (dh < s->metrics.d2h_best_ms)
+        s->metrics.d2h_best_ms = dh;
+      s->metrics.epoch_count++;
+    }
 
     if (s->config.sink) {
       struct slice tiles = {
@@ -352,6 +431,7 @@ flush_epoch(struct transpose_stream* s)
 
   if (s->config.compress && s->config.compressed_sink) {
     // Compress on compute (ordered after scatter on same stream)
+    CU(Error, cuEventRecord(s->t_compress_start[cur], s->compute));
     CHECK(Error,
           compress_batch_async(
             (const void* const*)s->d_uncomp_ptrs[cur],
@@ -368,6 +448,7 @@ flush_epoch(struct transpose_stream* s)
     // D2H waits for compress, then transfers
     CU(Error,
        cuStreamWaitEvent(s->d2h, s->d_compressed[cur].ready, 0));
+    CU(Error, cuEventRecord(s->t_d2h_start[cur], s->d2h));
     CU(Error,
        cuMemcpyDtoHAsync(s->h_compressed[cur].data,
                           (CUdeviceptr)s->d_compressed[cur].data,
@@ -381,6 +462,7 @@ flush_epoch(struct transpose_stream* s)
     CU(Error, cuEventRecord(s->h_compressed[cur].ready, s->d2h));
   } else {
     CU(Error, cuStreamWaitEvent(s->d2h, s->d_tiles[cur].ready, 0));
+    CU(Error, cuEventRecord(s->t_d2h_start[cur], s->d2h));
     CU(Error,
        cuMemcpyDtoHAsync(s->h_tiles[cur].data,
                           (CUdeviceptr)s->d_tiles[cur].data,
@@ -404,6 +486,12 @@ Error:
   return (struct writer_result){ .error = 1 };
 }
 
+struct stream_metrics
+transpose_stream_get_metrics(const struct transpose_stream* s)
+{
+  return s->metrics;
+}
+
 void
 transpose_stream_destroy(struct transpose_stream* stream)
 {
@@ -413,6 +501,17 @@ transpose_stream_destroy(struct transpose_stream* stream)
   CUWARN(cuStreamDestroy(stream->h2d));
   CUWARN(cuStreamDestroy(stream->compute));
   CUWARN(cuStreamDestroy(stream->d2h));
+
+  for (int i = 0; i < 2; ++i) {
+    if (stream->t_h2d_start[i])
+      CUWARN(cuEventDestroy(stream->t_h2d_start[i]));
+    if (stream->t_scatter_start[i])
+      CUWARN(cuEventDestroy(stream->t_scatter_start[i]));
+    if (stream->t_compress_start[i])
+      CUWARN(cuEventDestroy(stream->t_compress_start[i]));
+    if (stream->t_d2h_start[i])
+      CUWARN(cuEventDestroy(stream->t_d2h_start[i]));
+  }
 
   if (stream->d_lifted_shape)
     CUWARN(cuMemFree((CUdeviceptr)stream->d_lifted_shape));
@@ -473,6 +572,13 @@ transpose_stream_create(const struct transpose_stream_configuration* config,
   CU(Fail, cuStreamCreate(&out->h2d, CU_STREAM_NON_BLOCKING));
   CU(Fail, cuStreamCreate(&out->compute, CU_STREAM_NON_BLOCKING));
   CU(Fail, cuStreamCreate(&out->d2h, CU_STREAM_NON_BLOCKING));
+
+  for (int i = 0; i < 2; ++i) {
+    CU(Fail, cuEventCreate(&out->t_h2d_start[i], CU_EVENT_DEFAULT));
+    CU(Fail, cuEventCreate(&out->t_scatter_start[i], CU_EVENT_DEFAULT));
+    CU(Fail, cuEventCreate(&out->t_compress_start[i], CU_EVENT_DEFAULT));
+    CU(Fail, cuEventCreate(&out->t_d2h_start[i], CU_EVENT_DEFAULT));
+  }
 
   const uint8_t rank = config->rank;
   const size_t bpe = config->bytes_per_element;
@@ -673,7 +779,19 @@ transpose_stream_create(const struct transpose_stream_configuration* config,
   CU(Fail, cuEventRecord(out->d_tiles[0].ready, out->compute));
   CU(Fail, cuEventRecord(out->d_tiles[1].ready, out->compute));
 
+  // Seed timing start events so cuEventElapsedTime never sees unrecorded events
+  for (int i = 0; i < 2; ++i) {
+    CU(Fail, cuEventRecord(out->t_h2d_start[i], out->compute));
+    CU(Fail, cuEventRecord(out->t_scatter_start[i], out->compute));
+    CU(Fail, cuEventRecord(out->t_compress_start[i], out->compute));
+    CU(Fail, cuEventRecord(out->t_d2h_start[i], out->compute));
+  }
+
   CU(Fail, cuStreamSynchronize(out->compute));
+
+  out->metrics.scatter_best_ms = 1e30f;
+  out->metrics.compress_best_ms = 1e30f;
+  out->metrics.d2h_best_ms = 1e30f;
 
   out->cursor = 0;
   out->stage_fill = 0;
@@ -719,8 +837,16 @@ transpose_stream_append(struct writer* self, struct slice input)
         const size_t chunk = space < remaining ? space : (size_t)remaining;
 
         // Wait for this staging buffer's prior H2D to finish
-        if (s->stage_fill == 0)
-          CU(Error, cuEventSynchronize(s->h_in[s->stage_idx].ready));
+        if (s->stage_fill == 0) {
+          const int si = s->stage_idx;
+          CU(Error, cuEventSynchronize(s->h_in[si].ready));
+          // Accumulate H2D time from previous dispatch on this slot
+          if (s->cursor > 0) {
+            float ms = 0;
+            cuEventElapsedTime(&ms, s->t_h2d_start[si], s->h_in[si].ready);
+            s->metrics.h2d_ms += ms;
+          }
+        }
 
         memcpy(
           (uint8_t*)s->h_in[s->stage_idx].data + s->stage_fill,

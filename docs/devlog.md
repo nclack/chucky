@@ -12,6 +12,15 @@ the host side buffer to clear.
 
 Added compression. Compressed tiles are not compacted at the moment.
 
+I think I'd need to instrument before deciding if compaction is worth it.
+
+The "tile_writer" interface is awkward. It looks like a writev, but doesn't
+follow the same symmantics as the "writer interface"; it has to consume all
+input.
+
+I don't like the way the different code paths for w/wo compression are handled.
+Would be nice to find a more composable thing.
+
 
 ## 2026-02-07
 

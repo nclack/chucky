@@ -31,6 +31,18 @@ struct tile_writer
   int (*flush)(struct tile_writer* self);
 };
 
+struct stream_metrics
+{
+  float h2d_ms;
+  float scatter_ms;
+  float compress_ms;
+  float d2h_ms;
+  float scatter_best_ms;
+  float compress_best_ms;
+  float d2h_best_ms;
+  int epoch_count;
+};
+
 enum domain
 {
   host,
@@ -107,6 +119,13 @@ struct transpose_stream
   size_t max_comp_chunk_bytes; // per-tile max compressed size
   size_t comp_pool_bytes;      // slot_count * max_comp_chunk_bytes
 
+  // GPU timing instrumentation
+  CUevent t_h2d_start[2];      // per-slot: recorded before H2D memcpy
+  CUevent t_scatter_start[2];  // per-slot: recorded before scatter kernel
+  CUevent t_compress_start[2]; // per-pool: recorded before compress
+  CUevent t_d2h_start[2];      // per-pool: recorded before D2H memcpy
+  struct stream_metrics metrics;
+
   // Runtime state
   uint64_t cursor;   // current element position in input stream
   size_t stage_fill; // bytes written to h_in so far
@@ -134,3 +153,7 @@ writer_flush(struct writer* w);
 // Append data to a writer, retrying with exponential back-off on stall.
 struct writer_result
 writer_append_wait(struct writer* w, struct slice data);
+
+// Return accumulated GPU timing metrics.
+struct stream_metrics
+transpose_stream_get_metrics(const struct transpose_stream* s);

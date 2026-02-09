@@ -29,6 +29,25 @@ set_target_properties(nvcomp::nvcomp PROPERTIES
     INTERFACE_INCLUDE_DIRECTORIES "${NVCOMP_INCLUDE_DIR}"
 )
 
+add_library(chucky_log STATIC
+    log/log.c
+    log/log.h
+)
+
+target_include_directories(chucky_log
+    PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}
+)
+
+set_target_properties(chucky_log PROPERTIES
+    POSITION_INDEPENDENT_CODE ON
+)
+
+target_compile_options(chucky_log
+    PRIVATE
+        $<$<COMPILE_LANGUAGE:C>:-Wall -Wextra -Wpedantic>
+)
+
 add_library(compress STATIC
     compress.cu
     compress.h
@@ -43,6 +62,7 @@ target_link_libraries(compress
     PUBLIC
         nvcomp::nvcomp
         CUDA::cudart
+        chucky_log
 )
 
 set_target_properties(compress PROPERTIES
@@ -60,8 +80,6 @@ add_library(stream STATIC
     stream.h
     platform.posix.c
     platform.h
-    log/log.c
-    log/log.h
 )
 
 target_include_directories(stream
@@ -73,6 +91,7 @@ target_link_libraries(stream
     PUBLIC
         transpose
         compress
+        chucky_log
         CUDA::cuda_driver
 )
 

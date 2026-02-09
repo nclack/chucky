@@ -19,8 +19,24 @@ follow the same symmantics as the "writer interface"; it has to consume all
 input.
 
 I don't like the way the different code paths for w/wo compression are handled.
-Would be nice to find a more composable thing.
+Would be nice to find a more composable thing. Need to clean up the code.
 
+Have to do a hard sync on the compute stream to properly finish the compression
+pass - doesn't seem right - need to look into that more.
+
+At least on my laptop (auk) throughput is decent through the kernels. The
+wall tije is bad though - 1 GB/s end to end. Table below:
+
+
+```
+  Benchmark Results (50 GiB, mixed data)
+
+  GPU step     avg GB/s best GB/s     avg ms    best ms
+  H2D             12.18        -       7.70          -
+  scatter        341.81   464.37       0.27       0.20
+  compress         3.71     8.91      25.29      10.52
+  D2H             13.08    13.31       7.17       7.04
+```
 
 ## 2026-02-07
 

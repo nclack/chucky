@@ -336,6 +336,10 @@ flush_epoch_sync(struct transpose_stream* s)
             s->compute) == 0);
     CU(Error, cuEventRecord(s->d_compressed[cur].ready, s->compute));
 
+    // Synchronize compute: nvcomp may use internal streams not
+    // captured by the event we record on compute.
+    CU(Error, cuStreamSynchronize(s->compute));
+
     // D2H waits for compress, then transfers
     CU(Error,
        cuStreamWaitEvent(s->d2h, s->d_compressed[cur].ready, 0));
@@ -444,6 +448,11 @@ flush_epoch(struct transpose_stream* s)
             s->d_comp_sizes[cur],
             s->compute) == 0);
     CU(Error, cuEventRecord(s->d_compressed[cur].ready, s->compute));
+
+    // Synchronize compute: nvcomp may use internal streams that are not
+    // captured by the event we record on compute.  A full stream sync
+    // ensures the batched compress is truly finished before D2H.
+    CU(Error, cuStreamSynchronize(s->compute));
 
     // D2H waits for compress, then transfers
     CU(Error,

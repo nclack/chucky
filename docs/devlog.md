@@ -6,6 +6,7 @@ Getting the build to work on windows.
 
 On my 5090:
 
+```
 --- Benchmark Results ---
 Input:        49.97 GiB (26826768384 elements)
 Compressed:   16.07 GiB (ratio: 0.322)
@@ -22,7 +23,7 @@ Sink:          11319.2 ms total  (11 epochs verified)
 
 Wall time:     37.555 s
 Throughput:    1.33 GiB/s
-PASS
+```
 
 ## 2026-02-08
 

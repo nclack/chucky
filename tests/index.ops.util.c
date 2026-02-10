@@ -4,8 +4,8 @@
 
 uint64_t
 ravel_i32(int rank,
-          const int* __restrict__ shape,
-          const int* __restrict__ strides,
+          const int* restrict shape,
+          const int* restrict strides,
           uint64_t idx)
 {
   uint64_t o = 0;
@@ -57,9 +57,9 @@ print_vu64(int n, const uint64_t* v)
 {
   putc('[', stdout);
   if (n)
-    printf("%lu", v[0]);
+    printf("%llu", (unsigned long long)v[0]);
   for (int i = 1; i < n; ++i)
-    printf(", %lu", v[i]);
+    printf(", %llu", (unsigned long long)v[i]);
   putc(']', stdout);
 }
 
@@ -75,9 +75,9 @@ print_vi64(int n, const int64_t* v)
 {
   putc('[', stdout);
   if (n)
-    printf("%ld", v[0]);
+    printf("%lld", (long long)v[0]);
   for (int i = 1; i < n; ++i)
-    printf(", %ld", v[i]);
+    printf(", %lld", (long long)v[i]);
   putc(']', stdout);
 }
 
@@ -99,9 +99,9 @@ compute_strides(int rank, const int* shape, int* strides)
 
 void
 permute_i32(int n,
-            const int* __restrict__ p,
-            const int* __restrict__ in,
-            int* __restrict__ out)
+            const int* restrict p,
+            const int* restrict in,
+            int* restrict out)
 {
   for (int i = 0; i < n; ++i) {
     out[i] = in[p[i]];
@@ -109,7 +109,7 @@ permute_i32(int n,
 }
 
 void
-inverse_permutation_i32(int n, const int* __restrict__ p, int* __restrict__ inv)
+inverse_permutation_i32(int n, const int* restrict p, int* restrict inv)
 {
   for (int i = 0; i < n; ++i) {
     inv[p[i]] = i;
@@ -165,10 +165,10 @@ expect_arrays_equal(const uint64_t* expected,
 {
   for (size_t i = 0; i < n; ++i) {
     if (expected[i] != actual[i]) {
-      printf("%s: Expected %lu but got %lu at element %zu\n",
+      printf("%s: Expected %llu but got %llu at element %zu\n",
              test_name,
-             expected[i],
-             actual[i],
+             (unsigned long long)expected[i],
+             (unsigned long long)actual[i],
              i);
       return 1;
     }

@@ -3,6 +3,7 @@
 #include "transpose.h"
 #include <cuda.h>
 #include <stddef.h>
+#include <stdint.h>
 
 struct slice
 {

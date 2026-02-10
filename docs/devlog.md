@@ -1,5 +1,29 @@
 # dev log
 
+## 2026-02-09
+
+Getting the build to work on windows.
+
+On my 5090:
+
+--- Benchmark Results ---
+Input:        49.97 GiB (26826768384 elements)
+Compressed:   16.07 GiB (ratio: 0.322)
+Tiles:        51168 (96/epoch x 533 epochs)
+
+GPU step     avg GB/s best GB/s     avg ms    best ms
+H2D             33.69        -       2.78          -
+scatter        834.68  1202.66       0.11       0.08
+compress         6.42    15.39      14.61       6.09
+D2H             47.64    53.36       1.97       1.76
+
+Source fill:   3.31 GB/s  (15099.5 ms total)
+Sink:          11319.2 ms total  (11 epochs verified)
+
+Wall time:     37.555 s
+Throughput:    1.33 GiB/s
+PASS
+
 ## 2026-02-08
 
 Refactor to rely on the writer interface more. Decide on some compositional

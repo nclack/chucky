@@ -1,3 +1,11 @@
+if(MSVC)
+    set(C_WARN_FLAGS /W3)
+    set(CUDA_HOST_WARN_FLAGS --compiler-options=/W3)
+else()
+    set(C_WARN_FLAGS -Wall -Wextra -Wpedantic)
+    set(CUDA_HOST_WARN_FLAGS --compiler-options=-Wall,-Wextra)
+endif()
+
 add_library(transpose STATIC
     transpose.cu
     transpose.h
@@ -15,19 +23,25 @@ set_target_properties(transpose PROPERTIES
 
 target_compile_options(transpose
     PRIVATE
-        $<$<COMPILE_LANGUAGE:CUDA>:--compiler-options=-Wall,-Wextra>
+        $<$<COMPILE_LANGUAGE:CUDA>:${CUDA_HOST_WARN_FLAGS}>
 )
 
 # nvcomp — find_package(nvcomp) is broken on Nix (split outputs),
 # so locate headers and library manually.
-find_path(NVCOMP_INCLUDE_DIR NAMES nvcomp.h REQUIRED)
-find_library(NVCOMP_LIBRARY NAMES nvcomp REQUIRED)
+find_path(NVCOMP_INCLUDE_DIR NAMES nvcomp.h
+    PATH_SUFFIXES include REQUIRED)
+find_library(NVCOMP_LIBRARY NAMES nvcomp_static nvcomp
+    PATH_SUFFIXES lib lib/${CUDAToolkit_VERSION_MAJOR} REQUIRED)
 
-add_library(nvcomp::nvcomp SHARED IMPORTED)
+add_library(nvcomp::nvcomp UNKNOWN IMPORTED)
 set_target_properties(nvcomp::nvcomp PROPERTIES
     IMPORTED_LOCATION "${NVCOMP_LIBRARY}"
     INTERFACE_INCLUDE_DIRECTORIES "${NVCOMP_INCLUDE_DIR}"
 )
+if(NVCOMP_LIBRARY MATCHES "nvcomp_static")
+    set_property(TARGET nvcomp::nvcomp PROPERTY
+        INTERFACE_COMPILE_DEFINITIONS NVCOMP_STATIC_DEFINE)
+endif()
 
 add_library(chucky_log STATIC
     log/log.c
@@ -45,7 +59,7 @@ set_target_properties(chucky_log PROPERTIES
 
 target_compile_options(chucky_log
     PRIVATE
-        $<$<COMPILE_LANGUAGE:C>:-Wall -Wextra -Wpedantic>
+        $<$<COMPILE_LANGUAGE:C>:${C_WARN_FLAGS}>
 )
 
 add_library(compress STATIC
@@ -61,7 +75,7 @@ target_include_directories(compress
 target_link_libraries(compress
     PUBLIC
         nvcomp::nvcomp
-        CUDA::cudart
+        CUDA::cudart_static
         chucky_log
 )
 
@@ -72,13 +86,19 @@ set_target_properties(compress PROPERTIES
 
 target_compile_options(compress
     PRIVATE
-        $<$<COMPILE_LANGUAGE:CUDA>:--compiler-options=-Wall,-Wextra>
+        $<$<COMPILE_LANGUAGE:CUDA>:${CUDA_HOST_WARN_FLAGS}>
 )
+
+if(WIN32)
+    set(PLATFORM_SRC platform.win32.c)
+else()
+    set(PLATFORM_SRC platform.posix.c)
+endif()
 
 add_library(stream STATIC
     stream.c
     stream.h
-    platform.posix.c
+    ${PLATFORM_SRC}
     platform.h
 )
 
@@ -103,5 +123,5 @@ set_target_properties(stream PROPERTIES
 
 target_compile_options(stream
     PRIVATE
-        $<$<COMPILE_LANGUAGE:C>:-Wall -Wextra -Wpedantic>
+        $<$<COMPILE_LANGUAGE:C>:${C_WARN_FLAGS}>
 )

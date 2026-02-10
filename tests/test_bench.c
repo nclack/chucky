@@ -623,22 +623,24 @@ test_bench(void)
 
   // Check cursor integrity
   if (s.cursor != total_elements) {
-    log_error("  cursor drift: expected %zu, got %zu (diff=%zd)",
+    log_error("  cursor drift: expected %zu, got %zu (diff=%td)",
               total_elements,
               (size_t)s.cursor,
-              (ssize_t)((int64_t)s.cursor - (int64_t)total_elements));
+              (ptrdiff_t)((int64_t)s.cursor - (int64_t)total_elements));
   }
 
   // Check verification
+  int verify_failed = 0;
   if (btw.verify_errors > 0) {
     log_error("  FAIL: %d verification errors across %d checked epochs",
               btw.verify_errors,
               btw.verify_count);
-    goto Fail;
+    verify_failed = 1;
+  } else {
+    log_info("  verification: OK (%d/%zu epochs checked)",
+             btw.verify_count,
+             num_epochs);
   }
-  log_info("  verification: OK (%d/%zu epochs checked)",
-           btw.verify_count,
-           num_epochs);
 
   // Report
   {
@@ -733,6 +735,10 @@ test_bench(void)
 
   transpose_stream_destroy(&s);
   bench_tile_writer_free(&btw);
+  if (verify_failed) {
+    log_error("  FAIL");
+    return 1;
+  }
   log_info("  PASS");
   return 0;
 

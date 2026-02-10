@@ -5,43 +5,105 @@ compute_magic_div(uint32_t d, uint64_t* m, int* s)
 {
   // We want to find m and s such that:
   // floor(n/d) = floor((n * m) / 2^(64+s)) for all n in [0, 2^64)
+  //
+  // Compute ceil(2^(64+shift) / d) using iterative 32-bit long division.
+  // Since d is uint32_t, each step is a 64÷32 operation in standard C.
 
-  // Start with p = 0 and increase until we find a good one
   for (int shift = 0; shift < 32; shift++) {
-    // 2^(64+shift) = 2^64 * 2^shift
-    // We want to compute ceil(2^(64+shift) / d)
+    // Divide 2^(64+shift) by d.
+    // Represent the numerator as (shift+64+1) bits: a 1 followed by
+    // (64+shift) zero bits.  We process 32 bits at a time, high to low.
+    //
+    // Number of 32-bit "digits" covering bits [0, 64+shift):
+    //   ndigits = ceil((64+shift) / 32) + 1   (the leading 1-bit is the
+    //   most-significant digit).
+    // Rather than dynamically sizing, we note 64+shift <= 95, so at most
+    // 4 digits (indices 3..0, big-endian).
 
-    // Use 128-bit arithmetic
-    // 2^(64+shift) / d = (2^shift * 2^64) / d
-    __uint128_t numerator = (__uint128_t)1 << (64 + shift);
-    __uint128_t quotient = numerator / d;
-    __uint128_t remainder = numerator % d;
-
-    if (remainder != 0) {
-      quotient++; // Round up
+    // Build the numerator digits (big-endian, base 2^32).
+    // 2^(64+shift) has bit (64+shift) set and nothing else.
+    uint32_t digits[4] = { 0, 0, 0, 0 };
+    {
+      int bit = 64 + shift;          // which bit is set
+      int digit_idx = 3 - bit / 32;  // big-endian index (digit 0 is MSB)
+      digits[digit_idx] = (uint32_t)1 << (bit % 32);
     }
 
-    // Check if this quotient fits in 64 bits and works
-    if (quotient <= ((__uint128_t)1 << 64)) {
-      *m = (uint64_t)quotient;
+    // Long division: divide digits[] (base 2^32) by d, collect quotient
+    // digits into a 128-bit result (only low 65 bits can be nonzero).
+    uint64_t q_hi = 0; // bits [64..127] of quotient
+    uint64_t q_lo = 0; // bits [0..63]  of quotient
+    uint64_t rem = 0;
+    for (int i = 0; i < 4; ++i) {
+      uint64_t cur = (rem << 32) | digits[i];
+      uint64_t qi  = cur / d;
+      rem          = cur % d;
+      // Accumulate qi into (q_hi:q_lo) at position (3-i)*32.
+      int pos = (3 - i) * 32;
+      if (pos >= 64)
+        q_hi |= qi << (pos - 64);
+      else if (pos == 0)
+        q_lo |= qi;
+      else
+        q_lo |= qi << pos;
+    }
+
+    // Round up if remainder != 0  (we need ceil)
+    if (rem != 0) {
+      q_lo++;
+      if (q_lo == 0)
+        q_hi++;
+    }
+
+    // Check if quotient fits in 64 bits (q_hi must be 0 or exactly 1
+    // with q_lo == 0, i.e. quotient <= 2^64).
+    if (q_hi == 0 || (q_hi == 1 && q_lo == 0)) {
+      *m = q_lo;
       *s = shift;
       return;
     }
   }
 
-  // Fallback - should not reach here for reasonable divisors
-  *m = (((__uint128_t)1 << 64) / d) + 1;
+  // Fallback — should not reach here for reasonable divisors.
+  // Compute ceil(2^64 / d) via: 2^64 / d = (2^64 - d) / d + 1.
+  *m = (UINT64_MAX / d) + 1;
   *s = 0;
 }
 
 uint64_t
 magic_div(uint64_t n, uint64_t m, int s)
 {
-  // Compute full 128-bit product: n * m
-  __uint128_t product = (__uint128_t)n * (__uint128_t)m;
+  // Compute high 64 bits of (n * m) using the same 32-bit decomposition
+  // that mm256_div_epu64_const uses for its AVX2 lanes.
+  //
+  //   n = n_hi:n_lo  (each 32 bits)
+  //   m = m_hi:m_lo
+  //   n*m = n_hi*m_hi*2^64
+  //       + (n_hi*m_lo + n_lo*m_hi)*2^32
+  //       + n_lo*m_lo
+  //
+  //   high64 = n_hi*m_hi
+  //          + high32(n_hi*m_lo + n_lo*m_hi + high32(n_lo*m_lo))
 
-  // Get high 64 bits and shift by s
-  uint64_t hi = (uint64_t)(product >> 64);
+  uint64_t n_lo = (uint32_t)n;
+  uint64_t n_hi = n >> 32;
+  uint64_t m_lo = (uint32_t)m;
+  uint64_t m_hi = m >> 32;
+
+  uint64_t p_lo_lo = n_lo * m_lo;
+  uint64_t p_hi_lo = n_hi * m_lo;
+  uint64_t p_lo_hi = n_lo * m_hi;
+  uint64_t p_hi_hi = n_hi * m_hi;
+
+  // Sum the three terms that contribute to bits [32..95] and propagate carry
+  uint64_t mid = (p_lo_lo >> 32)
+               + (uint32_t)p_hi_lo
+               + (uint32_t)p_lo_hi;
+
+  uint64_t hi = p_hi_hi
+              + (p_hi_lo >> 32)
+              + (p_lo_hi >> 32)
+              + (mid >> 32);
 
   return hi >> s;
 }

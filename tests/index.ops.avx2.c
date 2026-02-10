@@ -7,12 +7,20 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+#ifdef _MSC_VER
+#include <malloc.h>
+#define aligned_alloc(align, size) _aligned_malloc((size), (align))
+#define aligned_free(ptr) _aligned_free(ptr)
+#else
+#define aligned_free(ptr) free(ptr)
+#endif
+
 // AVX2 version of vadd - processes 4 elements at a time
 // Specialized version of vadd2_avx2 for step=1
 static uint64_t*
 vadd_avx2(int rank,
-          const int* __restrict__ shape,
-          const int* __restrict__ strides,
+          const int* restrict shape,
+          const int* restrict strides,
           uint64_t beg,
           uint64_t end)
 {
@@ -43,7 +51,7 @@ vadd_avx2(int rank,
     // carry: tracks cumulative carries from dimension d+1
     uint64_t* carry = (uint64_t*)aligned_alloc(32, n * sizeof(uint64_t));
     if (!carry) {
-      free(out);
+      aligned_free(out);
       return 0;
     }
 
@@ -117,7 +125,7 @@ vadd_avx2(int rank,
       }
     }
 
-    free(carry);
+    aligned_free(carry);
   }
 
   // prefix sum (only over actual elements, not padding)
@@ -132,8 +140,8 @@ vadd_avx2(int rank,
 // AVX2 version of vadd2 - processes 4 elements at a time
 static uint64_t*
 vadd2_avx2(int rank,
-           const int* __restrict__ shape,
-           const int* __restrict__ strides,
+           const int* restrict shape,
+           const int* restrict strides,
            uint64_t beg,
            uint64_t end,
            uint64_t step)
@@ -165,7 +173,7 @@ vadd2_avx2(int rank,
     // carry: tracks cumulative carries from dimension d+1
     uint64_t* carry = (uint64_t*)aligned_alloc(32, n * sizeof(uint64_t));
     if (!carry) {
-      free(out);
+      aligned_free(out);
       return 0;
     }
 
@@ -248,7 +256,7 @@ vadd2_avx2(int rank,
       }
     }
 
-    free(carry);
+    aligned_free(carry);
   }
 
   // prefix sum
@@ -322,21 +330,23 @@ vadd_avx2_agrees_with_add(void)
       printf("\n");
     }
 
+    {
+      int i;
 #pragma omp for schedule(guided)
-    for (int i = 0; i < num_tests; ++i) {
-      if (state.ecode)
-        continue;
+      for (i = 0; i < num_tests; ++i) {
+        if (state.ecode)
+          continue;
 
-      const uint64_t beg = (uint64_t)rand() % n;
-      const uint64_t* expected =
-        make_expected_step(rank, shape, transposed_strides, beg, n, 1);
-      if (!expected) {
-        state.ecode = 1;
-        continue;
-      }
+        const uint64_t beg = (uint64_t)rand() % n;
+        const uint64_t* expected =
+          make_expected_step(rank, shape, transposed_strides, beg, n, 1);
+        if (!expected) {
+          state.ecode = 1;
+          continue;
+        }
 
-      const uint64_t* actual =
-        vadd_avx2(rank, shape, transposed_strides, beg, n);
+        const uint64_t* actual =
+          vadd_avx2(rank, shape, transposed_strides, beg, n);
       if (!actual) {
         free((void*)expected);
         state.ecode = 1;
@@ -346,7 +356,7 @@ vadd_avx2_agrees_with_add(void)
       const size_t count = n - beg;
       {
         char buf[64] = { 0 };
-        snprintf(buf, sizeof(buf), "beg=%lu", beg);
+        snprintf(buf, sizeof(buf), "beg=%llu", (unsigned long long)beg);
         int err = expect_arrays_equal(expected, actual, count, buf);
         if (err) {
           state.ecode |= err;
@@ -354,9 +364,10 @@ vadd_avx2_agrees_with_add(void)
       }
 
       free((void*)expected);
-      free((void*)actual);
+      aligned_free((void*)actual);
 
       atomic_fetch_add_explicit(&state.completed, 1, memory_order_relaxed);
+      }
     }
   }
 
@@ -430,9 +441,11 @@ vadd2_avx2_agrees_with_add(void)
     }
 #endif
 
+    {
+      int step_idx, i;
 #pragma omp for schedule(guided) collapse(2)
-    for (int step_idx = 0; step_idx < num_steps; ++step_idx) {
-      for (int i = 0; i < num_tests; ++i) {
+      for (step_idx = 0; step_idx < num_steps; ++step_idx) {
+        for (i = 0; i < num_tests; ++i) {
         if (state.ecode)
           continue;
 
@@ -456,7 +469,7 @@ vadd2_avx2_agrees_with_add(void)
         const size_t count = (n - beg + step - 1) / step;
         {
           char buf[64] = { 0 };
-          snprintf(buf, sizeof(buf), "beg=%lu, step=%lu", beg, step);
+          snprintf(buf, sizeof(buf), "beg=%llu, step=%llu", (unsigned long long)beg, (unsigned long long)step);
           int err = expect_arrays_equal(expected, actual, count, buf);
           if (err) {
             state.ecode |= err;
@@ -464,9 +477,10 @@ vadd2_avx2_agrees_with_add(void)
         }
 
         free((void*)expected);
-        free((void*)actual);
+        aligned_free((void*)actual);
 
         atomic_fetch_add_explicit(&state.completed, 1, memory_order_relaxed);
+        }
       }
     }
   }

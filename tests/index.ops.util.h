@@ -23,8 +23,8 @@ ravel(int rank,
 // Same as ravel but with int shape and int strides.
 uint64_t
 ravel_i32(int rank,
-          const int* __restrict__ shape,
-          const int* __restrict__ strides,
+          const int* restrict shape,
+          const int* restrict strides,
           uint64_t idx);
 
 // Array printing utilities
@@ -52,14 +52,14 @@ compute_strides(int rank, const int* shape, int* strides);
 
 void
 permute_i32(int n,
-            const int* __restrict__ p,
-            const int* __restrict__ in,
-            int* __restrict__ out);
+            const int* restrict p,
+            const int* restrict in,
+            int* restrict out);
 
 void
 inverse_permutation_i32(int n,
-                        const int* __restrict__ p,
-                        int* __restrict__ inv);
+                        const int* restrict p,
+                        int* restrict inv);
 
 // Test utilities
 // Helper to create expected array using ravel_i32()

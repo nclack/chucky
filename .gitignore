@@ -6,3 +6,5 @@ result
 .claude
 .envrc
 .cache
+.vs
+CMakeUserPresets.json

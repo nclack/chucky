@@ -579,9 +579,9 @@ test_transpose_indices_with_offset(void)
   char buf[128];
   snprintf(buf,
            sizeof(buf),
-           "offset test (i_offset=%lu, o_offset=%lu)",
-           i_offset,
-           o_offset);
+           "offset test (i_offset=%llu, o_offset=%llu)",
+           (unsigned long long)i_offset,
+           (unsigned long long)o_offset);
   int ecode = expect_arrays_equal(expected, actual, count, buf);
 
   // Print first few values for debugging

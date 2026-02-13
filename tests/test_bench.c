@@ -43,9 +43,8 @@ handle_curesult(CUresult ecode, const char* file, int line)
   return 1;
 }
 
-// --- Deterministic source data ---
+// Deterministic source data
 // Hash-based values: any element is reconstructable from its global index.
-
 static uint16_t
 source_value_at(size_t gi, size_t total)
 {
@@ -61,6 +60,12 @@ source_value_at(size_t gi, size_t total)
   return (uint16_t)(gi ^ (gi >> 16));
 }
 
+static void
+fill_chunk(uint16_t* buf, size_t count, size_t offset, size_t total)
+{
+  for (size_t i = 0; i < count; ++i)
+    buf[i] = source_value_at(offset + i, total);
+}
 
 // --- Minimal nvcomp round-trip test (no streaming infra) ---
 
@@ -78,7 +83,10 @@ test_compress_roundtrip(void)
   const size_t comp_pool = num_tiles * max_comp;
 
   log_info("  tile_bytes=%zu num_tiles=%zu max_comp=%zu comp_temp=%zu",
-           tile_bytes, num_tiles, max_comp, comp_temp);
+           tile_bytes,
+           num_tiles,
+           max_comp,
+           comp_temp);
 
   // Host data
   uint16_t* h_data = (uint16_t*)malloc(pool_bytes);
@@ -122,12 +130,17 @@ test_compress_roundtrip(void)
       h_ptrs[i] = (char*)d_data + i * tile_bytes;
       h_sizes[i] = tile_bytes;
     }
-    CU(Fail, cuMemcpyHtoD((CUdeviceptr)d_in_ptrs, h_ptrs, num_tiles * sizeof(void*)));
-    CU(Fail, cuMemcpyHtoD((CUdeviceptr)d_in_sizes, h_sizes, num_tiles * sizeof(size_t)));
+    CU(Fail,
+       cuMemcpyHtoD((CUdeviceptr)d_in_ptrs, h_ptrs, num_tiles * sizeof(void*)));
+    CU(Fail,
+       cuMemcpyHtoD(
+         (CUdeviceptr)d_in_sizes, h_sizes, num_tiles * sizeof(size_t)));
 
     for (size_t i = 0; i < num_tiles; ++i)
       h_ptrs[i] = (char*)d_compressed + i * max_comp;
-    CU(Fail, cuMemcpyHtoD((CUdeviceptr)d_out_ptrs, h_ptrs, num_tiles * sizeof(void*)));
+    CU(
+      Fail,
+      cuMemcpyHtoD((CUdeviceptr)d_out_ptrs, h_ptrs, num_tiles * sizeof(void*)));
 
     free(h_ptrs);
     free(h_sizes);
@@ -146,36 +159,43 @@ test_compress_roundtrip(void)
 
     // Compress
     CHECK(Fail,
-          compress_batch_async(
-            (const void* const*)d_in_ptrs,
-            d_in_sizes,
-            tile_bytes,
-            num_tiles,
-            d_temp,
-            comp_temp,
-            (void* const*)d_out_ptrs,
-            d_comp_sizes,
-            stream) == 0);
+          compress_batch_async((const void* const*)d_in_ptrs,
+                               d_in_sizes,
+                               tile_bytes,
+                               num_tiles,
+                               d_temp,
+                               comp_temp,
+                               (void* const*)d_out_ptrs,
+                               d_comp_sizes,
+                               stream) == 0);
 
     // Wait for compress to finish, then D2H
     CU(Fail, cuStreamSynchronize(stream));
     CU(Fail, cuMemcpyDtoH(h_compressed, (CUdeviceptr)d_compressed, comp_pool));
-    CU(Fail, cuMemcpyDtoH(h_comp_sizes, (CUdeviceptr)d_comp_sizes, num_tiles * sizeof(size_t)));
+    CU(Fail,
+       cuMemcpyDtoH(
+         h_comp_sizes, (CUdeviceptr)d_comp_sizes, num_tiles * sizeof(size_t)));
 
     // Verify: decompress each tile and compare
     int round_errors = 0;
     for (size_t t = 0; t < num_tiles; ++t) {
       const uint8_t* comp_tile = h_compressed + t * max_comp;
-      size_t result = ZSTD_decompress(decomp_buf, tile_bytes, comp_tile, h_comp_sizes[t]);
+      size_t result =
+        ZSTD_decompress(decomp_buf, tile_bytes, comp_tile, h_comp_sizes[t]);
       if (ZSTD_isError(result)) {
         log_error("  round %d tile %zu: ZSTD_decompress failed: %s",
-                  round, t, ZSTD_getErrorName(result));
+                  round,
+                  t,
+                  ZSTD_getErrorName(result));
         round_errors++;
         continue;
       }
       if (result != tile_bytes) {
         log_error("  round %d tile %zu: size mismatch: expected %zu got %zu",
-                  round, t, tile_bytes, result);
+                  round,
+                  t,
+                  tile_bytes,
+                  result);
         round_errors++;
         continue;
       }
@@ -187,7 +207,11 @@ test_compress_roundtrip(void)
         if (actual[e] != expected[e]) {
           if (mismatch == 0)
             log_error("  round %d tile %zu elem %zu: expected %u got %u",
-                      round, t, e, expected[e], actual[e]);
+                      round,
+                      t,
+                      e,
+                      expected[e],
+                      actual[e]);
           mismatch++;
         }
       }
@@ -211,14 +235,22 @@ Fail:
   free(h_compressed);
   free(h_comp_sizes);
   free(decomp_buf);
-  if (d_data) cuMemFree((CUdeviceptr)d_data);
-  if (d_compressed) cuMemFree((CUdeviceptr)d_compressed);
-  if (d_temp) cuMemFree((CUdeviceptr)d_temp);
-  if (d_comp_sizes) cuMemFree((CUdeviceptr)d_comp_sizes);
-  if (d_in_ptrs) cuMemFree((CUdeviceptr)d_in_ptrs);
-  if (d_out_ptrs) cuMemFree((CUdeviceptr)d_out_ptrs);
-  if (d_in_sizes) cuMemFree((CUdeviceptr)d_in_sizes);
-  if (stream) cuStreamDestroy(stream);
+  if (d_data)
+    cuMemFree((CUdeviceptr)d_data);
+  if (d_compressed)
+    cuMemFree((CUdeviceptr)d_compressed);
+  if (d_temp)
+    cuMemFree((CUdeviceptr)d_temp);
+  if (d_comp_sizes)
+    cuMemFree((CUdeviceptr)d_comp_sizes);
+  if (d_in_ptrs)
+    cuMemFree((CUdeviceptr)d_in_ptrs);
+  if (d_out_ptrs)
+    cuMemFree((CUdeviceptr)d_out_ptrs);
+  if (d_in_sizes)
+    cuMemFree((CUdeviceptr)d_in_sizes);
+  if (stream)
+    cuStreamDestroy(stream);
 
   if (ok) {
     log_info("  PASS");
@@ -226,13 +258,6 @@ Fail:
   }
   log_error("  FAIL");
   return 1;
-}
-
-static void
-fill_chunk(uint16_t* buf, size_t count, size_t offset, size_t total)
-{
-  for (size_t i = 0; i < count; ++i)
-    buf[i] = source_value_at(offset + i, total);
 }
 
 // --- Bench tile_writer: sparse inline verification ---
@@ -391,18 +416,17 @@ bench_tile_writer_new(const struct transpose_stream* s,
               .flush = bench_tile_writer_flush },
     .verify_interval = verify_interval,
     .total_elements = total_elements,
-    .epoch_elements = s->epoch_elements,
-    .slot_count = s->slot_count,
-    .tile_stride = s->tile_stride,
-    .tile_elements = s->tile_elements,
-    .lifted_rank = s->lifted_rank,
-    .tile_bytes = s->tile_stride * s->config.bytes_per_element,
+    .epoch_elements = s->layout.epoch_elements,
+    .slot_count = s->layout.slot_count,
+    .tile_stride = s->layout.tile_stride,
+    .tile_elements = s->layout.tile_elements,
+    .lifted_rank = s->layout.lifted_rank,
+    .tile_bytes = s->layout.tile_stride * s->config.bytes_per_element,
     .decomp_buf =
-      (uint8_t*)malloc(s->tile_stride * s->config.bytes_per_element),
+      (uint8_t*)malloc(s->layout.tile_stride * s->config.bytes_per_element),
   };
-  memcpy(w.lifted_shape, s->lifted_shape, s->lifted_rank * sizeof(uint64_t));
-  memcpy(
-    w.lifted_strides, s->lifted_strides, s->lifted_rank * sizeof(int64_t));
+  memcpy(w.lifted_shape, s->layout.lifted_shape, s->layout.lifted_rank * sizeof(uint64_t));
+  memcpy(w.lifted_strides, s->layout.lifted_strides, s->layout.lifted_rank * sizeof(int64_t));
   return w;
 }
 
@@ -443,10 +467,8 @@ test_compressed_small(void)
   CHECK(Fail, transpose_stream_create(&config, &s) == 0);
 
   const size_t num_epochs =
-    (total_elements + s.epoch_elements - 1) / s.epoch_elements;
-  log_info("  total: %zu elements, %zu epochs",
-           total_elements,
-           num_epochs);
+    (total_elements + s.layout.epoch_elements - 1) / s.layout.epoch_elements;
+  log_info("  total: %zu elements, %zu epochs", total_elements, num_epochs);
 
   btw = bench_tile_writer_new(&s, total_elements, 1);
   CHECK(Fail, btw.decomp_buf);
@@ -483,9 +505,8 @@ test_compressed_small(void)
               btw.verify_count);
     goto Fail;
   }
-  log_info("  verification: OK (%d/%zu epochs checked)",
-           btw.verify_count,
-           num_epochs);
+  log_info(
+    "  verification: OK (%d/%zu epochs checked)", btw.verify_count, num_epochs);
 
   transpose_stream_destroy(&s);
   bench_tile_writer_free(&btw);
@@ -509,6 +530,137 @@ gb_per_s(double bytes, double ms)
   return (bytes / (1024.0 * 1024.0 * 1024.0)) / (ms / 1000.0);
 }
 
+// --- Discard tile_writer for throughput benchmarks ---
+
+struct discard_tile_writer
+{
+  struct tile_writer base;
+  size_t total_compressed;
+  size_t total_tiles;
+  size_t epochs_seen;
+  size_t tile_bytes;
+  struct stream_metric sink;
+  struct platform_clock clock;
+};
+
+static int
+discard_tile_writer_append(struct tile_writer* self,
+                           const void* const* tiles,
+                           const size_t* sizes,
+                           size_t count)
+{
+  (void)tiles;
+  struct discard_tile_writer* w = (struct discard_tile_writer*)self;
+  platform_toc(&w->clock);
+  for (size_t i = 0; i < count; ++i)
+    w->total_compressed += sizes[i];
+  w->total_tiles += count;
+  w->epochs_seen++;
+  float ms = (float)(platform_toc(&w->clock) * 1000.0);
+  w->sink.ms += ms;
+  w->sink.count++;
+  if (ms < w->sink.best_ms)
+    w->sink.best_ms = ms;
+  return 0;
+}
+
+static int
+discard_tile_writer_flush(struct tile_writer* self)
+{
+  (void)self;
+  return 0;
+}
+
+// --- Report helpers ---
+
+static void
+print_metric_row(const struct stream_metric* m, double bytes_per_unit)
+{
+  if (m->count <= 0)
+    return;
+  const int N = m->count;
+  double avg_ms = (double)m->ms / N;
+  double avg_gbs = gb_per_s(bytes_per_unit * N, (double)m->ms);
+  int has_best = m->best_ms < 1e29f;
+
+  if (has_best) {
+    double best_gbs = gb_per_s(bytes_per_unit, (double)m->best_ms);
+    log_info("  %-12s %8.2f %8.2f %10.2f %10.2f",
+             m->name,
+             avg_gbs,
+             best_gbs,
+             avg_ms,
+             (double)m->best_ms);
+  } else {
+    log_info(
+      "  %-12s %8.2f %8s %10.2f %10s", m->name, avg_gbs, "-", avg_ms, "-");
+  }
+}
+
+static void
+print_bench_report(const struct transpose_stream* s,
+                   const struct discard_tile_writer* dtw,
+                   const struct stream_metric* src,
+                   size_t total_bytes,
+                   size_t total_elements,
+                   size_t chunk_elements,
+                   float wall_s)
+{
+  const size_t total_decompressed = dtw->total_tiles * dtw->tile_bytes;
+  const double comp_ratio =
+    total_decompressed > 0
+      ? (double)dtw->total_compressed / (double)total_decompressed
+      : 0.0;
+
+  struct stream_metrics m = transpose_stream_get_metrics(s);
+  const double pool_bytes = (double)s->layout.tile_pool_bytes;
+  const double comp_pool = (double)s->comp.comp_pool_bytes;
+  const double decompressed_per_epoch =
+    (double)dtw->tile_bytes * (double)s->layout.slot_count;
+  const double chunk_bytes = (double)chunk_elements * sizeof(uint16_t);
+  const size_t num_epochs =
+    (total_elements + s->layout.epoch_elements - 1) / s->layout.epoch_elements;
+
+  log_info("");
+  log_info("  --- Benchmark Results ---");
+  log_info("  Input:        %.2f GiB (%zu elements)",
+           (double)total_bytes / (1024.0 * 1024.0 * 1024.0),
+           total_elements);
+  log_info("  Compressed:   %.2f GiB (ratio: %.3f)",
+           (double)dtw->total_compressed / (1024.0 * 1024.0 * 1024.0),
+           comp_ratio);
+  log_info("  Tiles:        %zu (%zu/epoch x %zu epochs)",
+           dtw->total_tiles,
+           (size_t)s->layout.slot_count,
+           num_epochs);
+
+  log_info("");
+  log_info("  %-12s %8s %8s %10s %10s",
+           "Stage",
+           "avg GB/s",
+           "best GB/s",
+           "avg ms",
+           "best ms");
+
+  double h2d_per_dispatch =
+    m.h2d.count > 0 ? (double)total_bytes / m.h2d.count : 0;
+  print_metric_row(src, chunk_bytes);
+  double scatter_per_dispatch =
+    m.scatter.count > 0 ? (double)total_bytes / m.scatter.count : 0;
+  print_metric_row(&m.h2d, h2d_per_dispatch);
+  print_metric_row(&m.scatter, scatter_per_dispatch);
+  print_metric_row(&m.compress, pool_bytes);
+  print_metric_row(&m.d2h, comp_pool);
+  print_metric_row(&dtw->sink, decompressed_per_epoch);
+
+  double throughput_gib =
+    wall_s > 0 ? ((double)total_bytes / (1024.0 * 1024.0 * 1024.0)) / wall_s
+               : 0.0;
+  log_info("");
+  log_info("  Wall time:     %.3f s", wall_s);
+  log_info("  Throughput:    %.2f GiB/s", throughput_gib);
+}
+
 // --- Benchmark ---
 
 static int
@@ -516,16 +668,16 @@ test_bench(void)
 {
   log_info("=== test_bench ===");
 
-  // Shape: (2132, 2048, 2048, 3) with tiles (4, 256, 512, 1)
-  //   tile: 4*256*512*1 = 524,288 elements = 1 MiB
-  //   slot_count: 8*4*3 = 96
-  //   epoch pool: 96 MiB
-  //   epochs: 533
+  // Shape: (2132, 2048, 2048, 3) with tiles (32, 128, 128, 1)
+  //   tile: 32*128*128*1 = 0.5 Mi elements = 1 MiB
+  //   slot_count: 16*16*3 = 768
+  //   epoch pool: 768 MiB
+  //   epochs: 66
   //   total: ~50 GiB
   const struct dimension dims[] = {
-    { .size = 2132, .tile_size = 4 },
-    { .size = 2048, .tile_size = 256 },
-    { .size = 2048, .tile_size = 512 },
+    { .size = 2132, .tile_size = 32 },
+    { .size = 2048, .tile_size = 128 },
+    { .size = 2048, .tile_size = 128 },
     { .size = 3, .tile_size = 1 },
   };
 
@@ -533,10 +685,10 @@ test_bench(void)
   const size_t total_bytes = total_elements * sizeof(uint16_t);
 
   struct transpose_stream s = { 0 };
-  struct bench_tile_writer btw = { 0 };
+  struct discard_tile_writer dtw = { 0 };
 
   const struct transpose_stream_configuration config = {
-    .buffer_capacity_bytes = 8 << 20, // 8 MiB staging buffer
+    .buffer_capacity_bytes = 1 << 30, // 1 GiB staging buffer
     .bytes_per_element = sizeof(uint16_t),
     .rank = 4,
     .dimensions = dims,
@@ -547,7 +699,7 @@ test_bench(void)
   CHECK(Fail, transpose_stream_create(&config, &s) == 0);
 
   const size_t num_epochs =
-    (total_elements + s.epoch_elements - 1) / s.epoch_elements;
+    (total_elements + s.layout.epoch_elements - 1) / s.layout.epoch_elements;
 
   log_info("  shape:       (%u, %u, %u, %u)  tiles: (%u, %u, %u, %u)",
            (unsigned)dims[0].size,
@@ -563,31 +715,34 @@ test_bench(void)
            total_elements,
            num_epochs);
   log_info("  tile:        %lu elements = %lu KiB  (stride=%lu)",
-           (unsigned long)s.tile_elements,
-           (unsigned long)(s.tile_stride * sizeof(uint16_t) / 1024),
-           (unsigned long)s.tile_stride);
+           (unsigned long)s.layout.tile_elements,
+           (unsigned long)(s.layout.tile_stride * sizeof(uint16_t) / 1024),
+           (unsigned long)s.layout.tile_stride);
   log_info("  epoch:       %lu slots, %lu MiB pool",
-           (unsigned long)s.slot_count,
-           (unsigned long)(s.tile_pool_bytes / (1024 * 1024)));
+           (unsigned long)s.layout.slot_count,
+           (unsigned long)(s.layout.tile_pool_bytes / (1024 * 1024)));
   log_info("  compress:    max_chunk=%zu comp_pool=%zu MiB",
-           s.max_comp_chunk_bytes,
-           s.comp_pool_bytes / (1024 * 1024));
+           s.comp.max_comp_chunk_bytes,
+           s.comp.comp_pool_bytes / (1024 * 1024));
 
-  // Verify frequently to find where drift starts
-  int verify_interval = 50;
-  btw = bench_tile_writer_new(&s, total_elements, verify_interval);
-  CHECK(Fail, btw.decomp_buf);
-  s.config.compressed_sink = &btw.base;
+  dtw = (struct discard_tile_writer){
+    .base = { .append = discard_tile_writer_append,
+              .flush = discard_tile_writer_flush },
+    .tile_bytes = s.layout.tile_stride * config.bytes_per_element,
+    .sink = { .name = "Sink", .best_ms = 1e30f },
+  };
+  s.config.compressed_sink = &dtw.base;
 
-  // Chunk buffer for feeding
+  // Pre-generate one source chunk (reused each iteration)
   const size_t chunk_elements = 32 * 1024 * 1024; // 32M elements = 64 MiB
   uint16_t* chunk = (uint16_t*)malloc(chunk_elements * sizeof(uint16_t));
   CHECK(Fail, chunk);
+  fill_chunk(chunk, chunk_elements, 0, total_elements);
 
-  // Run the pipeline, timing source fill separately
+  // Run the pipeline
   struct platform_clock clock = { 0 };
-  struct platform_clock fill_clock = { 0 };
-  double fill_ms = 0;
+  struct platform_clock src_clock = { 0 };
+  struct stream_metric src = { .name = "Source", .best_ms = 1e30f };
   platform_toc(&clock);
 
   for (size_t offset = 0; offset < total_elements; offset += chunk_elements) {
@@ -595,12 +750,14 @@ test_bench(void)
     if (offset + n > total_elements)
       n = total_elements - offset;
 
-    platform_toc(&fill_clock);
-    fill_chunk(chunk, n, offset, total_elements);
-    fill_ms += (double)platform_toc(&fill_clock) * 1000.0;
-
     struct slice input = { .beg = chunk, .end = chunk + n };
+    platform_toc(&src_clock);
     struct writer_result r = writer_append_wait(&s.writer, input);
+    float ms = (float)(platform_toc(&src_clock) * 1000.0);
+    src.ms += ms;
+    src.count++;
+    if (ms < src.best_ms)
+      src.best_ms = ms;
     if (r.error) {
       log_error("  append failed at offset %zu", offset);
       free(chunk);
@@ -627,124 +784,18 @@ test_bench(void)
               total_elements,
               (size_t)s.cursor,
               (ptrdiff_t)((int64_t)s.cursor - (int64_t)total_elements));
+    goto Fail;
   }
 
-  // Check verification
-  int verify_failed = 0;
-  if (btw.verify_errors > 0) {
-    log_error("  FAIL: %d verification errors across %d checked epochs",
-              btw.verify_errors,
-              btw.verify_count);
-    verify_failed = 1;
-  } else {
-    log_info("  verification: OK (%d/%zu epochs checked)",
-             btw.verify_count,
-             num_epochs);
-  }
-
-  // Report
-  {
-    const size_t total_decompressed = btw.total_tiles * btw.tile_bytes;
-    const double comp_ratio =
-      total_decompressed > 0
-        ? (double)btw.total_compressed / (double)total_decompressed
-        : 0.0;
-
-    struct stream_metrics m = transpose_stream_get_metrics(&s);
-    const double pool_bytes = (double)s.tile_pool_bytes;
-    const double comp_pool = (double)s.comp_pool_bytes;
-    const int N = m.epoch_count;
-
-    log_info("");
-    log_info("  --- Benchmark Results ---");
-    log_info("  Input:        %.2f GiB (%zu elements)",
-             (double)total_bytes / (1024.0 * 1024.0 * 1024.0),
-             total_elements);
-    log_info("  Compressed:   %.2f GiB (ratio: %.3f)",
-             (double)btw.total_compressed / (1024.0 * 1024.0 * 1024.0),
-             comp_ratio);
-    log_info("  Tiles:        %zu (%zu/epoch x %zu epochs)",
-             btw.total_tiles,
-             (size_t)s.slot_count,
-             num_epochs);
-
-    log_info("");
-    log_info(
-      "  %-12s %8s %8s %10s %10s", "GPU step", "avg GB/s", "best GB/s",
-      "avg ms", "best ms");
-
-    if (N > 0) {
-      // H2D: data volume = tile_pool_bytes per epoch (input data scattered)
-      {
-        double avg_ms = m.h2d_ms / N;
-        log_info("  %-12s %8.2f %8s %10.2f %10s",
-                 "H2D",
-                 gb_per_s(pool_bytes * N, m.h2d_ms),
-                 "-",
-                 avg_ms,
-                 "-");
-      }
-      // scatter
-      {
-        double avg_ms = m.scatter_ms / N;
-        log_info("  %-12s %8.2f %8.2f %10.2f %10.2f",
-                 "scatter",
-                 gb_per_s(pool_bytes * N, m.scatter_ms),
-                 gb_per_s(pool_bytes, m.scatter_best_ms),
-                 avg_ms,
-                 m.scatter_best_ms);
-      }
-      // compress
-      {
-        double avg_ms = m.compress_ms / N;
-        log_info("  %-12s %8.2f %8.2f %10.2f %10.2f",
-                 "compress",
-                 gb_per_s(pool_bytes * N, m.compress_ms),
-                 gb_per_s(pool_bytes, m.compress_best_ms),
-                 avg_ms,
-                 m.compress_best_ms);
-      }
-      // D2H
-      {
-        double avg_ms = m.d2h_ms / N;
-        log_info("  %-12s %8.2f %8.2f %10.2f %10.2f",
-                 "D2H",
-                 gb_per_s(comp_pool * N, m.d2h_ms),
-                 gb_per_s(comp_pool, m.d2h_best_ms),
-                 avg_ms,
-                 m.d2h_best_ms);
-      }
-    }
-
-    log_info("");
-    log_info("  Source fill:   %.2f GB/s  (%.1f ms total)",
-             gb_per_s((double)total_bytes, fill_ms),
-             fill_ms);
-    log_info("  Sink:          %.1f ms total  (%d epochs verified)",
-             btw.sink_ms,
-             btw.verify_count);
-
-    double throughput_gib =
-      wall_s > 0
-        ? ((double)total_bytes / (1024.0 * 1024.0 * 1024.0)) / wall_s
-        : 0.0;
-    log_info("");
-    log_info("  Wall time:     %.3f s", wall_s);
-    log_info("  Throughput:    %.2f GiB/s", throughput_gib);
-  }
+  print_bench_report(
+    &s, &dtw, &src, total_bytes, total_elements, chunk_elements, wall_s);
 
   transpose_stream_destroy(&s);
-  bench_tile_writer_free(&btw);
-  if (verify_failed) {
-    log_error("  FAIL");
-    return 1;
-  }
   log_info("  PASS");
   return 0;
 
 Fail:
   transpose_stream_destroy(&s);
-  bench_tile_writer_free(&btw);
   log_error("  FAIL");
   return 1;
 }

@@ -134,18 +134,18 @@ test_stream_single_append(void)
 
   // Verify computed layout
   log_info("  tile_elements=%lu  slot_count=%lu  epoch_elements=%lu",
-           (unsigned long)s.tile_elements,
-           (unsigned long)s.slot_count,
-           (unsigned long)s.epoch_elements);
-  CHECK(Fail, s.tile_elements == 12);
-  CHECK(Fail, s.slot_count == 4);
-  CHECK(Fail, s.epoch_elements == 48);
+           (unsigned long)s.layout.tile_elements,
+           (unsigned long)s.layout.slot_count,
+           (unsigned long)s.layout.epoch_elements);
+  CHECK(Fail, s.layout.tile_elements == 12);
+  CHECK(Fail, s.layout.slot_count == 4);
+  CHECK(Fail, s.layout.epoch_elements == 48);
 
   {
     printf("  lifted_shape: ");
-    println_vu64(s.lifted_rank, s.lifted_shape);
+    println_vu64(s.layout.lifted_rank, s.layout.lifted_shape);
     printf("  lifted_strides: ");
-    println_vi64(s.lifted_rank, s.lifted_strides);
+    println_vi64(s.layout.lifted_rank, s.layout.lifted_strides);
   }
 
   // Fill source with sequential u16 values
@@ -163,16 +163,16 @@ test_stream_single_append(void)
   CHECK(Fail, mw.cursor >= pool_bytes);
   {
     uint16_t* expected = make_expected_tiles(0,
-                                             s.epoch_elements,
-                                             s.slot_count,
-                                             s.tile_elements,
-                                             s.lifted_rank,
-                                             s.lifted_shape,
-                                             s.lifted_strides);
+                                             s.layout.epoch_elements,
+                                             s.layout.slot_count,
+                                             s.layout.tile_elements,
+                                             s.layout.lifted_rank,
+                                             s.layout.lifted_shape,
+                                             s.layout.lifted_strides);
     CHECK(Fail, expected);
     int err = verify_tiles((const uint16_t*)mw.buf,
                            expected,
-                           s.slot_count * s.tile_elements,
+                           s.layout.slot_count * s.layout.tile_elements,
                            0,
                            "single_append");
     free(expected);
@@ -189,17 +189,17 @@ test_stream_single_append(void)
 
   CHECK(Fail, mw.cursor == 2 * pool_bytes);
   {
-    uint16_t* expected = make_expected_tiles(s.epoch_elements,
-                                             s.epoch_elements,
-                                             s.slot_count,
-                                             s.tile_elements,
-                                             s.lifted_rank,
-                                             s.lifted_shape,
-                                             s.lifted_strides);
+    uint16_t* expected = make_expected_tiles(s.layout.epoch_elements,
+                                             s.layout.epoch_elements,
+                                             s.layout.slot_count,
+                                             s.layout.tile_elements,
+                                             s.layout.lifted_rank,
+                                             s.layout.lifted_shape,
+                                             s.layout.lifted_strides);
     CHECK(Fail, expected);
     int err = verify_tiles((const uint16_t*)(mw.buf + pool_bytes),
                            expected,
-                           s.slot_count * s.tile_elements,
+                           s.layout.slot_count * s.layout.tile_elements,
                            1,
                            "single_append");
     free(expected);
@@ -274,16 +274,16 @@ test_stream_chunked_append(void)
   CHECK(Fail, mw.cursor >= pool_bytes);
   {
     uint16_t* expected = make_expected_tiles(0,
-                                             s.epoch_elements,
-                                             s.slot_count,
-                                             s.tile_elements,
-                                             s.lifted_rank,
-                                             s.lifted_shape,
-                                             s.lifted_strides);
+                                             s.layout.epoch_elements,
+                                             s.layout.slot_count,
+                                             s.layout.tile_elements,
+                                             s.layout.lifted_rank,
+                                             s.layout.lifted_shape,
+                                             s.layout.lifted_strides);
     CHECK(Fail, expected);
     int err = verify_tiles((const uint16_t*)mw.buf,
                            expected,
-                           s.slot_count * s.tile_elements,
+                           s.layout.slot_count * s.layout.tile_elements,
                            0,
                            "chunked_append");
     free(expected);
@@ -302,17 +302,17 @@ test_stream_chunked_append(void)
 
   CHECK(Fail, mw.cursor == 2 * pool_bytes);
   {
-    uint16_t* expected = make_expected_tiles(s.epoch_elements,
-                                             s.epoch_elements,
-                                             s.slot_count,
-                                             s.tile_elements,
-                                             s.lifted_rank,
-                                             s.lifted_shape,
-                                             s.lifted_strides);
+    uint16_t* expected = make_expected_tiles(s.layout.epoch_elements,
+                                             s.layout.epoch_elements,
+                                             s.layout.slot_count,
+                                             s.layout.tile_elements,
+                                             s.layout.lifted_rank,
+                                             s.layout.lifted_shape,
+                                             s.layout.lifted_strides);
     CHECK(Fail, expected);
     int err = verify_tiles((const uint16_t*)(mw.buf + pool_bytes),
                            expected,
-                           s.slot_count * s.tile_elements,
+                           s.layout.slot_count * s.layout.tile_elements,
                            1,
                            "chunked_append");
     free(expected);
@@ -436,17 +436,17 @@ test_stream_compressed_roundtrip(void)
 
   log_info("  tile_elements=%lu  tile_stride=%lu  slot_count=%lu  "
            "epoch_elements=%lu",
-           (unsigned long)s.tile_elements,
-           (unsigned long)s.tile_stride,
-           (unsigned long)s.slot_count,
-           (unsigned long)s.epoch_elements);
+           (unsigned long)s.layout.tile_elements,
+           (unsigned long)s.layout.tile_stride,
+           (unsigned long)s.layout.slot_count,
+           (unsigned long)s.layout.epoch_elements);
   log_info("  max_comp_chunk_bytes=%zu  tile_pool_bytes=%zu",
-           s.max_comp_chunk_bytes,
-           s.tile_pool_bytes);
+           s.comp.max_comp_chunk_bytes,
+           s.layout.tile_pool_bytes);
 
-  CHECK(Fail, s.tile_elements == 12);
-  CHECK(Fail, s.slot_count == 4);
-  CHECK(Fail, s.epoch_elements == 48);
+  CHECK(Fail, s.layout.tile_elements == 12);
+  CHECK(Fail, s.layout.slot_count == 4);
+  CHECK(Fail, s.layout.epoch_elements == 48);
 
   // Fill source with sequential u16 values
   uint16_t src[96];
@@ -466,22 +466,22 @@ test_stream_compressed_roundtrip(void)
   CHECK(Fail, cc.count == total_tiles);
 
   // Decompress each tile and verify against expected
-  const size_t tile_bytes = s.tile_stride * sizeof(uint16_t);
+  const size_t tile_bytes = s.layout.tile_stride * sizeof(uint16_t);
 
   for (int epoch = 0; epoch < 2; ++epoch) {
     uint16_t* expected = make_expected_tiles(
-      (uint64_t)epoch * s.epoch_elements,
-      s.epoch_elements,
-      s.slot_count,
-      s.tile_elements,
-      s.lifted_rank,
-      s.lifted_shape,
-      s.lifted_strides);
+      (uint64_t)epoch * s.layout.epoch_elements,
+      s.layout.epoch_elements,
+      s.layout.slot_count,
+      s.layout.tile_elements,
+      s.layout.lifted_rank,
+      s.layout.lifted_shape,
+      s.layout.lifted_strides);
     CHECK(Fail, expected);
 
     int err = 0;
-    for (uint64_t t = 0; t < s.slot_count; ++t) {
-      size_t idx = (size_t)epoch * s.slot_count + t;
+    for (uint64_t t = 0; t < s.layout.slot_count; ++t) {
+      size_t idx = (size_t)epoch * s.layout.slot_count + t;
       const uint8_t* comp_data = cc.buf + idx * cc.max_chunk;
       size_t comp_size = cc.sizes[idx];
 
@@ -517,8 +517,8 @@ test_stream_compressed_roundtrip(void)
       // the first tile_elements of the decompressed data against the
       // expected pool at offset t * tile_elements.
       const uint16_t* decomp_u16 = (const uint16_t*)decomp;
-      const uint16_t* expected_tile = expected + t * s.tile_elements;
-      for (uint64_t e = 0; e < s.tile_elements; ++e) {
+      const uint16_t* expected_tile = expected + t * s.layout.tile_elements;
+      for (uint64_t e = 0; e < s.layout.tile_elements; ++e) {
         if (decomp_u16[e] != expected_tile[e]) {
           log_error("  epoch %d tile %lu elem %lu: expected %u, got %u",
                     epoch,

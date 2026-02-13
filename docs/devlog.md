@@ -1,5 +1,41 @@
 # dev log
 
+## 2026-02-12
+
+Not a lot of memory on auk (8GB). Kind of forces me to thin chunks so the
+epochs aren't too thick.
+
+Trying to make sure the timings make sense....
+
+Overall wall tie looking better - 6.3 GB/s on auk.
+
+Could think about file io. Probably need to do coalescing across chunks first.
+Should think about sharding. Might be a kv abstraction there.
+
+There's also the question of multiscale. Getting file io first might clarify.
+
+I think my todo list at this point is:
+
+0. clean up
+1. try to get async compression working again
+2. aggregate by shard? compaction.
+3. ...
+
+Got through a fair amount of clean up
+
+## 2026-02-11
+
+Looked back over streaming code and marked some todo's etc. One thing is that
+I haven't really thought cleanly about draining data out and how that affects
+the calling thread.
+
+Also reviewing the benchmark...
+Changing the chunk size and front side buffer. Front side buffer was small.
+
+Need to keep adjusting and double check things make sense. Still not quite
+happy with the chunk size - would be nice to get more epochs through for
+stats on timings.
+
 ## 2026-02-09
 
 Getting the build to work on windows.

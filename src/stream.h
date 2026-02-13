@@ -17,6 +17,24 @@ struct writer_result
   struct slice rest; // unconsumed input (empty on success for append)
 };
 
+static inline struct writer_result
+writer_ok(void)
+{
+  return (struct writer_result){ 0 };
+}
+
+static inline struct writer_result
+writer_error(void)
+{
+  return (struct writer_result){ .error = 1 };
+}
+
+static inline struct writer_result
+writer_error_at(const void* beg, const void* end)
+{
+  return (struct writer_result){ .error = 1, .rest = { beg, end } };
+}
+
 struct writer
 {
   struct writer_result (*append)(struct writer* self, struct slice data);
@@ -32,16 +50,20 @@ struct tile_writer
   int (*flush)(struct tile_writer* self);
 };
 
+struct stream_metric
+{
+  const char* name;
+  float ms;      // cumulative
+  float best_ms; // best single measurement (1e30f = not yet measured)
+  int count;
+};
+
 struct stream_metrics
 {
-  float h2d_ms;
-  float scatter_ms;
-  float compress_ms;
-  float d2h_ms;
-  float scatter_best_ms;
-  float compress_best_ms;
-  float d2h_best_ms;
-  int epoch_count;
+  struct stream_metric h2d;
+  struct stream_metric scatter;
+  struct stream_metric compress;
+  struct stream_metric d2h;
 };
 
 enum domain
@@ -69,68 +91,89 @@ struct transpose_stream_configuration
   size_t bytes_per_element;
   uint8_t rank;
   const struct dimension* dimensions;
-  struct writer* sink;              // downstream writer (uncompressed), not owned
-  struct tile_writer* compressed_sink; // downstream writer (compressed), not owned
-  int compress;                     // enable nvcomp zstd compression
+  struct writer* sink; // downstream writer (uncompressed), not owned
+  struct tile_writer*
+    compressed_sink; // downstream writer (compressed), not owned
+  int compress;      // enable nvcomp zstd compression
 };
 
-struct transpose_stream
+struct staging_slot
 {
-  struct writer writer;
+  struct buffer h_in;       // pinned host WC, size = buffer_capacity_bytes
+  struct buffer d_in;       // device, size = buffer_capacity_bytes
+  CUevent t_h2d_start;     // recorded before H2D memcpy
+  CUevent t_scatter_start; // recorded before scatter kernel
+  CUevent t_scatter_end;   // recorded after scatter kernel
+};
 
-  CUstream h2d, compute, d2h;
+struct staging_state
+{
+  struct staging_slot slot[2];
+  int current;  // 0 or 1: which buffer the host is filling
+  size_t fill;  // bytes written to current slot's h_in so far
+};
 
-  // Input staging (double-buffered)
-  struct buffer h_in[2]; // pinned host WC, size = buffer_capacity_bytes
-  struct buffer d_in[2]; // device, size = buffer_capacity_bytes
-  int stage_idx;         // 0 or 1: which buffer the host is filling
-
-  // Tile pool (double-buffered: scatter into one while flushing the other)
-  struct buffer d_tiles[2]; // device: tile_pool_bytes
-  struct buffer h_tiles[2]; // host:   tile_pool_bytes
-  int tile_idx;             // which pool scatter writes to
-  int flush_pending;        // async D2H in flight, not yet delivered to sink
-
-  // Precomputed layout (lifted rank = 2 * config.rank)
+struct stream_layout
+{
   uint8_t lifted_rank;
-  uint64_t lifted_shape[2 * MAX_RANK];
-  int64_t lifted_strides[2 * MAX_RANK]; // strides[0] = 0
+  uint64_t lifted_shape[MAX_RANK];
+  int64_t lifted_strides[MAX_RANK];
 
-  // Device copies (allocated once, used by every kernel dispatch)
-  uint64_t* d_lifted_shape;
-  int64_t* d_lifted_strides;
+  uint64_t* d_lifted_shape;  // device copy (allocated once)
+  int64_t* d_lifted_strides; // device copy (allocated once)
 
   uint64_t tile_elements;  // elements per tile
   uint64_t tile_stride;    // elements between tile starts (>= tile_elements)
   uint64_t slot_count;     // M = prod of tile_count[i] for i > 0
   uint64_t epoch_elements; // elements per epoch = M * tile_elements
   size_t tile_pool_bytes;  // slot_count * tile_stride * bpe
+};
 
-  // Compression state (all zero when compress == 0)
-  struct buffer d_compressed[2]; // device: comp_pool_bytes
-  struct buffer h_compressed[2]; // host:   comp_pool_bytes
+struct compression_slot
+{
+  struct buffer d_compressed; // device: comp_pool_bytes
+  struct buffer h_compressed; // host:   comp_pool_bytes
+  void** d_uncomp_ptrs;      // device array of pointers into d_tiles
+  void** d_comp_ptrs;        // device array of pointers into d_compressed
+  size_t* d_comp_sizes;      // device: actual compressed sizes per tile
+  size_t* h_comp_sizes;      // host (pinned): compressed sizes per tile
+};
 
-  void** d_uncomp_ptrs[2]; // device arrays of pointers into d_tiles[i]
-  void** d_comp_ptrs[2];   // device arrays of pointers into d_compressed[i]
-  size_t* d_uncomp_sizes;  // device: all = tile_stride * bpe
-  size_t* d_comp_sizes[2]; // device: actual compressed sizes per tile
-  size_t* h_comp_sizes[2]; // host (pinned): compressed sizes per tile
-  void* d_comp_temp;       // device scratch workspace
+struct compression_shared
+{
+  size_t* d_uncomp_sizes;      // device: all = tile_stride * bpe
+  void* d_comp_temp;           // device scratch workspace
   size_t comp_temp_bytes;
   size_t max_comp_chunk_bytes; // per-tile max compressed size
   size_t comp_pool_bytes;      // slot_count * max_comp_chunk_bytes
+};
 
-  // GPU timing instrumentation
-  CUevent t_h2d_start[2];      // per-slot: recorded before H2D memcpy
-  CUevent t_scatter_start[2];  // per-slot: recorded before scatter kernel
-  CUevent t_compress_start[2]; // per-pool: recorded before compress
-  CUevent t_d2h_start[2];      // per-pool: recorded before D2H memcpy
+struct tile_pool_slot
+{
+  struct buffer d_tiles;        // device: tile_pool_bytes
+  struct buffer h_tiles;        // host:   tile_pool_bytes
+  struct compression_slot comp;
+  CUevent t_compress_start;    // recorded before compress
+  CUevent t_d2h_start;         // recorded before D2H memcpy
+};
+
+struct tile_pool_state
+{
+  struct tile_pool_slot slot[2];
+  int current;       // which pool scatter writes to
+  int flush_pending; // async D2H in flight, not yet delivered to sink
+};
+
+struct transpose_stream
+{
+  struct writer writer;
+  CUstream h2d, compute, d2h;
+  struct staging_state stage;
+  struct tile_pool_state tiles;
+  struct stream_layout layout;
+  struct compression_shared comp;
   struct stream_metrics metrics;
-
-  // Runtime state
-  uint64_t cursor;   // current element position in input stream
-  size_t stage_fill; // bytes written to h_in so far
-
+  uint64_t cursor;
   struct transpose_stream_configuration config;
 };
 

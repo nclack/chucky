@@ -303,8 +303,11 @@ test_transpose_u16_basic(void)
   CHECK(Fail,
         expected = make_expected_u16(rank, shape, transposed_strides, 0, n));
 
-  // Allocate device memory
-  CU(Fail, cuMemAlloc(&d_src, n * sizeof(uint16_t)));
+  // Allocate device memory. Pad d_src to 4KB so the kernel can do
+  // unconditional vectorized loads.
+  const uint64_t src_alloc = (n * sizeof(uint16_t) + 4095) & ~(uint64_t)4095;
+  CU(Fail, cuMemAlloc(&d_src, src_alloc));
+  CU(Fail, cuMemsetD8(d_src, 0, src_alloc));
   CU(Fail, cuMemAlloc(&d_dst, n * sizeof(uint16_t)));
 
   // Copy source to device
@@ -437,8 +440,12 @@ test_transpose_u16_with_offset(void)
     expected[out_offset] = src[i];
   }
 
-  // Allocate device memory
-  CU(Fail, cuMemAlloc(&d_src, count * sizeof(uint16_t)));
+  // Allocate device memory. Pad d_src to 4KB so the kernel can do
+  // unconditional vectorized loads.
+  const uint64_t src_alloc =
+    (count * sizeof(uint16_t) + 4095) & ~(uint64_t)4095;
+  CU(Fail, cuMemAlloc(&d_src, src_alloc));
+  CU(Fail, cuMemsetD8(d_src, 0, src_alloc));
   CU(Fail, cuMemAlloc(&d_dst, n * sizeof(uint16_t)));
 
   // Initialize destination to zero

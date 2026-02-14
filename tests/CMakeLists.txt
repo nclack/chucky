@@ -38,7 +38,7 @@ endfunction()
 add_my_test(test_cuda test.c transpose CUDA::cudart_static)
 add_my_test(test_ctx_null test_ctx_null.c)
 
-find_package(OpenMP REQUIRED)
+find_package(OpenMP REQUIRED COMPONENTS C)
 
 # Index operations utility library (shared between scalar and AVX2 tests)
 add_library(index_ops_util STATIC index.ops.util.c)

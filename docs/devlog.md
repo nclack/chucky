@@ -1,5 +1,24 @@
 # dev log
 
+## 2026-02-13
+
+Trying to look at nsight on the 5090 (oreb).
+
+I noticed I was doing 2-byte loads for the transpose. Changed to 4-bytes.
+Can do larger, but that just hits more cache lines and uses more registers.
+
+```
+           GB/s   avg     best   
+Scatter         78.09   115.40 -- Before
+Scatter         78.28   115.94 -- Before
+Scatter         79.50   118.56 -- After
+Scatter         79.69   119.00 -- After
+Scatter         69.62   118.87 -- After
+```
+
+So faster but not a lot faster. nsight predictably complains about non-coallesced
+stores.
+
 ## 2026-02-12
 
 Not a lot of memory on auk (8GB). Kind of forces me to thin chunks so the

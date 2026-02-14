@@ -18,7 +18,6 @@ target_include_directories(transpose
 
 set_target_properties(transpose PROPERTIES
     POSITION_INDEPENDENT_CODE ON
-    CUDA_SEPARABLE_COMPILATION ON
 )
 
 target_compile_options(transpose
@@ -81,7 +80,6 @@ target_link_libraries(compress
 
 set_target_properties(compress PROPERTIES
     POSITION_INDEPENDENT_CODE ON
-    CUDA_SEPARABLE_COMPILATION ON
 )
 
 target_compile_options(compress
@@ -117,8 +115,6 @@ target_link_libraries(stream
 
 set_target_properties(stream PROPERTIES
     POSITION_INDEPENDENT_CODE ON
-    CUDA_SEPARABLE_COMPILATION ON
-    CUDA_RESOLVE_DEVICE_SYMBOLS ON
 )
 
 target_compile_options(stream

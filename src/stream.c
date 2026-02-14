@@ -586,6 +586,7 @@ transpose_stream_create(const struct transpose_stream_configuration* config,
   CHECK(Fail, out);
   CHECK(Fail, config->bytes_per_element > 0);
   CHECK(Fail, config->buffer_capacity_bytes > 0);
+  CHECK(Fail, (config->buffer_capacity_bytes & 4095) == 0); // must be 4KB-aligned for vectorized kernel loads
   CHECK(Fail, config->rank > 0);
   CHECK(Fail, config->rank <= MAX_RANK / 2); // lifted rank = 2 * rank
   CHECK(Fail, config->dimensions);

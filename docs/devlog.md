@@ -1,6 +1,6 @@
 # dev log
 
-## 2026-02-13
+## 2026-02-14
 
 Trying to look at nsight on the 5090 (oreb).
 
@@ -18,6 +18,44 @@ Scatter         69.62   118.87 -- After
 
 So faster but not a lot faster. nsight predictably complains about non-coallesced
 stores.
+
+## 2026-02-13
+
+Thinking about aggregating by shard.
+
+Could scatter to shard, but shards can be sparse and shouldn't be zero padded.
+So I don't think this is the right approach.
+
+In the end, we'd like to have 1 write of a contiguous set of bytes to update
+a shard, and then we'd like to do 1 write to update that shards index, which
+uses an implicitly indexed `(offset, length)` format with a checksum over the
+indices.
+
+Logically, sharding is another lifting from an array shape, though because
+shards are sparse, the shape we're talking about can be much larger than the
+shape of the input array - it must cover though.
+
+If we specify
+
+```c
+struct dimension
+{
+  uint64_t size;
+  uint64_t tile_size;
+  uint64_t tiles_per_shard; // new
+};
+```
+
+The the size of the covering array is `tile_size*tiles_per_shard` along a
+dimension. Let's call that $e_d$. $e_d$ can be factored into $s_d * t_d * n_d$
+where $s_d$ is the shard index, $t_d$ is the tile index, and $n_d$ is the
+pixel index. Coordinates in the covering array are lifted:
+
+$r_d = (s_{d-1},t_{d-1},n_{d-1},...,s_0,t_0,n_0)$
+
+and (virtually) transposed
+
+$r'_d = (s_{d-1},...,s_0,t_{d-1},...,t_0,n_{d-1}...n_0)$
 
 ## 2026-02-12
 
@@ -40,7 +78,10 @@ I think my todo list at this point is:
 2. aggregate by shard? compaction.
 3. ...
 
-Got through a fair amount of clean up
+Got through a fair amount of clean up.
+
+Looks like I can remove the excessive sync point now. Still has to sync before
+the d2h, of course.
 
 ## 2026-02-11
 

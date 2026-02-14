@@ -17,24 +17,6 @@ struct writer_result
   struct slice rest; // unconsumed input (empty on success for append)
 };
 
-static inline struct writer_result
-writer_ok(void)
-{
-  return (struct writer_result){ 0 };
-}
-
-static inline struct writer_result
-writer_error(void)
-{
-  return (struct writer_result){ .error = 1 };
-}
-
-static inline struct writer_result
-writer_error_at(const void* beg, const void* end)
-{
-  return (struct writer_result){ .error = 1, .rest = { beg, end } };
-}
-
 struct writer
 {
   struct writer_result (*append)(struct writer* self, struct slice data);
@@ -99,8 +81,8 @@ struct transpose_stream_configuration
 
 struct staging_slot
 {
-  struct buffer h_in;       // pinned host WC, size = buffer_capacity_bytes
-  struct buffer d_in;       // device, size = buffer_capacity_bytes
+  struct buffer h_in;      // pinned host WC, size = buffer_capacity_bytes
+  struct buffer d_in;      // device, size = buffer_capacity_bytes
   CUevent t_h2d_start;     // recorded before H2D memcpy
   CUevent t_scatter_start; // recorded before scatter kernel
   CUevent t_scatter_end;   // recorded after scatter kernel
@@ -109,8 +91,8 @@ struct staging_slot
 struct staging_state
 {
   struct staging_slot slot[2];
-  int current;  // 0 or 1: which buffer the host is filling
-  size_t fill;  // bytes written to current slot's h_in so far
+  int current; // 0 or 1: which buffer the host is filling
+  size_t fill; // bytes written to current slot's h_in so far
 };
 
 struct stream_layout
@@ -133,16 +115,16 @@ struct compression_slot
 {
   struct buffer d_compressed; // device: comp_pool_bytes
   struct buffer h_compressed; // host:   comp_pool_bytes
-  void** d_uncomp_ptrs;      // device array of pointers into d_tiles
-  void** d_comp_ptrs;        // device array of pointers into d_compressed
-  size_t* d_comp_sizes;      // device: actual compressed sizes per tile
-  size_t* h_comp_sizes;      // host (pinned): compressed sizes per tile
+  void** d_uncomp_ptrs;       // device array of pointers into d_tiles
+  void** d_comp_ptrs;         // device array of pointers into d_compressed
+  size_t* d_comp_sizes;       // device: actual compressed sizes per tile
+  size_t* h_comp_sizes;       // host (pinned): compressed sizes per tile
 };
 
 struct compression_shared
 {
-  size_t* d_uncomp_sizes;      // device: all = tile_stride * bpe
-  void* d_comp_temp;           // device scratch workspace
+  size_t* d_uncomp_sizes; // device: all = tile_stride * bpe
+  void* d_comp_temp;      // device scratch workspace
   size_t comp_temp_bytes;
   size_t max_comp_chunk_bytes; // per-tile max compressed size
   size_t comp_pool_bytes;      // slot_count * max_comp_chunk_bytes
@@ -150,11 +132,11 @@ struct compression_shared
 
 struct tile_pool_slot
 {
-  struct buffer d_tiles;        // device: tile_pool_bytes
-  struct buffer h_tiles;        // host:   tile_pool_bytes
+  struct buffer d_tiles; // device: tile_pool_bytes
+  struct buffer h_tiles; // host:   tile_pool_bytes
   struct compression_slot comp;
-  CUevent t_compress_start;    // recorded before compress
-  CUevent t_d2h_start;         // recorded before D2H memcpy
+  CUevent t_compress_start; // recorded before compress
+  CUevent t_d2h_start;      // recorded before D2H memcpy
 };
 
 struct tile_pool_state

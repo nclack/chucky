@@ -56,6 +56,24 @@ handle_curesult(int level,
   return 1;
 }
 
+static struct writer_result
+writer_ok(void)
+{
+  return (struct writer_result){ 0 };
+}
+
+static struct writer_result
+writer_error(void)
+{
+  return (struct writer_result){ .error = 1 };
+}
+
+static struct writer_result
+writer_error_at(const void* beg, const void* end)
+{
+  return (struct writer_result){ .error = 1, .rest = { beg, end } };
+}
+
 static void
 buffer_free(struct buffer* buffer)
 {
@@ -175,10 +193,8 @@ dispatch_scatter(struct transpose_stream* s)
   // H2D
   CU(Error, cuEventRecord(ss->t_h2d_start, s->h2d));
   CU(Error,
-     cuMemcpyHtoDAsync((CUdeviceptr)ss->d_in.data,
-                       ss->h_in.data,
-                       s->stage.fill,
-                       s->h2d));
+     cuMemcpyHtoDAsync(
+       (CUdeviceptr)ss->d_in.data, ss->h_in.data, s->stage.fill, s->h2d));
   CU(Error, cuEventRecord(ss->h_in.ready, s->h2d));
 
   // Kernel waits for H2D, then scatters into tile pool
@@ -301,23 +317,18 @@ kick_epoch_d2h(struct transpose_stream* s, int pool)
 
     // Compress on compute (ordered after scatter on same stream)
     CU(Error, cuEventRecord(ts->t_compress_start, s->compute));
-    CHECK(Error,
-          compress_batch_async((const void* const*)cs->d_uncomp_ptrs,
-                               s->comp.d_uncomp_sizes,
-                               s->layout.tile_stride * s->config.bytes_per_element,
-                               s->layout.slot_count,
-                               s->comp.d_comp_temp,
-                               s->comp.comp_temp_bytes,
-                               cs->d_comp_ptrs,
-                               cs->d_comp_sizes,
-                               s->compute) == 0);
+    CHECK(
+      Error,
+      compress_batch_async((const void* const*)cs->d_uncomp_ptrs,
+                           s->comp.d_uncomp_sizes,
+                           s->layout.tile_stride * s->config.bytes_per_element,
+                           s->layout.slot_count,
+                           s->comp.d_comp_temp,
+                           s->comp.comp_temp_bytes,
+                           cs->d_comp_ptrs,
+                           cs->d_comp_sizes,
+                           s->compute) == 0);
     CU(Error, cuEventRecord(cs->d_compressed.ready, s->compute));
-
-    // Synchronize compute: nvcomp may use internal streams not captured by
-    // the event we record on compute.  A full stream sync ensures the
-    // batched compress is truly finished before D2H.
-    // FIXME: this shouldn't be necessary
-    CU(Error, cuStreamSynchronize(s->compute));
 
     // D2H waits for compress, then transfers compressed data + sizes
     CHECK(Error,
@@ -328,6 +339,7 @@ kick_epoch_d2h(struct transpose_stream* s, int pool)
                            (CUdeviceptr)cs->d_compressed.data,
                            s->comp.comp_pool_bytes,
                            cs->h_compressed.ready) == 0);
+
     // Sizes piggyback on the same stream (no separate event pair)
     CU(Error,
        cuMemcpyDtoHAsync(cs->h_comp_sizes,
@@ -363,8 +375,7 @@ wait_and_deliver(struct transpose_stream* s, int pool)
     CU(Error, cuEventSynchronize(cs->h_compressed.ready));
     accumulate_metric(
       &s->metrics.compress, ts->t_compress_start, cs->d_compressed.ready);
-    accumulate_metric(
-      &s->metrics.d2h, ts->t_d2h_start, cs->h_compressed.ready);
+    accumulate_metric(&s->metrics.d2h, ts->t_d2h_start, cs->h_compressed.ready);
     if (deliver_compressed_tiles(s, pool))
       goto Error;
   } else {
@@ -506,18 +517,19 @@ init_compression_state(struct transpose_stream* s)
 
   s->comp.comp_temp_bytes = compress_get_temp_size(M, tile_bytes);
   if (s->comp.comp_temp_bytes > 0)
-    CU(Error, cuMemAlloc((CUdeviceptr*)&s->comp.d_comp_temp, s->comp.comp_temp_bytes));
+    CU(Error,
+       cuMemAlloc((CUdeviceptr*)&s->comp.d_comp_temp, s->comp.comp_temp_bytes));
 
   for (int i = 0; i < 2; ++i) {
     struct compression_slot* cs = &s->tiles.slot[i].comp;
-    CHECK(Error,
-          (cs->d_compressed = buffer_new(s->comp.comp_pool_bytes, device, 0)).data);
-    CHECK(Error,
-          (cs->h_compressed = buffer_new(s->comp.comp_pool_bytes, host, 0)).data);
-    CU(Error,
-       cuMemAlloc((CUdeviceptr*)&cs->d_comp_sizes, M * sizeof(size_t)));
-    CU(Error,
-       cuMemHostAlloc((void**)&cs->h_comp_sizes, M * sizeof(size_t), 0));
+    CHECK(
+      Error,
+      (cs->d_compressed = buffer_new(s->comp.comp_pool_bytes, device, 0)).data);
+    CHECK(
+      Error,
+      (cs->h_compressed = buffer_new(s->comp.comp_pool_bytes, host, 0)).data);
+    CU(Error, cuMemAlloc((CUdeviceptr*)&cs->d_comp_sizes, M * sizeof(size_t)));
+    CU(Error, cuMemHostAlloc((void**)&cs->h_comp_sizes, M * sizeof(size_t), 0));
   }
 
   // Build device pointer arrays for nvcomp batch API
@@ -532,15 +544,13 @@ init_compression_state(struct transpose_stream* s)
     for (uint64_t k = 0; k < M; ++k)
       h_ptrs[k] = (char*)s->tiles.slot[i].d_tiles.data + k * tile_bytes;
     CU(Free,
-       cuMemcpyHtoD(
-         (CUdeviceptr)cs->d_uncomp_ptrs, h_ptrs, M * sizeof(void*)));
+       cuMemcpyHtoD((CUdeviceptr)cs->d_uncomp_ptrs, h_ptrs, M * sizeof(void*)));
 
     for (uint64_t k = 0; k < M; ++k)
       h_ptrs[k] =
         (char*)cs->d_compressed.data + k * s->comp.max_comp_chunk_bytes;
     CU(Free,
-       cuMemcpyHtoD(
-         (CUdeviceptr)cs->d_comp_ptrs, h_ptrs, M * sizeof(void*)));
+       cuMemcpyHtoD((CUdeviceptr)cs->d_comp_ptrs, h_ptrs, M * sizeof(void*)));
   }
 
   // Uncompressed sizes: all the same
@@ -551,7 +561,8 @@ init_compression_state(struct transpose_stream* s)
     for (uint64_t k = 0; k < M; ++k)
       h_sizes[k] = tile_bytes;
 
-    CU(Free, cuMemAlloc((CUdeviceptr*)&s->comp.d_uncomp_sizes, M * sizeof(size_t)));
+    CU(Free,
+       cuMemAlloc((CUdeviceptr*)&s->comp.d_uncomp_sizes, M * sizeof(size_t)));
     CUresult rc = cuMemcpyHtoD(
       (CUdeviceptr)s->comp.d_uncomp_sizes, h_sizes, M * sizeof(size_t));
     free(h_sizes);
@@ -561,8 +572,10 @@ init_compression_state(struct transpose_stream* s)
   free(h_ptrs);
 
   // Record initial events for compressed host buffers
-  CU(Error, cuEventRecord(s->tiles.slot[0].comp.h_compressed.ready, s->compute));
-  CU(Error, cuEventRecord(s->tiles.slot[1].comp.h_compressed.ready, s->compute));
+  CU(Error,
+     cuEventRecord(s->tiles.slot[0].comp.h_compressed.ready, s->compute));
+  CU(Error,
+     cuEventRecord(s->tiles.slot[1].comp.h_compressed.ready, s->compute));
 
   return 0;
 
@@ -603,9 +616,12 @@ transpose_stream_create(const struct transpose_stream_configuration* config,
 
   for (int i = 0; i < 2; ++i) {
     CU(Fail, cuEventCreate(&out->stage.slot[i].t_h2d_start, CU_EVENT_DEFAULT));
-    CU(Fail, cuEventCreate(&out->stage.slot[i].t_scatter_start, CU_EVENT_DEFAULT));
-    CU(Fail, cuEventCreate(&out->stage.slot[i].t_scatter_end, CU_EVENT_DEFAULT));
-    CU(Fail, cuEventCreate(&out->tiles.slot[i].t_compress_start, CU_EVENT_DEFAULT));
+    CU(Fail,
+       cuEventCreate(&out->stage.slot[i].t_scatter_start, CU_EVENT_DEFAULT));
+    CU(Fail,
+       cuEventCreate(&out->stage.slot[i].t_scatter_end, CU_EVENT_DEFAULT));
+    CU(Fail,
+       cuEventCreate(&out->tiles.slot[i].t_compress_start, CU_EVENT_DEFAULT));
     CU(Fail, cuEventCreate(&out->tiles.slot[i].t_d2h_start, CU_EVENT_DEFAULT));
   }
 
@@ -653,24 +669,30 @@ transpose_stream_create(const struct transpose_stream_configuration* config,
   // An epoch is one slice of the array along the outermost tile dimension —
   // all the tiles excluding that slowest-varying tile index. The tile pool
   // holds exactly one epoch, so we flush after every tile_count[0] steps.
-  out->layout.slot_count = out->layout.lifted_strides[0] / out->layout.tile_stride;
-  out->layout.epoch_elements = out->layout.slot_count * out->layout.tile_elements;
+  out->layout.slot_count =
+    out->layout.lifted_strides[0] / out->layout.tile_stride;
+  out->layout.epoch_elements =
+    out->layout.slot_count * out->layout.tile_elements;
 
   // Collapse epoch dimension: the outermost tile index wraps via flush,
   // so its stride is zero in the kernel.
   out->layout.lifted_strides[0] = 0;
 
-  out->layout.tile_pool_bytes = out->layout.slot_count * out->layout.tile_stride * bpe;
+  out->layout.tile_pool_bytes =
+    out->layout.slot_count * out->layout.tile_stride * bpe;
 
   // Allocate device copies of lifted shape and strides
   {
     const size_t shape_bytes = out->layout.lifted_rank * sizeof(uint64_t);
     const size_t strides_bytes = out->layout.lifted_rank * sizeof(int64_t);
-    CU(Fail, cuMemAlloc((CUdeviceptr*)&out->layout.d_lifted_shape, shape_bytes));
-    CU(Fail, cuMemAlloc((CUdeviceptr*)&out->layout.d_lifted_strides, strides_bytes));
     CU(Fail,
-       cuMemcpyHtoD(
-         (CUdeviceptr)out->layout.d_lifted_shape, out->layout.lifted_shape, shape_bytes));
+       cuMemAlloc((CUdeviceptr*)&out->layout.d_lifted_shape, shape_bytes));
+    CU(Fail,
+       cuMemAlloc((CUdeviceptr*)&out->layout.d_lifted_strides, strides_bytes));
+    CU(Fail,
+       cuMemcpyHtoD((CUdeviceptr)out->layout.d_lifted_shape,
+                    out->layout.lifted_shape,
+                    shape_bytes));
     CU(Fail,
        cuMemcpyHtoD((CUdeviceptr)out->layout.d_lifted_strides,
                     out->layout.lifted_strides,
@@ -686,17 +708,22 @@ transpose_stream_create(const struct transpose_stream_configuration* config,
                                                 CU_MEMHOSTALLOC_WRITECOMBINED))
             .data);
     CHECK(Fail,
-          (out->stage.slot[i].d_in = buffer_new(config->buffer_capacity_bytes, device, 0))
+          (out->stage.slot[i].d_in =
+             buffer_new(config->buffer_capacity_bytes, device, 0))
             .data);
   }
 
   // Allocate tile pools (double-buffered)
   for (int i = 0; i < 2; ++i) {
     CHECK(Fail,
-          (out->tiles.slot[i].d_tiles = buffer_new(out->layout.tile_pool_bytes, device, 0)).data);
+          (out->tiles.slot[i].d_tiles =
+             buffer_new(out->layout.tile_pool_bytes, device, 0))
+            .data);
     // h_tiles: GPU writes via D2H, host reads -> normal pinned (no WC)
     CHECK(Fail,
-          (out->tiles.slot[i].h_tiles = buffer_new(out->layout.tile_pool_bytes, host, 0)).data);
+          (out->tiles.slot[i].h_tiles =
+             buffer_new(out->layout.tile_pool_bytes, host, 0))
+            .data);
     CU(Fail,
        cuMemsetD8Async((CUdeviceptr)out->tiles.slot[i].d_tiles.data,
                        0,
@@ -778,15 +805,15 @@ transpose_stream_append(struct writer* self, struct slice input)
 
           // Accumulate H2D and scatter time from previous dispatch on this slot
           if (s->cursor > 0) {
-            accumulate_metric(
-              &s->metrics.h2d, ss->t_h2d_start, ss->h_in.ready);
+            accumulate_metric(&s->metrics.h2d, ss->t_h2d_start, ss->h_in.ready);
             CU(Error, cuEventSynchronize(ss->t_scatter_end));
             accumulate_metric(
               &s->metrics.scatter, ss->t_scatter_start, ss->t_scatter_end);
           }
         }
 
-        memcpy((uint8_t*)s->stage.slot[s->stage.current].h_in.data + s->stage.fill,
+        memcpy((uint8_t*)s->stage.slot[s->stage.current].h_in.data +
+                 s->stage.fill,
                src + written,
                payload);
         s->stage.fill += payload;

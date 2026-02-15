@@ -201,6 +201,17 @@ dispatch_scatter(struct transpose_stream* s)
   CU(Error, cuStreamWaitEvent(s->compute, ss->h_in.ready, 0));
   CU(Error, cuEventRecord(ss->t_scatter_start, s->compute));
   switch (bpe) {
+    case 1:
+      transpose_u8_v0((CUdeviceptr)ts->d_tiles.data,
+                      (CUdeviceptr)ts->d_tiles.data + s->layout.tile_pool_bytes,
+                      (CUdeviceptr)ss->d_in.data,
+                      (CUdeviceptr)ss->d_in.data + s->stage.fill,
+                      s->cursor,
+                      s->layout.lifted_rank,
+                      s->layout.d_lifted_shape,
+                      s->layout.d_lifted_strides,
+                      s->compute);
+      break;
     case 2:
       transpose_u16_v0((CUdeviceptr)ts->d_tiles.data,
                        (CUdeviceptr)ts->d_tiles.data + s->layout.tile_pool_bytes,
@@ -214,6 +225,17 @@ dispatch_scatter(struct transpose_stream* s)
       break;
     case 4:
       transpose_u32_v0((CUdeviceptr)ts->d_tiles.data,
+                       (CUdeviceptr)ts->d_tiles.data + s->layout.tile_pool_bytes,
+                       (CUdeviceptr)ss->d_in.data,
+                       (CUdeviceptr)ss->d_in.data + s->stage.fill,
+                       s->cursor,
+                       s->layout.lifted_rank,
+                       s->layout.d_lifted_shape,
+                       s->layout.d_lifted_strides,
+                       s->compute);
+      break;
+    case 8:
+      transpose_u64_v0((CUdeviceptr)ts->d_tiles.data,
                        (CUdeviceptr)ts->d_tiles.data + s->layout.tile_pool_bytes,
                        (CUdeviceptr)ss->d_in.data,
                        (CUdeviceptr)ss->d_in.data + s->stage.fill,

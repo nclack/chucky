@@ -54,6 +54,45 @@ Wrote a test that uses a coordinate encoding to:
 - verify the right chunks are getting copied into the right places (and values)
 - verify the chunk index for the shard looks right
 
+Now I think it's time to do the zarr writing. This is tricky because it needs a
+few things all at once.
+
+1. Need to write json
+2. Need to create the directory structure, probably epoch by epoch. That
+   should use a background thread, a job queue, and some barrier.
+3. Need to implement the shard store.
+
+Ok, most of that is done. Need to review in the morning, but it looks like
+things are working.
+
+Changed the input distribution on the benchmark to be:
+- 1/3 12-bit gaussian
+- 1/3 uniformly random
+- 1/3 constant
+
+On auk (laptop, 5070)
+
+```
+Stage        avg GB/s best GB/s     avg ms    best ms
+Source           1.78    20.69      35.08       3.02
+H2D              9.86    13.47       6.35       4.64
+Scatter         26.08    48.16       2.40       1.30
+Compress         2.59     3.40     290.05     220.35
+Aggregate       11.98    12.96      62.58      57.86
+D2H             12.46    13.32      60.21      56.30
+Sink             3.97  5867.83       3.24       0.00
+
+Wall time:     56.510 s
+Throughput:    1.77 GiB/s  
+```
+
+### Thoughts
+
+It occurred to me that if the tile shape has 1's in the larger dimensions we
+can yield epochs more quickly - should check on that.
+
+Are we waiting until the first epoch needs to flush to alloc the codec ctx.
+
 ## 2026-02-13
 
 Thinking about aggregating by shard.

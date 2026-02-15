@@ -92,22 +92,28 @@ transpose_v0_k(T* d_dst,
                const int64_t* strides)
 {
   constexpr int ELEMENTS_PER_BLOCK = (1 << 12) / sizeof(T); // 4KB
-  constexpr int T_PER_LOAD = sizeof(uint32_t) / sizeof(T);
-  constexpr int LOADS_PER_BLOCK = ELEMENTS_PER_BLOCK / T_PER_LOAD;
-  static_assert(ELEMENTS_PER_BLOCK % T_PER_LOAD == 0);
 
   __shared__ T shared_buf[ELEMENTS_PER_BLOCK];
 
   const int tid = threadIdx.x;
   const int block_offset = blockIdx.x * ELEMENTS_PER_BLOCK;
 
-  // Vectorized load (4-byte transactions). Caller guarantees alignment and
-  // padding so no bounds check is needed here.
-  const uint32_t* src_u32 = (const uint32_t*)(d_src + block_offset);
-  uint32_t* buf_u32 = (uint32_t*)shared_buf;
+  // Vectorized load into shared memory. For small types (< 4 bytes) we coalesce
+  // through uint32_t loads; for types >= 4 bytes we load natively.
+  if constexpr (sizeof(T) < sizeof(uint32_t)) {
+    constexpr int T_PER_LOAD = sizeof(uint32_t) / sizeof(T);
+    constexpr int LOADS_PER_BLOCK = ELEMENTS_PER_BLOCK / T_PER_LOAD;
+    static_assert(ELEMENTS_PER_BLOCK % T_PER_LOAD == 0);
 
-  for (int i = tid; i < LOADS_PER_BLOCK; i += blockDim.x)
-    buf_u32[i] = src_u32[i];
+    const uint32_t* src_u32 = (const uint32_t*)(d_src + block_offset);
+    uint32_t* buf_u32 = (uint32_t*)shared_buf;
+    for (int i = tid; i < LOADS_PER_BLOCK; i += blockDim.x)
+      buf_u32[i] = src_u32[i];
+  } else {
+    const T* src = d_src + block_offset;
+    for (int i = tid; i < ELEMENTS_PER_BLOCK; i += blockDim.x)
+      shared_buf[i] = src[i];
+  }
 
   __syncthreads();
 
@@ -129,6 +135,45 @@ transpose_v0_k(T* d_dst,
       d_dst[out_offset] = shared_buf[i];
     }
   }
+}
+
+extern "C" void
+transpose_u8_v0(CUdeviceptr d_dst_beg,
+                CUdeviceptr d_dst_end,
+                CUdeviceptr d_src_beg,
+                CUdeviceptr d_src_end,
+                uint64_t i_offset,
+                uint8_t rank,
+                const uint64_t* d_shape,
+                const int64_t* d_strides,
+                CUstream stream)
+{
+  (void)d_dst_end; // UNUSED
+
+  cudaStream_t cuda_stream = (cudaStream_t)stream;
+
+  uint8_t* src_beg = (uint8_t*)d_src_beg;
+  uint8_t* src_end = (uint8_t*)d_src_end;
+  const uint64_t src_size = src_end - src_beg;
+
+  if (src_size == 0)
+    return;
+
+  const int block_size = 256;
+  const int elements_per_block = (1 << 12) / sizeof(uint8_t);
+
+  assert(d_src_beg % sizeof(uint32_t) == 0);
+  const int grid_size =
+    (src_size + elements_per_block - 1) / elements_per_block;
+
+  transpose_v0_k<uint8_t>
+    <<<grid_size, block_size, 0, cuda_stream>>>((uint8_t*)d_dst_beg,
+                                                src_beg,
+                                                src_size,
+                                                i_offset,
+                                                rank,
+                                                d_shape,
+                                                d_strides);
 }
 
 extern "C" void
@@ -204,6 +249,45 @@ transpose_u32_v0(CUdeviceptr d_dst_beg,
 
   transpose_v0_k<uint32_t>
     <<<grid_size, block_size, 0, cuda_stream>>>((uint32_t*)d_dst_beg,
+                                                src_beg,
+                                                src_size,
+                                                i_offset,
+                                                rank,
+                                                d_shape,
+                                                d_strides);
+}
+
+extern "C" void
+transpose_u64_v0(CUdeviceptr d_dst_beg,
+                 CUdeviceptr d_dst_end,
+                 CUdeviceptr d_src_beg,
+                 CUdeviceptr d_src_end,
+                 uint64_t i_offset,
+                 uint8_t rank,
+                 const uint64_t* d_shape,
+                 const int64_t* d_strides,
+                 CUstream stream)
+{
+  (void)d_dst_end; // UNUSED
+
+  cudaStream_t cuda_stream = (cudaStream_t)stream;
+
+  uint64_t* src_beg = (uint64_t*)d_src_beg;
+  uint64_t* src_end = (uint64_t*)d_src_end;
+  const uint64_t src_size = src_end - src_beg;
+
+  if (src_size == 0)
+    return;
+
+  const int block_size = 256;
+  const int elements_per_block = (1 << 12) / sizeof(uint64_t);
+
+  assert(d_src_beg % sizeof(uint64_t) == 0);
+  const int grid_size =
+    (src_size + elements_per_block - 1) / elements_per_block;
+
+  transpose_v0_k<uint64_t>
+    <<<grid_size, block_size, 0, cuda_stream>>>((uint64_t*)d_dst_beg,
                                                 src_beg,
                                                 src_size,
                                                 i_offset,

@@ -87,7 +87,7 @@ target_link_libraries(test_compress PRIVATE ${ZSTD_LIBRARY})
 target_include_directories(test_compress PRIVATE ${ZSTD_INCLUDE_DIR})
 
 add_my_test(test_bench test_bench.c stream CUDA::cudart_static)
-target_link_libraries(test_bench PRIVATE index_ops_util ${ZSTD_LIBRARY})
+target_link_libraries(test_bench PRIVATE index_ops_util zarr_sink ${ZSTD_LIBRARY})
 target_include_directories(test_bench PRIVATE ${ZSTD_INCLUDE_DIR})
 
 add_my_test(test_aggregate test_aggregate.c aggregate CUDA::cudart_static)
@@ -95,4 +95,21 @@ add_my_test(test_aggregate test_aggregate.c aggregate CUDA::cudart_static)
 add_my_test(test_shard_contents test_shard_contents.c stream CUDA::cudart_static)
 target_link_libraries(test_shard_contents PRIVATE ${ZSTD_LIBRARY})
 target_include_directories(test_shard_contents PRIVATE ${ZSTD_INCLUDE_DIR})
+
+# JSON writer test (no CUDA)
+add_executable(test_json_writer test_json_writer.c)
+target_link_libraries(test_json_writer PRIVATE json_writer)
+target_compile_options(test_json_writer PRIVATE ${C_WARN_FLAGS})
+add_test(NAME "test-test_json_writer" COMMAND test_json_writer)
+
+# I/O queue test (no CUDA)
+add_executable(test_io_queue test_io_queue.c)
+target_link_libraries(test_io_queue PRIVATE io_queue)
+target_compile_options(test_io_queue PRIVATE ${C_WARN_FLAGS})
+add_test(NAME "test-test_io_queue" COMMAND test_io_queue)
+
+# Zarr sink integration test
+add_my_test(test_zarr_sink test_zarr_sink.c zarr_sink stream CUDA::cudart_static)
+target_link_libraries(test_zarr_sink PRIVATE ${ZSTD_LIBRARY})
+target_include_directories(test_zarr_sink PRIVATE ${ZSTD_INCLUDE_DIR})
 

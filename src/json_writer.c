@@ -1,0 +1,173 @@
+#include "json_writer.h"
+
+#include <stdarg.h>
+#include <stdio.h>
+#include <string.h>
+
+void
+jw_init(struct json_writer* jw, char* buf, size_t cap)
+{
+  jw->buf = buf;
+  jw->cap = cap;
+  jw->pos = 0;
+  jw->needs_comma = 0;
+  jw->error = 0;
+}
+
+static void
+jw_put(struct json_writer* jw, const char* fmt, ...)
+{
+  if (jw->error)
+    return;
+  va_list ap;
+  va_start(ap, fmt);
+  size_t avail = jw->cap > jw->pos ? jw->cap - jw->pos : 0;
+  int n = vsnprintf(jw->buf + jw->pos, avail, fmt, ap);
+  va_end(ap);
+  if (n < 0 || (size_t)n >= avail) {
+    jw->error = 1;
+    return;
+  }
+  jw->pos += (size_t)n;
+}
+
+static void
+jw_comma(struct json_writer* jw)
+{
+  if (jw->needs_comma)
+    jw_put(jw, ",");
+}
+
+void
+jw_object_begin(struct json_writer* jw)
+{
+  jw_comma(jw);
+  jw_put(jw, "{");
+  jw->needs_comma = 0;
+}
+
+void
+jw_object_end(struct json_writer* jw)
+{
+  jw_put(jw, "}");
+  jw->needs_comma = 1;
+}
+
+void
+jw_array_begin(struct json_writer* jw)
+{
+  jw_comma(jw);
+  jw_put(jw, "[");
+  jw->needs_comma = 0;
+}
+
+void
+jw_array_end(struct json_writer* jw)
+{
+  jw_put(jw, "]");
+  jw->needs_comma = 1;
+}
+
+void
+jw_key(struct json_writer* jw, const char* key)
+{
+  jw_comma(jw);
+  jw_put(jw, "\"");
+  // Keys are assumed to be safe identifiers; no escaping needed
+  jw_put(jw, "%s", key);
+  jw_put(jw, "\":");
+  jw->needs_comma = 0;
+}
+
+static void
+jw_put_escaped_string(struct json_writer* jw, const char* s)
+{
+  jw_put(jw, "\"");
+  for (; *s && !jw->error; ++s) {
+    unsigned char c = (unsigned char)*s;
+    switch (c) {
+      case '"':
+        jw_put(jw, "\\\"");
+        break;
+      case '\\':
+        jw_put(jw, "\\\\");
+        break;
+      case '\n':
+        jw_put(jw, "\\n");
+        break;
+      case '\r':
+        jw_put(jw, "\\r");
+        break;
+      case '\t':
+        jw_put(jw, "\\t");
+        break;
+      default:
+        if (c < 0x20)
+          jw_put(jw, "\\u%04x", c);
+        else
+          jw_put(jw, "%c", c);
+        break;
+    }
+  }
+  jw_put(jw, "\"");
+}
+
+void
+jw_string(struct json_writer* jw, const char* val)
+{
+  jw_comma(jw);
+  jw_put_escaped_string(jw, val);
+  jw->needs_comma = 1;
+}
+
+void
+jw_int(struct json_writer* jw, int64_t val)
+{
+  jw_comma(jw);
+  jw_put(jw, "%lld", (long long)val);
+  jw->needs_comma = 1;
+}
+
+void
+jw_uint(struct json_writer* jw, uint64_t val)
+{
+  jw_comma(jw);
+  jw_put(jw, "%llu", (unsigned long long)val);
+  jw->needs_comma = 1;
+}
+
+void
+jw_float(struct json_writer* jw, double val)
+{
+  jw_comma(jw);
+  jw_put(jw, "%g", val);
+  jw->needs_comma = 1;
+}
+
+void
+jw_null(struct json_writer* jw)
+{
+  jw_comma(jw);
+  jw_put(jw, "null");
+  jw->needs_comma = 1;
+}
+
+void
+jw_bool(struct json_writer* jw, int val)
+{
+  jw_comma(jw);
+  jw_put(jw, val ? "true" : "false");
+  jw->needs_comma = 1;
+}
+
+size_t
+jw_length(const struct json_writer* jw)
+{
+  return jw->pos;
+}
+
+int
+jw_error(const struct json_writer* jw)
+{
+  return jw->error;
+}

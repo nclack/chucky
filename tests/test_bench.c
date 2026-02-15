@@ -1,10 +1,14 @@
+#define _XOPEN_SOURCE 500
 #include "log/log.h"
 #include "platform.h"
 #include "stream.h"
+#include "zarr_sink.h"
 #include <cuda.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <ftw.h>
+#include <math.h>
 #include <string.h>
 #include <zstd.h>
 
@@ -41,28 +45,54 @@ handle_curesult(CUresult ecode, const char* file, int line)
   return 1;
 }
 
-// Deterministic source data
-// Hash-based values: any element is reconstructable from its global index.
-static uint16_t
-source_value_at(size_t gi, size_t total)
+// Deterministic source data — mix of compressibility levels.
+//   First 1/3:  Gaussian noise in 12-bit range (partially compressible)
+//   Middle 1/3: constant 42 (maximally compressible)
+//   Last 1/3:   uniform random uint16 (incompressible)
+
+static uint64_t
+splitmix64(uint64_t* state)
 {
-  (void)total;
-  // Mix of compressible and incompressible:
-  //  First 1/3: linear ramp (very compressible)
-  //  Middle 1/3: constant 42 (maximally compressible)
-  //  Last 1/3: pseudo-random (incompressible)
-  if (gi < total / 3)
-    return (uint16_t)(gi);
-  if (gi < 2 * total / 3)
-    return 42;
-  return (uint16_t)(gi ^ (gi >> 16));
+  uint64_t z = (*state += 0x9e3779b97f4a7c15ULL);
+  z = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9ULL;
+  z = (z ^ (z >> 27)) * 0x94d049bb133111ebULL;
+  return z ^ (z >> 31);
+}
+
+static double
+splitmix64_uniform(uint64_t* state)
+{
+  return (double)(splitmix64(state) >> 11) * 0x1.0p-53;
 }
 
 static void
 fill_chunk(uint16_t* buf, size_t count, size_t offset, size_t total)
 {
-  for (size_t i = 0; i < count; ++i)
-    buf[i] = source_value_at(offset + i, total);
+  const size_t third1 = total / 3;
+  const size_t third2 = 2 * total / 3;
+  uint64_t rng = offset * 0x9e3779b97f4a7c15ULL + 1;
+
+  for (size_t i = 0; i < count; ++i) {
+    size_t gi = offset + i;
+    if (gi < third1) {
+      // Gaussian via Box-Muller, mu=2048 sigma=512, clamped to [0,4095]
+      double u1 = splitmix64_uniform(&rng);
+      double u2 = splitmix64_uniform(&rng);
+      if (u1 < 1e-15)
+        u1 = 1e-15;
+      double z = sqrt(-2.0 * log(u1)) * cos(2.0 * M_PI * u2);
+      int val = (int)(2048.0 + 512.0 * z);
+      if (val < 0)
+        val = 0;
+      if (val > 4095)
+        val = 4095;
+      buf[i] = (uint16_t)val;
+    } else if (gi < third2) {
+      buf[i] = 42;
+    } else {
+      buf[i] = (uint16_t)splitmix64(&rng);
+    }
+  }
 }
 
 // --- Throughput helpers ---
@@ -137,6 +167,82 @@ discard_shard_sink_init(struct discard_shard_sink* s)
   s->writer = (struct discard_shard_writer){
     .base = { .write = discard_shard_write, .finalize = discard_shard_finalize },
     .parent = s,
+  };
+}
+
+// --- Metering shard_sink wrapper ---
+// Wraps any shard_sink and captures timing + byte counts.
+
+struct metered_shard_writer
+{
+  struct shard_writer base;
+  struct shard_writer* inner;
+  struct metered_shard_sink* parent;
+};
+
+struct metered_shard_sink
+{
+  struct shard_sink base;
+  struct shard_sink* inner;
+  size_t total_bytes;
+  size_t shards_finalized;
+  struct stream_metric sink;
+  struct platform_clock clock;
+};
+
+static int
+metered_shard_write(struct shard_writer* self,
+                    uint64_t offset,
+                    const void* beg,
+                    const void* end)
+{
+  struct metered_shard_writer* w = (struct metered_shard_writer*)self;
+  platform_toc(&w->parent->clock);
+  w->parent->total_bytes += (size_t)((const char*)end - (const char*)beg);
+  int rc = w->inner->write(w->inner, offset, beg, end);
+  float ms = (float)(platform_toc(&w->parent->clock) * 1000.0);
+  w->parent->sink.ms += ms;
+  w->parent->sink.count++;
+  if (ms < w->parent->sink.best_ms)
+    w->parent->sink.best_ms = ms;
+  return rc;
+}
+
+static int
+metered_shard_finalize(struct shard_writer* self)
+{
+  struct metered_shard_writer* w = (struct metered_shard_writer*)self;
+  int rc = w->inner->finalize(w->inner);
+  w->parent->shards_finalized++;
+  free(w);
+  return rc;
+}
+
+static struct shard_writer*
+metered_shard_open(struct shard_sink* self, uint64_t shard_index)
+{
+  struct metered_shard_sink* s = (struct metered_shard_sink*)self;
+  struct shard_writer* inner = s->inner->open(s->inner, shard_index);
+  if (!inner)
+    return NULL;
+  struct metered_shard_writer* w = malloc(sizeof(*w));
+  if (!w)
+    return NULL;
+  *w = (struct metered_shard_writer){
+    .base = { .write = metered_shard_write, .finalize = metered_shard_finalize },
+    .inner = inner,
+    .parent = s,
+  };
+  return &w->base;
+}
+
+static void
+metered_shard_sink_init(struct metered_shard_sink* s, struct shard_sink* inner)
+{
+  *s = (struct metered_shard_sink){
+    .base = { .open = metered_shard_open },
+    .inner = inner,
+    .sink = { .name = "Sink", .best_ms = 1e30f },
   };
 }
 
@@ -240,9 +346,15 @@ print_metric_row(const struct stream_metric* m, double bytes_per_unit)
   }
 }
 
+struct sink_stats
+{
+  size_t total_bytes;
+  const struct stream_metric* sink;
+};
+
 static void
 print_bench_report(const struct transpose_stream* s,
-                   const struct discard_shard_sink* dss,
+                   const struct sink_stats* ss,
                    const struct stream_metric* src,
                    size_t total_bytes,
                    size_t total_elements,
@@ -258,7 +370,7 @@ print_bench_report(const struct transpose_stream* s,
   const size_t total_decompressed = total_tiles * tile_bytes;
   const double comp_ratio =
     total_decompressed > 0
-      ? (double)dss->total_bytes / (double)total_decompressed
+      ? (double)ss->total_bytes / (double)total_decompressed
       : 0.0;
 
   const double pool_bytes = (double)s->layout.tile_pool_bytes;
@@ -271,7 +383,7 @@ print_bench_report(const struct transpose_stream* s,
            (double)total_bytes / (1024.0 * 1024.0 * 1024.0),
            total_elements);
   log_info("  Compressed:   %.2f GiB (ratio: %.3f)",
-           (double)dss->total_bytes / (1024.0 * 1024.0 * 1024.0),
+           (double)ss->total_bytes / (1024.0 * 1024.0 * 1024.0),
            comp_ratio);
   log_info("  Tiles:        %zu (%zu/epoch x %zu epochs)",
            total_tiles,
@@ -296,7 +408,9 @@ print_bench_report(const struct transpose_stream* s,
   print_metric_row(&m.compress, pool_bytes);
   print_metric_row(&m.aggregate, comp_pool);
   print_metric_row(&m.d2h, comp_pool);
-  print_metric_row(&dss->sink, comp_pool);
+  double sink_per_call =
+    ss->sink->count > 0 ? (double)ss->total_bytes / ss->sink->count : 0;
+  print_metric_row(ss->sink, sink_per_call);
 
   double throughput_gib =
     wall_s > 0 ? ((double)total_bytes / (1024.0 * 1024.0 * 1024.0)) / wall_s
@@ -425,8 +539,11 @@ test_bench(void)
     goto Fail;
   }
 
-  print_bench_report(
-    &s, &dss, &src, total_bytes, total_elements, chunk_elements, wall_s);
+  {
+    struct sink_stats ss = { .total_bytes = dss.total_bytes, .sink = &dss.sink };
+    print_bench_report(
+      &s, &ss, &src, total_bytes, total_elements, chunk_elements, wall_s);
+  }
 
   transpose_stream_destroy(&s);
   log_info("  PASS");
@@ -434,6 +551,172 @@ test_bench(void)
 
 Fail:
   transpose_stream_destroy(&s);
+  log_error("  FAIL");
+  return 1;
+}
+
+// --- Benchmark with zarr file output ---
+
+static int
+rm_cb(const char* path, const struct stat* sb, int type, struct FTW* ftw)
+{
+  (void)sb;
+  (void)type;
+  (void)ftw;
+  return remove(path);
+}
+
+static void
+rm_rf(const char* path)
+{
+  nftw(path, rm_cb, 64, FTW_DEPTH | FTW_PHYS);
+}
+
+static int
+test_bench_zarr(const char* output_path)
+{
+  log_info("=== test_bench_zarr ===");
+  log_info("  output: %s", output_path);
+
+  rm_rf(output_path);
+
+  const struct dimension dims[] = {
+    { .size = 4264, .tile_size = 32, .tiles_per_shard = 16 },
+    { .size = 2048, .tile_size = 128, .tiles_per_shard = 4 },
+    { .size = 2048, .tile_size = 128, .tiles_per_shard = 4 },
+    { .size = 3, .tile_size = 1, .tiles_per_shard = 3 },
+  };
+
+  const struct zarr_dimension zarr_dims[] = {
+    { .size = 4264, .tile_size = 32, .tiles_per_shard = 16, .name = "t" },
+    { .size = 2048, .tile_size = 128, .tiles_per_shard = 4, .name = "y" },
+    { .size = 2048, .tile_size = 128, .tiles_per_shard = 4, .name = "x" },
+    { .size = 3, .tile_size = 1, .tiles_per_shard = 3, .name = "c" },
+  };
+
+  const struct zarr_config zarr_cfg = {
+    .store_path = output_path,
+    .array_name = "0",
+    .data_type = zarr_dtype_uint16,
+    .fill_value = 0,
+    .rank = 4,
+    .dimensions = zarr_dims,
+  };
+
+  const size_t total_elements = (size_t)4264 * 2048 * 2048 * 3;
+  const size_t total_bytes = total_elements * sizeof(uint16_t);
+
+  struct transpose_stream s = { 0 };
+  struct zarr_sink* zs = zarr_sink_create(&zarr_cfg, NULL);
+  CHECK(Fail, zs);
+
+  struct metered_shard_sink mss;
+  metered_shard_sink_init(&mss, zarr_sink_as_shard_sink(zs));
+
+  const struct transpose_stream_configuration config = {
+    .buffer_capacity_bytes = 128 << 20,
+    .bytes_per_element = sizeof(uint16_t),
+    .rank = 4,
+    .dimensions = dims,
+    .compress = 1,
+    .shard_sink = &mss.base,
+  };
+
+  CHECK(Fail, transpose_stream_create(&config, &s) == 0);
+
+  const size_t num_epochs =
+    (total_elements + s.layout.epoch_elements - 1) / s.layout.epoch_elements;
+
+  log_info("  shape:       (%u, %u, %u, %u)  tiles: (%u, %u, %u, %u)",
+           (unsigned)dims[0].size,
+           (unsigned)dims[1].size,
+           (unsigned)dims[2].size,
+           (unsigned)dims[3].size,
+           (unsigned)dims[0].tile_size,
+           (unsigned)dims[1].tile_size,
+           (unsigned)dims[2].tile_size,
+           (unsigned)dims[3].tile_size);
+  log_info("  total:       %.2f GiB (%zu elements, %zu epochs)",
+           (double)total_bytes / (1024.0 * 1024.0 * 1024.0),
+           total_elements,
+           num_epochs);
+  log_info("  tile:        %lu elements = %lu KiB  (stride=%lu)",
+           (unsigned long)s.layout.tile_elements,
+           (unsigned long)(s.layout.tile_stride * sizeof(uint16_t) / 1024),
+           (unsigned long)s.layout.tile_stride);
+  log_info("  epoch:       %lu slots, %lu MiB pool",
+           (unsigned long)s.layout.slot_count,
+           (unsigned long)(s.layout.tile_pool_bytes / (1024 * 1024)));
+  log_info("  compress:    max_chunk=%zu comp_pool=%zu MiB",
+           s.comp.max_comp_chunk_bytes,
+           s.comp.comp_pool_bytes / (1024 * 1024));
+
+  const size_t chunk_elements = 32 * 1024 * 1024;
+  uint16_t* chunk = (uint16_t*)malloc(chunk_elements * sizeof(uint16_t));
+  CHECK(Fail, chunk);
+  fill_chunk(chunk, chunk_elements, 0, total_elements);
+
+  struct platform_clock clock = { 0 };
+  struct platform_clock src_clock = { 0 };
+  struct stream_metric src = { .name = "Source", .best_ms = 1e30f };
+  platform_toc(&clock);
+
+  for (size_t offset = 0; offset < total_elements; offset += chunk_elements) {
+    size_t n = chunk_elements;
+    if (offset + n > total_elements)
+      n = total_elements - offset;
+
+    struct slice input = { .beg = chunk, .end = chunk + n };
+    platform_toc(&src_clock);
+    struct writer_result r = writer_append_wait(&s.writer, input);
+    float ms = (float)(platform_toc(&src_clock) * 1000.0);
+    src.ms += ms;
+    src.count++;
+    if (ms < src.best_ms)
+      src.best_ms = ms;
+    if (r.error) {
+      log_error("  append failed at offset %zu", offset);
+      free(chunk);
+      goto Fail;
+    }
+  }
+
+  {
+    struct writer_result r = writer_flush(&s.writer);
+    if (r.error) {
+      log_error("  flush failed");
+      free(chunk);
+      goto Fail;
+    }
+  }
+
+  float wall_s = platform_toc(&clock);
+  free(chunk);
+  chunk = NULL;
+
+  if (s.cursor != total_elements) {
+    log_error("  cursor drift: expected %zu, got %zu (diff=%td)",
+              total_elements,
+              (size_t)s.cursor,
+              (ptrdiff_t)((int64_t)s.cursor - (int64_t)total_elements));
+    goto Fail;
+  }
+
+  {
+    struct sink_stats ss = { .total_bytes = mss.total_bytes, .sink = &mss.sink };
+    print_bench_report(
+      &s, &ss, &src, total_bytes, total_elements, chunk_elements, wall_s);
+  }
+
+  transpose_stream_destroy(&s);
+  zarr_sink_destroy(zs);
+  log_info("  PASS");
+  return 0;
+
+Fail:
+  transpose_stream_destroy(&s);
+  if (zs)
+    zarr_sink_destroy(zs);
   log_error("  FAIL");
   return 1;
 }
@@ -452,12 +735,23 @@ main(int ac, char* av[])
   CU(Fail, cuDeviceGet(&dev, 0));
   CU(Fail, cuCtxCreate(&ctx, 0, dev));
 
-  ecode |= test_compressed_small();
-  if (ecode)
-    goto Done;
-  ecode |= test_bench();
+  // --zarr <path>: run only the zarr file-writing benchmark
+  const char* zarr_path = NULL;
+  for (int i = 1; i < ac; ++i) {
+    if (strcmp(av[i], "--zarr") == 0 && i + 1 < ac) {
+      zarr_path = av[i + 1];
+      break;
+    }
+  }
 
-Done:
+  if (zarr_path) {
+    ecode |= test_bench_zarr(zarr_path);
+  } else {
+    ecode |= test_compressed_small();
+    if (!ecode)
+      ecode |= test_bench();
+  }
+
   cuCtxDestroy(ctx);
   return ecode;
 

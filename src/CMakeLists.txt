@@ -148,3 +148,84 @@ target_compile_options(stream
     PRIVATE
         $<$<COMPILE_LANGUAGE:C>:${C_WARN_FLAGS}>
 )
+
+# JSON writer — zero-allocation snprintf-based JSON serializer
+add_library(json_writer STATIC
+    json_writer.c
+    json_writer.h
+)
+
+target_include_directories(json_writer
+    PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}
+)
+
+set_target_properties(json_writer PROPERTIES
+    POSITION_INDEPENDENT_CODE ON
+)
+
+target_compile_options(json_writer
+    PRIVATE
+        $<$<COMPILE_LANGUAGE:C>:${C_WARN_FLAGS}>
+)
+
+# I/O queue — single-thread async job queue
+find_package(Threads REQUIRED)
+
+if(WIN32)
+    set(IO_QUEUE_SRC io_queue.win32.c)
+else()
+    set(IO_QUEUE_SRC io_queue.posix.c)
+endif()
+
+add_library(io_queue STATIC
+    ${IO_QUEUE_SRC}
+    io_queue.h
+)
+
+target_include_directories(io_queue
+    PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}
+)
+
+target_link_libraries(io_queue
+    PUBLIC
+        Threads::Threads
+        chucky_log
+)
+
+set_target_properties(io_queue PROPERTIES
+    POSITION_INDEPENDENT_CODE ON
+)
+
+target_compile_options(io_queue
+    PRIVATE
+        $<$<COMPILE_LANGUAGE:C>:${C_WARN_FLAGS}>
+)
+
+# Zarr v3 store sink
+add_library(zarr_sink STATIC
+    zarr_sink.c
+    zarr_sink.h
+)
+
+target_include_directories(zarr_sink
+    PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}
+)
+
+target_link_libraries(zarr_sink
+    PUBLIC
+        json_writer
+        io_queue
+        chucky_log
+)
+
+set_target_properties(zarr_sink PROPERTIES
+    POSITION_INDEPENDENT_CODE ON
+)
+
+target_compile_options(zarr_sink
+    PRIVATE
+        $<$<COMPILE_LANGUAGE:C>:${C_WARN_FLAGS}>
+)

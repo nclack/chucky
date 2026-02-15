@@ -18,7 +18,7 @@ main(void)
     int s;
     compute_magic_div(d, &m, &s);
 
-    printf("Divisor %u: m=%lu, s=%d\n", d, m, s);
+    printf("Divisor %u: m=%llu, s=%d\n", d, (unsigned long long)m, s);
 
     // Test a range of values
     for (uint64_t n = 0; n < 100000; n += 17) {
@@ -26,7 +26,7 @@ main(void)
       uint64_t actual = magic_div(n, m, s);
 
       if (expected != actual) {
-        printf("  ERROR: %lu / %u: expected %lu, got %lu\n", n, d, expected, actual);
+        printf("  ERROR: %llu / %u: expected %llu, got %llu\n", (unsigned long long)n, d, (unsigned long long)expected, (unsigned long long)actual);
         errors++;
         if (errors > 10) {
           printf("Too many errors, stopping\n");

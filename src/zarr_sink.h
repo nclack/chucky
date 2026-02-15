@@ -6,14 +6,6 @@
 
 struct io_queue;
 
-struct zarr_dimension
-{
-  uint64_t size;
-  uint64_t tile_size;
-  uint64_t tiles_per_shard; // 0 = all tiles along this dimension
-  const char* name;         // dimension name, may be NULL
-};
-
 enum zarr_dtype
 {
   zarr_dtype_uint8,
@@ -35,7 +27,7 @@ struct zarr_config
   enum zarr_dtype data_type;
   double fill_value;
   uint8_t rank;
-  const struct zarr_dimension* dimensions;
+  const struct dimension* dimensions;
 };
 
 struct zarr_sink;

@@ -56,6 +56,8 @@ set_target_properties(chucky_log PROPERTIES
     POSITION_INDEPENDENT_CODE ON
 )
 
+target_compile_definitions(chucky_log PRIVATE _CRT_SECURE_NO_WARNINGS)
+
 target_compile_options(chucky_log
     PRIVATE
         $<$<COMPILE_LANGUAGE:C>:${C_WARN_FLAGS}>
@@ -203,6 +205,32 @@ target_compile_options(io_queue
         $<$<COMPILE_LANGUAGE:C>:${C_WARN_FLAGS}>
 )
 
+# Platform I/O — cross-platform file operations
+if(WIN32)
+    set(PLATFORM_IO_SRC platform_io.win32.c)
+else()
+    set(PLATFORM_IO_SRC platform_io.posix.c)
+endif()
+
+add_library(platform_io STATIC
+    ${PLATFORM_IO_SRC}
+    platform_io.h
+)
+
+target_include_directories(platform_io
+    PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}
+)
+
+set_target_properties(platform_io PROPERTIES
+    POSITION_INDEPENDENT_CODE ON
+)
+
+target_compile_options(platform_io
+    PRIVATE
+        $<$<COMPILE_LANGUAGE:C>:${C_WARN_FLAGS}>
+)
+
 # Zarr v3 store sink
 add_library(zarr_sink STATIC
     zarr_sink.c
@@ -218,6 +246,7 @@ target_link_libraries(zarr_sink
     PUBLIC
         json_writer
         io_queue
+        platform_io
         chucky_log
 )
 

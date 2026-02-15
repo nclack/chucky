@@ -2,13 +2,10 @@
 #include "io_queue.h"
 #include "json_writer.h"
 #include "log/log.h"
+#include "platform_io.h"
 
-#include <errno.h>
-#include <fcntl.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/stat.h>
-#include <unistd.h>
 
 #define CHECK(lbl, expr)                                                       \
   do {                                                                         \
@@ -38,16 +35,15 @@ mkdirp(const char* path)
   memcpy(tmp, path, len + 1);
 
   for (size_t i = 1; i < len; ++i) {
-    if (tmp[i] == '/') {
+    if (tmp[i] == '/' || tmp[i] == '\\') {
+      char saved = tmp[i];
       tmp[i] = '\0';
-      if (mkdir(tmp, 0755) != 0 && errno != EEXIST)
+      if (platform_mkdir(tmp) != 0)
         return -1;
-      tmp[i] = '/';
+      tmp[i] = saved;
     }
   }
-  if (mkdir(tmp, 0755) != 0 && errno != EEXIST)
-    return -1;
-  return 0;
+  return platform_mkdir(tmp);
 }
 
 // --- Writer for a single shard file ---
@@ -55,13 +51,13 @@ mkdirp(const char* path)
 struct zarr_shard_writer
 {
   struct shard_writer base;
-  int fd;
+  platform_fd fd;
   struct io_queue* queue;
 };
 
 struct pwrite_job
 {
-  int fd;
+  platform_fd fd;
   uint64_t offset;
   size_t nbytes;
   uint8_t data[];
@@ -71,18 +67,8 @@ static void
 pwrite_fn(void* arg)
 {
   struct pwrite_job* j = (struct pwrite_job*)arg;
-  ssize_t written = 0;
-  while ((size_t)written < j->nbytes) {
-    ssize_t n = pwrite(j->fd,
-                       j->data + written,
-                       j->nbytes - (size_t)written,
-                       (off_t)(j->offset + (uint64_t)written));
-    if (n < 0) {
-      log_error("zarr pwrite failed: %s", strerror(errno));
-      return;
-    }
-    written += n;
-  }
+  if (platform_pwrite(j->fd, j->data, j->nbytes, j->offset) != 0)
+    log_error("zarr pwrite failed");
 }
 
 static int
@@ -104,18 +90,7 @@ zarr_shard_write(struct shard_writer* self,
     memcpy(j->data, beg, nbytes);
     io_queue_post(w->queue, pwrite_fn, j, free);
   } else {
-    // Synchronous pwrite
-    struct pwrite_job job = { .fd = w->fd, .offset = offset, .nbytes = nbytes };
-    ssize_t written = 0;
-    while ((size_t)written < nbytes) {
-      ssize_t n = pwrite(w->fd,
-                         (const char*)beg + written,
-                         nbytes - (size_t)written,
-                         (off_t)(offset + (uint64_t)written));
-      CHECK(Error, n >= 0);
-      written += n;
-    }
-    (void)job;
+    CHECK(Error, platform_pwrite(w->fd, beg, nbytes, offset) == 0);
   }
   return 0;
 
@@ -125,21 +100,21 @@ Error:
 
 struct close_job
 {
-  int fd;
+  platform_fd fd;
 };
 
 static void
 close_fn(void* arg)
 {
   struct close_job* j = (struct close_job*)arg;
-  close(j->fd);
+  platform_close(j->fd);
 }
 
 static int
 zarr_shard_finalize(struct shard_writer* self)
 {
   struct zarr_shard_writer* w = (struct zarr_shard_writer*)self;
-  if (w->fd < 0)
+  if (w->fd == PLATFORM_FD_INVALID)
     return 0;
 
   if (w->queue) {
@@ -148,10 +123,10 @@ zarr_shard_finalize(struct shard_writer* self)
     j->fd = w->fd;
     io_queue_post(w->queue, close_fn, j, free);
   } else {
-    close(w->fd);
+    platform_close(w->fd);
   }
 
-  w->fd = -1;
+  w->fd = PLATFORM_FD_INVALID;
   return 0;
 
 Error:
@@ -234,10 +209,9 @@ zarr_sink_open(struct shard_sink* self, uint64_t shard_index)
     return NULL;
   }
 
-  w->fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-  if (w->fd < 0) {
-    log_error(
-      "zarr_sink_open: open(%s) failed: %s", path, strerror(errno));
+  w->fd = platform_open_write(path);
+  if (w->fd == PLATFORM_FD_INVALID) {
+    log_error("zarr_sink_open: open(%s) failed", path);
     return NULL;
   }
 
@@ -249,20 +223,12 @@ zarr_sink_open(struct shard_sink* self, uint64_t shard_index)
 static int
 write_file(const char* path, const char* data, size_t len)
 {
-  int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-  if (fd < 0)
+  platform_fd fd = platform_open_write(path);
+  if (fd == PLATFORM_FD_INVALID)
     return -1;
-  ssize_t written = 0;
-  while ((size_t)written < len) {
-    ssize_t n = write(fd, data + written, len - (size_t)written);
-    if (n < 0) {
-      close(fd);
-      return -1;
-    }
-    written += n;
-  }
-  close(fd);
-  return 0;
+  int rc = platform_write(fd, data, len);
+  platform_close(fd);
+  return rc;
 }
 
 static int
@@ -388,6 +354,9 @@ write_array_metadata(const char* array_dir, const struct zarr_config* cfg,
   jw_object_begin(&jw);
   jw_key(&jw, "name");
   jw_string(&jw, "zstd");
+  jw_key(&jw, "configuration");
+  jw_object_begin(&jw);
+  jw_object_end(&jw);
   jw_object_end(&jw);
   jw_array_end(&jw);
 
@@ -405,6 +374,9 @@ write_array_metadata(const char* array_dir, const struct zarr_config* cfg,
   jw_object_begin(&jw);
   jw_key(&jw, "name");
   jw_string(&jw, "crc32c");
+  jw_key(&jw, "configuration");
+  jw_object_begin(&jw);
+  jw_object_end(&jw);
   jw_object_end(&jw);
   jw_array_end(&jw);
 
@@ -498,7 +470,7 @@ zarr_sink_create(const struct zarr_config* cfg, struct io_queue* queue)
       if (last_slash) {
         *last_slash = '\0';
         if (mkdirp(path) != 0) {
-          log_error("zarr_sink: mkdirp(%s) failed: %s", path, strerror(errno));
+          log_error("zarr_sink: mkdirp(%s) failed", path);
           goto Fail_alloc;
         }
       }
@@ -519,7 +491,7 @@ zarr_sink_create(const struct zarr_config* cfg, struct io_queue* queue)
   for (uint64_t i = 0; i < zs->num_writers; ++i) {
     zs->writers[i].base.write = zarr_shard_write;
     zs->writers[i].base.finalize = zarr_shard_finalize;
-    zs->writers[i].fd = -1;
+    zs->writers[i].fd = PLATFORM_FD_INVALID;
     zs->writers[i].queue = queue;
   }
 
@@ -540,8 +512,8 @@ zarr_sink_destroy(struct zarr_sink* s)
 
   if (s->writers) {
     for (uint64_t i = 0; i < s->num_writers; ++i) {
-      if (s->writers[i].fd >= 0)
-        close(s->writers[i].fd);
+      if (s->writers[i].fd != PLATFORM_FD_INVALID)
+        platform_close(s->writers[i].fd);
     }
     free(s->writers);
   }

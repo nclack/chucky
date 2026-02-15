@@ -4,11 +4,11 @@
 #include "zarr_sink.h"
 
 #include <cuda.h>
+#include "test_platform.h"
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/stat.h>
-#include <unistd.h>
 #include <zstd.h>
 
 #define CHECK(lbl, expr)                                                       \
@@ -19,14 +19,6 @@
     }                                                                          \
   } while (0)
 
-// Recursive rm -rf for cleanup
-static int
-rmrf(const char* path)
-{
-  char cmd[4200];
-  snprintf(cmd, sizeof(cmd), "rm -rf '%s'", path);
-  return system(cmd);
-}
 
 // --- Coordinate encoding (same as test_shard_contents) ---
 // 3D: dim0=12, dim1=8, dim2=12
@@ -42,12 +34,6 @@ encode_voxel(int s0, int s1, int s2,
          ((uint32_t)v0 << 6) | ((uint32_t)v1 << 3) | ((uint32_t)v2);
 }
 
-static int
-file_exists(const char* path)
-{
-  struct stat st;
-  return stat(path, &st) == 0;
-}
 
 static int
 read_file_all(const char* path, uint8_t** out, size_t* out_len)
@@ -88,7 +74,7 @@ test_metadata(const char* tmpdir, int use_queue)
     CHECK(Fail, q);
   }
 
-  struct zarr_dimension dims[] = {
+  struct dimension dims[] = {
     { .size = 12, .tile_size = 2, .tiles_per_shard = 3, .name = "z" },
     { .size = 8, .tile_size = 4, .tiles_per_shard = 2, .name = "y" },
     { .size = 12, .tile_size = 3, .tiles_per_shard = 2, .name = "x" },
@@ -110,7 +96,7 @@ test_metadata(const char* tmpdir, int use_queue)
   {
     char path[4096];
     snprintf(path, sizeof(path), "%s/zarr.json", tmpdir);
-    CHECK(Fail3, file_exists(path));
+    CHECK(Fail3, test_file_exists(path));
 
     uint8_t* data;
     size_t len;
@@ -125,7 +111,7 @@ test_metadata(const char* tmpdir, int use_queue)
   {
     char path[4096];
     snprintf(path, sizeof(path), "%s/0/zarr.json", tmpdir);
-    CHECK(Fail3, file_exists(path));
+    CHECK(Fail3, test_file_exists(path));
 
     uint8_t* data;
     size_t len;
@@ -217,7 +203,7 @@ test_pipeline(const char* tmpdir, int use_queue)
       }
 
   // Create zarr sink
-  struct zarr_dimension zdims[] = {
+  const struct dimension dims[] = {
     { .size = 12, .tile_size = 2, .tiles_per_shard = 3, .name = "z" },
     { .size = 8, .tile_size = 4, .tiles_per_shard = 2, .name = "y" },
     { .size = 12, .tile_size = 3, .tiles_per_shard = 2, .name = "x" },
@@ -229,19 +215,13 @@ test_pipeline(const char* tmpdir, int use_queue)
     .data_type = zarr_dtype_uint32,
     .fill_value = 0,
     .rank = 3,
-    .dimensions = zdims,
+    .dimensions = dims,
   };
 
   struct zarr_sink* zs = zarr_sink_create(&zcfg, q);
   CHECK(Fail2, zs);
 
   // Configure transpose stream
-  const struct dimension dims[] = {
-    { .size = 12, .tile_size = 2, .tiles_per_shard = 3 },
-    { .size = 8, .tile_size = 4, .tiles_per_shard = 2 },
-    { .size = 12, .tile_size = 3, .tiles_per_shard = 2 },
-  };
-
   const struct transpose_stream_configuration config = {
     .buffer_capacity_bytes = (size_t)total_elements * sizeof(uint32_t),
     .bytes_per_element = sizeof(uint32_t),
@@ -290,7 +270,7 @@ test_pipeline(const char* tmpdir, int use_queue)
       char path[4096];
       snprintf(path, sizeof(path), "%s/0/c/%d/%d/%d", tmpdir,
                sc[0], sc[1], sc[2]);
-      CHECK(Fail4, file_exists(path));
+      CHECK(Fail4, test_file_exists(path));
 
       uint8_t* shard_data;
       size_t shard_len;
@@ -403,21 +383,21 @@ main(int ac, char* av[])
   int ecode = 0;
 
   // Create temp directory
-  char tmpdir[] = "/tmp/test_zarr_sink_XXXXXX";
-  CHECK(Fail, mkdtemp(tmpdir));
+  char tmpdir[4096];
+  CHECK(Fail, test_tmpdir_create(tmpdir, sizeof(tmpdir)) == 0);
   log_info("temp dir: %s", tmpdir);
 
   // Metadata tests (no CUDA needed)
   {
     char sub[4200];
     snprintf(sub, sizeof(sub), "%s/meta_sync", tmpdir);
-    mkdir(sub, 0755);
+    test_mkdir(sub);
     ecode |= test_metadata(sub, 0);
   }
   {
     char sub[4200];
     snprintf(sub, sizeof(sub), "%s/meta_async", tmpdir);
-    mkdir(sub, 0755);
+    test_mkdir(sub);
     ecode |= test_metadata(sub, 1);
   }
 
@@ -445,13 +425,13 @@ main(int ac, char* av[])
     {
       char sub[4200];
       snprintf(sub, sizeof(sub), "%s/pipe_sync", tmpdir);
-      mkdir(sub, 0755);
+      test_mkdir(sub);
       ecode |= test_pipeline(sub, 0);
     }
     {
       char sub[4200];
       snprintf(sub, sizeof(sub), "%s/pipe_async", tmpdir);
-      mkdir(sub, 0755);
+      test_mkdir(sub);
       ecode |= test_pipeline(sub, 1);
     }
 
@@ -459,7 +439,7 @@ main(int ac, char* av[])
   }
 
 Cleanup:
-  rmrf(tmpdir);
+  test_tmpdir_remove(tmpdir);
 
 Fail:
   return ecode;

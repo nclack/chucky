@@ -66,7 +66,7 @@ main(int argc, char* argv[])
   const size_t nbytes = 1ULL << 30;
   const size_t nelems = nbytes / sizeof(uint16_t);
   const size_t total_bytes = 10ULL << 30;
-  const int niter = total_bytes / nbytes;
+  const int niter = (int)(total_bytes / nbytes);
 
   CU(Fail, cuMemAlloc(&d_data[0], nbytes));
   CU(Fail, cuMemAlloc(&d_data[1], nbytes));
@@ -87,7 +87,7 @@ main(int argc, char* argv[])
   }
 
   const int block_size = 1024;
-  const int grid_size = (nelems + block_size - 1) / block_size;
+  const int grid_size = (int)((nelems + block_size - 1) / block_size);
 
   printf("Processing %d iterations of 1GB (%.2f GB total)\n",
          niter,
@@ -135,7 +135,7 @@ main(int argc, char* argv[])
   CU(Fail, cuDeviceGetName(device_name, sizeof(device_name), dev));
 
   float measured_bw_gbs =
-    (total_bytes / (1024.0 * 1024.0 * 1024.0)) / (total_transfer_time / 1000.0);
+    (float)((total_bytes / (1024.0 * 1024.0 * 1024.0)) / (total_transfer_time / 1000.0));
 
   printf("OK\n");
   printf("Device: %s\n", device_name);

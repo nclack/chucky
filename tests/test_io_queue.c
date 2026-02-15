@@ -75,7 +75,7 @@ test_event_wait(void)
   CHECK(Fail, q);
 
   atomic_int val = 0;
-  io_queue_post(q, set_value, &val, NULL);
+  io_queue_post(q, set_value, (void*)&val, NULL);
   struct io_event ev = io_queue_record(q);
   io_event_wait(q, ev);
 
@@ -146,7 +146,7 @@ test_destroy_drains(void)
 
   atomic_int count = 0;
   for (int i = 0; i < 50; ++i)
-    io_queue_post(q, increment, &count, NULL);
+    io_queue_post(q, increment, (void*)&count, NULL);
 
   io_queue_destroy(q);
   CHECK(Fail, atomic_load(&count) == 50);

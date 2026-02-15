@@ -1,0 +1,29 @@
+#pragma once
+
+#include <stddef.h>
+#include <stdint.h>
+
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+typedef HANDLE platform_fd;
+#define PLATFORM_FD_INVALID INVALID_HANDLE_VALUE
+#else
+typedef int platform_fd;
+#define PLATFORM_FD_INVALID (-1)
+#endif
+
+// Create a directory (and parents). Returns 0 on success, -1 on error.
+int platform_mkdir(const char* path);
+
+// Open a file for writing (create/truncate). Returns PLATFORM_FD_INVALID on error.
+platform_fd platform_open_write(const char* path);
+
+// Write nbytes at the given byte offset. Returns 0 on success, -1 on error.
+int platform_pwrite(platform_fd fd, const void* buf, size_t nbytes, uint64_t offset);
+
+// Sequential write. Returns 0 on success, -1 on error.
+int platform_write(platform_fd fd, const void* buf, size_t nbytes);
+
+// Close a file descriptor/handle.
+void platform_close(platform_fd fd);

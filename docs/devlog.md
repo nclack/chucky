@@ -1,5 +1,59 @@
 # dev log
 
+## 2026-02-15
+
+Testing on 5090 (oreb). New data distribution hits pretty hard :(
+
+```
+=== test_bench_zarr ===
+  output: .\build\test_output.zarr
+  shape:       (4264, 2048, 2048, 3)  tiles: (32, 128, 128, 1)
+  total:       99.94 GiB (53653536768 elements, 134 epochs)
+  tile:        524288 elements = 1024 KiB  (stride=524288)
+  epoch:       768 slots, 768 MiB pool
+  compress:    max_chunk=1048636 comp_pool=768 MiB
+
+  --- Benchmark Results ---
+  Input:        99.94 GiB (53653536768 elements)
+  Compressed:   40.86 GiB (ratio: 0.407)
+  Tiles:        102912 (768/epoch x 134 epochs)
+
+  Stage        avg GB/s best GB/s     avg ms    best ms
+  Source           2.18    22.00      28.70       2.84
+  H2D             34.66    53.90       1.81       1.16
+  Scatter         75.03   119.36       0.83       0.52
+  Compress         3.74     8.19     200.53      91.57
+  Aggregate       41.38    50.66      18.13      14.81
+  D2H             45.15    53.45      16.61      14.03
+  Sink             3.28  2976.18       5.44       0.01
+
+  Wall time:     46.107 s
+  Throughput:    2.17 GiB/s
+```
+
+Trying to see if I can view the zarr in neuroglancer.
+
+It's not quite as simple as
+
+```powershell
+uv run python -m http.server 8080
+```
+
+The server also needs to set CORS headers, and use the `RangeHTTPServer`.
+
+After that, you can open [neuroglancer] and set source to  `zarr://http://
+localhost:8080/test_output.zarr/0`. You have to point it at an array.
+
+I added a "visual" option to `test_bench` that outputs something a little
+easier to look at, and confirmed it works in napari.
+
+Next is probably to start thinking about multiscale. 
+
+I'm still a little annoyed by the performance. The compression is pretty heavily
+the bottleneck.
+
+[neuroglancer]: https://neuroglancer-demo.appspot.com/
+
 ## 2026-02-14
 
 ### Profiling

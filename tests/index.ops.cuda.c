@@ -593,10 +593,11 @@ test_transpose_indices_with_offset(void)
 
   // Print first few values for debugging
   if (ecode) {
+    int show = count < 20 ? (int)count : 20;
     printf("Expected (first 20): ");
-    println_vu64(count < 20 ? count : 20, expected);
+    println_vu64(show, expected);
     printf("Actual (first 20): ");
-    println_vu64(count < 20 ? count : 20, actual);
+    println_vu64(show, actual);
   } else {
     printf("OK\n");
   }

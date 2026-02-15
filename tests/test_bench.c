@@ -1,13 +1,13 @@
-#define _XOPEN_SOURCE 500
+#define _USE_MATH_DEFINES
 #include "log/log.h"
 #include "platform.h"
 #include "stream.h"
+#include "test_platform.h"
 #include "zarr_sink.h"
 #include <cuda.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <ftw.h>
 #include <math.h>
 #include <string.h>
 #include <zstd.h>
@@ -63,6 +63,75 @@ static double
 splitmix64_uniform(uint64_t* state)
 {
   return (double)(splitmix64(state) >> 11) * 0x1.0p-53;
+}
+
+static inline uint64_t
+hash_cell(int gx, int gy, int gt, uint64_t seed)
+{
+  uint64_t h = seed;
+  h ^= (uint64_t)(unsigned)gx * 0x9e3779b97f4a7c15ULL;
+  h ^= (uint64_t)(unsigned)gy * 0xbf58476d1ce4e5b9ULL;
+  h ^= (uint64_t)(unsigned)gt * 0x94d049bb133111ebULL;
+  h = (h ^ (h >> 30)) * 0xbf58476d1ce4e5b9ULL;
+  h = (h ^ (h >> 27)) * 0x94d049bb133111ebULL;
+  return h ^ (h >> 31);
+}
+
+// Synthetic fluorescence microscopy: sparse bright blobs on dark background.
+// Hash-based, all integer math, one hash per pixel.
+//   Grid: 32x32 px cells, ~3% density, radius 12 px, 64-frame temporal blocks.
+//   RGB variation: R-dominant, G-dominant, B-dominant, or white per blob.
+static void
+fill_chunk_visual(uint16_t* buf, size_t count, size_t offset)
+{
+  // shape: (T, 2048, 2048, 3), row-major, c fastest
+  const int W = 2048, C = 3;
+  const size_t row = (size_t)C;
+  const size_t plane = (size_t)W * row;
+  const size_t vol = (size_t)W * plane;
+  const int GRID = 32, RADIUS_SQ = 12 * 12; // 144
+
+  for (size_t i = 0; i < count; ++i) {
+    size_t gi = offset + i;
+    int c = (int)(gi % row);
+    int x = (int)((gi / row) % W);
+    int y = (int)((gi / plane) % W);
+    int t = (int)(gi / vol);
+
+    int gx = x >> 5; // / 32
+    int gy = y >> 5;
+    int gt = t >> 6; // / 64
+
+    uint64_t h = hash_cell(gx, gy, gt, 0xdeadbeefULL);
+
+    // ~3% density: low 5 bits == 0 → 1/32 ≈ 3.1%
+    if ((h & 0x1F) != 0) {
+      buf[i] = 0;
+      continue;
+    }
+
+    // Cell center with ±4 wobble (stays within grid cell for radius 12)
+    int cx = (gx << 5) + 16 + (int)((h >> 5) & 7) - 4;
+    int cy = (gy << 5) + 16 + (int)((h >> 8) & 7) - 4;
+    int dx = x - cx, dy = y - cy;
+    int d2 = dx * dx + dy * dy;
+
+    if (d2 >= RADIUS_SQ) {
+      buf[i] = 0;
+      continue;
+    }
+
+    int falloff = RADIUS_SQ - d2; // [1, 144]
+    int base = 8000 + (int)((h >> 11) & 0x1FFF); // 8000–16191
+    int val = (base * falloff) / RADIUS_SQ;
+
+    // Channel color: bits 24-25 select type (0=R, 1=G, 2=B, 3=white)
+    int ctype = (int)((h >> 24) & 3);
+    if (ctype < 3 && ctype != c)
+      val >>= 2; // dim non-primary channels
+
+    buf[i] = (uint16_t)val;
+  }
 }
 
 static void
@@ -557,20 +626,6 @@ Fail:
 
 // --- Benchmark with zarr file output ---
 
-static int
-rm_cb(const char* path, const struct stat* sb, int type, struct FTW* ftw)
-{
-  (void)sb;
-  (void)type;
-  (void)ftw;
-  return remove(path);
-}
-
-static void
-rm_rf(const char* path)
-{
-  nftw(path, rm_cb, 64, FTW_DEPTH | FTW_PHYS);
-}
 
 static int
 test_bench_zarr(const char* output_path)
@@ -578,16 +633,9 @@ test_bench_zarr(const char* output_path)
   log_info("=== test_bench_zarr ===");
   log_info("  output: %s", output_path);
 
-  rm_rf(output_path);
+  test_tmpdir_remove(output_path);
 
   const struct dimension dims[] = {
-    { .size = 4264, .tile_size = 32, .tiles_per_shard = 16 },
-    { .size = 2048, .tile_size = 128, .tiles_per_shard = 4 },
-    { .size = 2048, .tile_size = 128, .tiles_per_shard = 4 },
-    { .size = 3, .tile_size = 1, .tiles_per_shard = 3 },
-  };
-
-  const struct zarr_dimension zarr_dims[] = {
     { .size = 4264, .tile_size = 32, .tiles_per_shard = 16, .name = "t" },
     { .size = 2048, .tile_size = 128, .tiles_per_shard = 4, .name = "y" },
     { .size = 2048, .tile_size = 128, .tiles_per_shard = 4, .name = "x" },
@@ -600,7 +648,7 @@ test_bench_zarr(const char* output_path)
     .data_type = zarr_dtype_uint16,
     .fill_value = 0,
     .rank = 4,
-    .dimensions = zarr_dims,
+    .dimensions = dims,
   };
 
   const size_t total_elements = (size_t)4264 * 2048 * 2048 * 3;
@@ -721,6 +769,151 @@ Fail:
   return 1;
 }
 
+// --- Visual zarr output (synthetic fluorescence microscopy) ---
+
+static int
+test_visual_zarr(const char* output_path)
+{
+  log_info("=== test_visual_zarr ===");
+  log_info("  output: %s", output_path);
+
+  test_tmpdir_remove(output_path);
+
+  const struct dimension dims[] = {
+    { .size = 4264, .tile_size = 32, .tiles_per_shard = 16, .name = "t" },
+    { .size = 2048, .tile_size = 128, .tiles_per_shard = 4, .name = "y" },
+    { .size = 2048, .tile_size = 128, .tiles_per_shard = 4, .name = "x" },
+    { .size = 3, .tile_size = 1, .tiles_per_shard = 3, .name = "c" },
+  };
+
+  const struct zarr_config zarr_cfg = {
+    .store_path = output_path,
+    .array_name = "0",
+    .data_type = zarr_dtype_uint16,
+    .fill_value = 0,
+    .rank = 4,
+    .dimensions = dims,
+  };
+
+  const size_t total_elements = (size_t)4264 * 2048 * 2048 * 3;
+  const size_t total_bytes = total_elements * sizeof(uint16_t);
+
+  struct transpose_stream s = { 0 };
+  struct zarr_sink* zs = zarr_sink_create(&zarr_cfg, NULL);
+  CHECK(Fail, zs);
+
+  struct metered_shard_sink mss;
+  metered_shard_sink_init(&mss, zarr_sink_as_shard_sink(zs));
+
+  const struct transpose_stream_configuration config = {
+    .buffer_capacity_bytes = 128 << 20,
+    .bytes_per_element = sizeof(uint16_t),
+    .rank = 4,
+    .dimensions = dims,
+    .compress = 1,
+    .shard_sink = &mss.base,
+  };
+
+  CHECK(Fail, transpose_stream_create(&config, &s) == 0);
+
+  const size_t num_epochs =
+    (total_elements + s.layout.epoch_elements - 1) / s.layout.epoch_elements;
+
+  log_info("  shape:       (%u, %u, %u, %u)  tiles: (%u, %u, %u, %u)",
+           (unsigned)dims[0].size,
+           (unsigned)dims[1].size,
+           (unsigned)dims[2].size,
+           (unsigned)dims[3].size,
+           (unsigned)dims[0].tile_size,
+           (unsigned)dims[1].tile_size,
+           (unsigned)dims[2].tile_size,
+           (unsigned)dims[3].tile_size);
+  log_info("  total:       %.2f GiB (%zu elements, %zu epochs)",
+           (double)total_bytes / (1024.0 * 1024.0 * 1024.0),
+           total_elements,
+           num_epochs);
+  log_info("  tile:        %lu elements = %lu KiB  (stride=%lu)",
+           (unsigned long)s.layout.tile_elements,
+           (unsigned long)(s.layout.tile_stride * sizeof(uint16_t) / 1024),
+           (unsigned long)s.layout.tile_stride);
+  log_info("  epoch:       %lu slots, %lu MiB pool",
+           (unsigned long)s.layout.slot_count,
+           (unsigned long)(s.layout.tile_pool_bytes / (1024 * 1024)));
+  log_info("  compress:    max_chunk=%zu comp_pool=%zu MiB",
+           s.comp.max_comp_chunk_bytes,
+           s.comp.comp_pool_bytes / (1024 * 1024));
+
+  const size_t chunk_elements = 32 * 1024 * 1024;
+  uint16_t* chunk = (uint16_t*)malloc(chunk_elements * sizeof(uint16_t));
+  CHECK(Fail, chunk);
+
+  struct platform_clock clock = { 0 };
+  struct platform_clock src_clock = { 0 };
+  struct stream_metric src = { .name = "Source", .best_ms = 1e30f };
+  platform_toc(&clock);
+
+  for (size_t offset = 0; offset < total_elements; offset += chunk_elements) {
+    size_t n = chunk_elements;
+    if (offset + n > total_elements)
+      n = total_elements - offset;
+
+    fill_chunk_visual(chunk, n, offset);
+
+    struct slice input = { .beg = chunk, .end = chunk + n };
+    platform_toc(&src_clock);
+    struct writer_result r = writer_append_wait(&s.writer, input);
+    float ms = (float)(platform_toc(&src_clock) * 1000.0);
+    src.ms += ms;
+    src.count++;
+    if (ms < src.best_ms)
+      src.best_ms = ms;
+    if (r.error) {
+      log_error("  append failed at offset %zu", offset);
+      free(chunk);
+      goto Fail;
+    }
+  }
+
+  {
+    struct writer_result r = writer_flush(&s.writer);
+    if (r.error) {
+      log_error("  flush failed");
+      free(chunk);
+      goto Fail;
+    }
+  }
+
+  float wall_s = platform_toc(&clock);
+  free(chunk);
+  chunk = NULL;
+
+  if (s.cursor != total_elements) {
+    log_error("  cursor drift: expected %zu, got %zu (diff=%td)",
+              total_elements,
+              (size_t)s.cursor,
+              (ptrdiff_t)((int64_t)s.cursor - (int64_t)total_elements));
+    goto Fail;
+  }
+
+  {
+    struct sink_stats ss = { .total_bytes = mss.total_bytes, .sink = &mss.sink };
+    print_bench_report(
+      &s, &ss, &src, total_bytes, total_elements, chunk_elements, wall_s);
+  }
+
+  transpose_stream_destroy(&s);
+  zarr_sink_destroy(zs);
+  log_info("  PASS");
+  return 0;
+
+Fail:
+  transpose_stream_destroy(&s);
+  if (zs)
+    zarr_sink_destroy(zs);
+  log_error("  FAIL");
+  return 1;
+}
+
 int
 main(int ac, char* av[])
 {
@@ -736,15 +929,20 @@ main(int ac, char* av[])
   CU(Fail, cuCtxCreate(&ctx, 0, dev));
 
   // --zarr <path>: run only the zarr file-writing benchmark
+  // --visual <path>: write visually interesting synthetic microscopy zarr
   const char* zarr_path = NULL;
+  const char* visual_path = NULL;
   for (int i = 1; i < ac; ++i) {
     if (strcmp(av[i], "--zarr") == 0 && i + 1 < ac) {
       zarr_path = av[i + 1];
-      break;
+    } else if (strcmp(av[i], "--visual") == 0 && i + 1 < ac) {
+      visual_path = av[i + 1];
     }
   }
 
-  if (zarr_path) {
+  if (visual_path) {
+    ecode |= test_visual_zarr(visual_path);
+  } else if (zarr_path) {
     ecode |= test_bench_zarr(zarr_path);
   } else {
     ecode |= test_compressed_small();

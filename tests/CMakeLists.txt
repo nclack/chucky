@@ -71,6 +71,20 @@ target_link_libraries(test_avx2_div PRIVATE div_avx2)
 # Transpose indices CUDA test
 add_my_test(index.ops.cuda index.ops.cuda.c transpose index_ops_util CUDA::cudart_static)
 
+# Test platform utilities
+if(WIN32)
+    set(TEST_PLATFORM_SRC test_platform.win32.c)
+else()
+    set(TEST_PLATFORM_SRC test_platform.posix.c)
+endif()
+
+add_library(test_platform STATIC
+    ${TEST_PLATFORM_SRC}
+    test_platform.h
+)
+target_include_directories(test_platform PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_compile_options(test_platform PRIVATE $<$<COMPILE_LANGUAGE:C>:${C_WARN_FLAGS}>)
+
 # Streaming tiled transpose test
 find_path(ZSTD_INCLUDE_DIR NAMES zstd.h
     PATH_SUFFIXES include REQUIRED)
@@ -87,7 +101,7 @@ target_link_libraries(test_compress PRIVATE ${ZSTD_LIBRARY})
 target_include_directories(test_compress PRIVATE ${ZSTD_INCLUDE_DIR})
 
 add_my_test(test_bench test_bench.c stream CUDA::cudart_static)
-target_link_libraries(test_bench PRIVATE index_ops_util zarr_sink ${ZSTD_LIBRARY})
+target_link_libraries(test_bench PRIVATE index_ops_util zarr_sink test_platform ${ZSTD_LIBRARY})
 target_include_directories(test_bench PRIVATE ${ZSTD_INCLUDE_DIR})
 
 add_my_test(test_aggregate test_aggregate.c aggregate CUDA::cudart_static)
@@ -110,6 +124,6 @@ add_test(NAME "test-test_io_queue" COMMAND test_io_queue)
 
 # Zarr sink integration test
 add_my_test(test_zarr_sink test_zarr_sink.c zarr_sink stream CUDA::cudart_static)
-target_link_libraries(test_zarr_sink PRIVATE ${ZSTD_LIBRARY})
+target_link_libraries(test_zarr_sink PRIVATE test_platform ${ZSTD_LIBRARY})
 target_include_directories(test_zarr_sink PRIVATE ${ZSTD_INCLUDE_DIR})
 

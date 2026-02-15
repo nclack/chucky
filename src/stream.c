@@ -314,7 +314,7 @@ crc32c_init_table(void)
   for (int i = 0; i < 256; ++i) {
     uint32_t crc = (uint32_t)i;
     for (int j = 0; j < 8; ++j)
-      crc = (crc >> 1) ^ (0x82F63B78 & -(crc & 1));
+      crc = (crc >> 1) ^ (0x82F63B78 & (0u - (crc & 1)));
     crc32c_table[i] = crc;
   }
   crc32c_table_ready = 1;

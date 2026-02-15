@@ -74,6 +74,7 @@ struct dimension
   uint64_t size;
   uint64_t tile_size;
   uint64_t tiles_per_shard; // 0 means all tiles along this dimension
+  const char* name;         // optional label (e.g. "x"), may be NULL
 };
 
 struct transpose_stream_configuration

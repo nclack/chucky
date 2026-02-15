@@ -356,10 +356,11 @@ vadd2_agrees_with_add(void)
             snprintf(buf, sizeof(buf), "beg=%llu, step=%llu", (unsigned long long)beg, (unsigned long long)step);
             int err = expect_arrays_equal(expected, actual, count, buf);
             if (err) {
+              int show = count < 10 ? (int)count : 10;
               printf("Expected (first 10): ");
-              println_vu64(count < 10 ? count : 10, expected);
+              println_vu64(show, expected);
               printf("Actual (first 10): ");
-              println_vu64(count < 10 ? count : 10, actual);
+              println_vu64(show, actual);
               state.ecode |= err;
             }
           }

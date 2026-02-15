@@ -200,16 +200,33 @@ dispatch_scatter(struct transpose_stream* s)
   // Kernel waits for H2D, then scatters into tile pool
   CU(Error, cuStreamWaitEvent(s->compute, ss->h_in.ready, 0));
   CU(Error, cuEventRecord(ss->t_scatter_start, s->compute));
-  // FIXME: dispatch based on element type
-  transpose_u16_v0((CUdeviceptr)ts->d_tiles.data,
-                   (CUdeviceptr)ts->d_tiles.data + s->layout.tile_pool_bytes,
-                   (CUdeviceptr)ss->d_in.data,
-                   (CUdeviceptr)ss->d_in.data + s->stage.fill,
-                   s->cursor,
-                   s->layout.lifted_rank,
-                   s->layout.d_lifted_shape,
-                   s->layout.d_lifted_strides,
-                   s->compute);
+  switch (bpe) {
+    case 2:
+      transpose_u16_v0((CUdeviceptr)ts->d_tiles.data,
+                       (CUdeviceptr)ts->d_tiles.data + s->layout.tile_pool_bytes,
+                       (CUdeviceptr)ss->d_in.data,
+                       (CUdeviceptr)ss->d_in.data + s->stage.fill,
+                       s->cursor,
+                       s->layout.lifted_rank,
+                       s->layout.d_lifted_shape,
+                       s->layout.d_lifted_strides,
+                       s->compute);
+      break;
+    case 4:
+      transpose_u32_v0((CUdeviceptr)ts->d_tiles.data,
+                       (CUdeviceptr)ts->d_tiles.data + s->layout.tile_pool_bytes,
+                       (CUdeviceptr)ss->d_in.data,
+                       (CUdeviceptr)ss->d_in.data + s->stage.fill,
+                       s->cursor,
+                       s->layout.lifted_rank,
+                       s->layout.d_lifted_shape,
+                       s->layout.d_lifted_strides,
+                       s->compute);
+      break;
+    default:
+      log_error("dispatch_scatter: unsupported bytes_per_element=%zu", bpe);
+      goto Error;
+  }
   CU(Error, cuEventRecord(ss->t_scatter_end, s->compute));
   CU(Error, cuEventRecord(ts->d_tiles.ready, s->compute));
 
@@ -262,27 +279,38 @@ writer_append_wait(struct writer* w, struct slice data)
   return writer_ok();
 }
 
-// Deliver compressed tiles from the previous epoch to the compressed_sink.
-static int
-deliver_compressed_tiles(struct transpose_stream* s, int pool)
+// Software CRC32C (Castagnoli) computed at runtime via a generated table.
+// Only used for the small shard index block, so performance isn't critical.
+static uint32_t crc32c_table[256];
+static int crc32c_table_ready;
+
+static void
+crc32c_init_table(void)
 {
-  const uint64_t M = s->layout.slot_count;
-  const struct compression_slot* cs = &s->tiles.slot[pool].comp;
-  const void** tile_ptrs = (const void**)malloc(M * sizeof(void*));
-  CHECK(Error, tile_ptrs);
-
-  for (uint64_t i = 0; i < M; ++i)
-    tile_ptrs[i] =
-      (char*)cs->h_compressed.data + i * s->comp.max_comp_chunk_bytes;
-
-  int err = s->config.compressed_sink->append(
-    s->config.compressed_sink, tile_ptrs, cs->h_comp_sizes, M);
-  free((void*)tile_ptrs);
-  return err;
-
-Error:
-  return 1;
+  if (crc32c_table_ready)
+    return;
+  for (int i = 0; i < 256; ++i) {
+    uint32_t crc = (uint32_t)i;
+    for (int j = 0; j < 8; ++j)
+      crc = (crc >> 1) ^ (0x82F63B78 & -(crc & 1));
+    crc32c_table[i] = crc;
+  }
+  crc32c_table_ready = 1;
 }
+
+static uint32_t
+crc32c(const void* data, size_t len)
+{
+  uint32_t crc = 0xFFFFFFFF;
+  const uint8_t* p = (const uint8_t*)data;
+  for (size_t i = 0; i < len; ++i)
+    crc = crc32c_table[(crc ^ p[i]) & 0xFF] ^ (crc >> 8);
+  return crc ^ 0xFFFFFFFF;
+}
+
+// Forward declarations for shard delivery
+static int deliver_to_shards(struct transpose_stream* s, int pool);
+static int emit_shards(struct transpose_stream* s);
 
 // Wait for source, record timing, memcpy D2H, record completion.
 // Returns 0 on success.
@@ -312,8 +340,10 @@ kick_epoch_d2h(struct transpose_stream* s, int pool)
 {
   struct tile_pool_slot* ts = &s->tiles.slot[pool];
 
-  if (s->config.compress && s->config.compressed_sink) {
+  if (s->config.compress && s->config.shard_sink) {
+    // Shard path: compress → aggregate → D2H aggregated + offsets
     struct compression_slot* cs = &ts->comp;
+    struct aggregate_slot* agg = &ts->agg;
 
     // Compress on compute (ordered after scatter on same stream)
     CU(Error, cuEventRecord(ts->t_compress_start, s->compute));
@@ -328,25 +358,36 @@ kick_epoch_d2h(struct transpose_stream* s, int pool)
                            cs->d_comp_ptrs,
                            cs->d_comp_sizes,
                            s->compute) == 0);
+
+    // Sync compute stream (nvcomp internal ops race with events)
+    CU(Error, cuStreamSynchronize(s->compute));
     CU(Error, cuEventRecord(cs->d_compressed.ready, s->compute));
 
-    // D2H waits for compress, then transfers compressed data + sizes
+    // Aggregate: permute + prefix-sum + gather
     CHECK(Error,
-          d2h_memcpy_async(s->d2h,
-                           cs->d_compressed.ready,
-                           ts->t_d2h_start,
-                           cs->h_compressed.data,
-                           (CUdeviceptr)cs->d_compressed.data,
-                           s->comp.comp_pool_bytes,
-                           cs->h_compressed.ready) == 0);
+          aggregate_by_shard_async(&s->agg_layout,
+                                   cs->d_compressed.data,
+                                   cs->d_comp_sizes,
+                                   agg,
+                                   s->compute) == 0);
+    CU(Error, cuEventRecord(agg->ready, s->compute));
 
-    // Sizes piggyback on the same stream (no separate event pair)
+    // D2H aggregated buffer
+    CU(Error, cuStreamWaitEvent(s->d2h, agg->ready, 0));
+    CU(Error, cuEventRecord(ts->t_d2h_start, s->d2h));
     CU(Error,
-       cuMemcpyDtoHAsync(cs->h_comp_sizes,
-                         (CUdeviceptr)cs->d_comp_sizes,
-                         s->layout.slot_count * sizeof(size_t),
+       cuMemcpyDtoHAsync(agg->h_aggregated,
+                         (CUdeviceptr)agg->d_aggregated,
+                         s->comp.comp_pool_bytes,
                          s->d2h));
-    CU(Error, cuEventRecord(cs->h_compressed.ready, s->d2h));
+
+    // D2H offsets
+    CU(Error,
+       cuMemcpyDtoHAsync(agg->h_offsets,
+                         (CUdeviceptr)agg->d_offsets,
+                         (s->agg_layout.covering_count + 1) * sizeof(size_t),
+                         s->d2h));
+    CU(Error, cuEventRecord(agg->ready, s->d2h));
   } else {
     CHECK(Error,
           d2h_memcpy_async(s->d2h,
@@ -370,13 +411,16 @@ wait_and_deliver(struct transpose_stream* s, int pool)
 {
   struct tile_pool_slot* ts = &s->tiles.slot[pool];
 
-  if (s->config.compress && s->config.compressed_sink) {
+  if (s->config.compress && s->config.shard_sink) {
     struct compression_slot* cs = &ts->comp;
-    CU(Error, cuEventSynchronize(cs->h_compressed.ready));
+    struct aggregate_slot* agg = &ts->agg;
+    CU(Error, cuEventSynchronize(agg->ready));
     accumulate_metric(
       &s->metrics.compress, ts->t_compress_start, cs->d_compressed.ready);
-    accumulate_metric(&s->metrics.d2h, ts->t_d2h_start, cs->h_compressed.ready);
-    if (deliver_compressed_tiles(s, pool))
+    accumulate_metric(
+      &s->metrics.aggregate, cs->d_compressed.ready, agg->ready);
+    accumulate_metric(&s->metrics.d2h, ts->t_d2h_start, agg->ready);
+    if (deliver_to_shards(s, pool))
       goto Error;
   } else {
     CU(Error, cuEventSynchronize(ts->h_tiles.ready));
@@ -445,6 +489,108 @@ Error:
   return writer_error();
 }
 
+static int
+emit_shards(struct transpose_stream* s)
+{
+  for (uint64_t si = 0; si < s->shard.shard_inner_count; ++si) {
+    struct active_shard* sh = &s->shard.shards[si];
+    if (!sh->writer)
+      continue;
+
+    // Serialize index: tiles_per_shard_total pairs of (offset, nbytes) as LE
+    // uint64 + 4-byte CRC32C
+    size_t index_data_bytes =
+      s->shard.tiles_per_shard_total * 2 * sizeof(uint64_t);
+    size_t index_total_bytes = index_data_bytes + 4;
+    uint8_t* index_buf = (uint8_t*)malloc(index_total_bytes);
+    CHECK(Error, index_buf);
+
+    memcpy(index_buf, sh->index, index_data_bytes);
+
+    uint32_t crc = crc32c(index_buf, index_data_bytes);
+    memcpy(index_buf + index_data_bytes, &crc, 4);
+
+    int wrc = sh->writer->write(
+      sh->writer, sh->data_cursor, index_buf, index_buf + index_total_bytes);
+    free(index_buf);
+    CHECK(Error, wrc == 0);
+
+    CHECK(Error, sh->writer->finalize(sh->writer) == 0);
+
+    // Reset for next shard-epoch
+    sh->writer = NULL;
+    sh->data_cursor = 0;
+    memset(sh->index,
+           0xFF,
+           s->shard.tiles_per_shard_total * 2 * sizeof(uint64_t));
+  }
+
+  s->shard.epoch_in_shard = 0;
+  s->shard.shard_epoch++;
+  return 0;
+
+Error:
+  return 1;
+}
+
+static int
+deliver_to_shards(struct transpose_stream* s, int pool)
+{
+  struct aggregate_slot* agg = &s->tiles.slot[pool].agg;
+  const uint64_t tps_inner = s->shard.tiles_per_shard_inner;
+  const uint64_t epoch_in_shard = s->shard.epoch_in_shard;
+
+  for (uint64_t si = 0; si < s->shard.shard_inner_count; ++si) {
+    uint64_t j_start = si * tps_inner;
+    uint64_t j_end = j_start + tps_inner;
+
+    struct active_shard* sh = &s->shard.shards[si];
+
+    // Lazily open writer
+    if (!sh->writer) {
+      uint64_t flat = s->shard.shard_epoch * s->shard.shard_inner_count + si;
+      sh->writer = s->config.shard_sink->open(s->config.shard_sink, flat);
+      CHECK(Error, sh->writer);
+    }
+
+    // Batch write: all tiles for this shard are contiguous in aggregated buffer
+    size_t shard_bytes = agg->h_offsets[j_end] - agg->h_offsets[j_start];
+    if (shard_bytes > 0) {
+      const void* src =
+        (const char*)agg->h_aggregated + agg->h_offsets[j_start];
+      CHECK(Error,
+            sh->writer->write(sh->writer,
+                              sh->data_cursor,
+                              src,
+                              (const char*)src + shard_bytes) == 0);
+    }
+
+    // Record index entries for each tile
+    for (uint64_t j = j_start; j < j_end; ++j) {
+      size_t tile_size = agg->h_offsets[j + 1] - agg->h_offsets[j];
+      if (tile_size > 0) {
+        uint64_t within_inner = j - j_start;
+        uint64_t slot = epoch_in_shard * tps_inner + within_inner;
+        size_t tile_off =
+          sh->data_cursor + (agg->h_offsets[j] - agg->h_offsets[j_start]);
+        sh->index[2 * slot] = tile_off;
+        sh->index[2 * slot + 1] = tile_size;
+      }
+    }
+    sh->data_cursor += shard_bytes;
+  }
+
+  s->shard.epoch_in_shard++;
+
+  if (s->shard.epoch_in_shard >= s->shard.tiles_per_shard_0)
+    return emit_shards(s);
+
+  return 0;
+
+Error:
+  return 1;
+}
+
 struct stream_metrics
 transpose_stream_get_metrics(const struct transpose_stream* s)
 {
@@ -491,10 +637,20 @@ transpose_stream_destroy(struct transpose_stream* stream)
     device_free(ts->comp.d_comp_ptrs);
     device_free(ts->comp.d_comp_sizes);
     host_free(ts->comp.h_comp_sizes);
+
+    aggregate_slot_destroy(&ts->agg);
   }
 
   device_free(stream->comp.d_uncomp_sizes);
   device_free(stream->comp.d_comp_temp);
+
+  aggregate_layout_destroy(&stream->agg_layout);
+
+  if (stream->shard.shards) {
+    for (uint64_t i = 0; i < stream->shard.shard_inner_count; ++i)
+      free(stream->shard.shards[i].index);
+    free(stream->shard.shards);
+  }
 
   *stream = (struct transpose_stream){ 0 };
 }
@@ -597,18 +753,20 @@ transpose_stream_create(const struct transpose_stream_configuration* config,
 {
   CHECK(Fail, config);
   CHECK(Fail, out);
-  CHECK(Fail, config->bytes_per_element > 0);
-  CHECK(Fail, config->buffer_capacity_bytes > 0);
-  CHECK(Fail, (config->buffer_capacity_bytes & 4095) == 0); // must be 4KB-aligned for vectorized kernel loads
-  CHECK(Fail, config->rank > 0);
-  CHECK(Fail, config->rank <= MAX_RANK / 2); // lifted rank = 2 * rank
-  CHECK(Fail, config->dimensions);
 
   *out = (struct transpose_stream){
     .writer = { .append = transpose_stream_append,
                 .flush = transpose_stream_flush },
     .config = *config,
   };
+
+  CHECK(Fail, config->bytes_per_element > 0);
+  CHECK(Fail, config->buffer_capacity_bytes > 0);
+  out->config.buffer_capacity_bytes =
+    (config->buffer_capacity_bytes + 4095) & ~(size_t)4095;
+  CHECK(Fail, config->rank > 0);
+  CHECK(Fail, config->rank <= MAX_RANK / 2); // lifted rank = 2 * rank
+  CHECK(Fail, config->dimensions);
 
   CU(Fail, cuStreamCreate(&out->h2d, CU_STREAM_NON_BLOCKING));
   CU(Fail, cuStreamCreate(&out->compute, CU_STREAM_NON_BLOCKING));
@@ -735,6 +893,64 @@ transpose_stream_create(const struct transpose_stream_configuration* config,
   if (config->compress)
     CHECK(Fail, init_compression_state(out) == 0);
 
+  // Aggregate + shard state
+  if (config->compress && config->shard_sink) {
+    crc32c_init_table();
+
+    // Build tiles_per_shard array, defaulting 0 → tile_count[d]
+    uint64_t tiles_per_shard[MAX_RANK];
+    for (int d = 0; d < rank; ++d) {
+      uint64_t tps = dims[d].tiles_per_shard;
+      tiles_per_shard[d] = (tps == 0) ? tile_count[d] : tps;
+    }
+
+    CHECK(Fail,
+          aggregate_layout_init(&out->agg_layout,
+                                rank,
+                                tile_count,
+                                tiles_per_shard,
+                                out->layout.slot_count,
+                                out->comp.max_comp_chunk_bytes) == 0);
+
+    for (int i = 0; i < 2; ++i)
+      CHECK(Fail,
+            aggregate_slot_init(&out->tiles.slot[i].agg,
+                                &out->agg_layout,
+                                out->comp.comp_pool_bytes) == 0);
+
+    // Compute shard geometry
+    out->shard.tiles_per_shard_0 = tiles_per_shard[0];
+    out->shard.tiles_per_shard_inner = 1;
+    for (int d = 1; d < rank; ++d)
+      out->shard.tiles_per_shard_inner *= tiles_per_shard[d];
+    out->shard.tiles_per_shard_total =
+      out->shard.tiles_per_shard_0 * out->shard.tiles_per_shard_inner;
+
+    out->shard.shard_inner_count = 1;
+    for (int d = 1; d < rank; ++d)
+      out->shard.shard_inner_count *=
+        ceildiv(tile_count[d], tiles_per_shard[d]);
+
+    out->shard.shards = (struct active_shard*)calloc(
+      out->shard.shard_inner_count, sizeof(struct active_shard));
+    CHECK(Fail, out->shard.shards);
+
+    size_t index_bytes =
+      2 * out->shard.tiles_per_shard_total * sizeof(uint64_t);
+    for (uint64_t i = 0; i < out->shard.shard_inner_count; ++i) {
+      out->shard.shards[i].index = (uint64_t*)malloc(index_bytes);
+      CHECK(Fail, out->shard.shards[i].index);
+      memset(out->shard.shards[i].index, 0xFF, index_bytes);
+    }
+
+    out->shard.epoch_in_shard = 0;
+    out->shard.shard_epoch = 0;
+
+    // Seed aggregate slot events
+    for (int i = 0; i < 2; ++i)
+      CU(Fail, cuEventRecord(out->tiles.slot[i].agg.ready, out->compute));
+  }
+
   // Record initial events so first cuEventSynchronize / cuStreamWaitEvent
   // calls succeed immediately, and seed timing events so cuEventElapsedTime
   // never sees unrecorded events.
@@ -755,6 +971,8 @@ transpose_stream_create(const struct transpose_stream_configuration* config,
     (struct stream_metric){ .name = "Scatter", .best_ms = 1e30f };
   out->metrics.compress =
     (struct stream_metric){ .name = "Compress", .best_ms = 1e30f };
+  out->metrics.aggregate =
+    (struct stream_metric){ .name = "Aggregate", .best_ms = 1e30f };
   out->metrics.d2h = (struct stream_metric){ .name = "D2H", .best_ms = 1e30f };
 
   out->cursor = 0;
@@ -868,10 +1086,12 @@ transpose_stream_flush(struct writer* self)
       return r;
   }
 
-  if (s->config.compress && s->config.compressed_sink)
-    return s->config.compressed_sink->flush(s->config.compressed_sink)
-             ? writer_error()
-             : writer_ok();
+  if (s->config.compress && s->config.shard_sink) {
+    // Emit partial shard-epoch if any epochs were delivered
+    if (s->shard.epoch_in_shard > 0)
+      return emit_shards(s) ? writer_error() : writer_ok();
+    return writer_ok();
+  }
 
   if (s->config.sink)
     return writer_flush(s->config.sink);

@@ -1,0 +1,364 @@
+#include "aggregate.h"
+
+#include "log/log.h"
+#include <cub/cub.cuh>
+#include <stdlib.h>
+#include <string.h>
+
+static int
+handle_curesult(int level,
+                CUresult ecode,
+                const char* file,
+                int line,
+                const char* expr)
+{
+  if (ecode == CUDA_SUCCESS)
+    return 0;
+  const char *name, *desc;
+  cuGetErrorName(ecode, &name);
+  cuGetErrorString(ecode, &desc);
+  if (name && desc) {
+    log_log(level, file, line, "CUDA error: %s %s %s\n", name, desc, expr);
+  } else {
+    log_log(level,
+            file,
+            line,
+            "%s. Failed to retrieve error info for CUresult: %d\n",
+            expr,
+            ecode);
+  }
+  return 1;
+}
+
+#define CU(lbl, e)                                                             \
+  do {                                                                         \
+    CUresult res_ = (e);                                                       \
+    if (res_ != CUDA_SUCCESS &&                                                \
+        handle_curesult(LOG_ERROR, res_, __FILE__, __LINE__, #e)) {            \
+      goto lbl;                                                                \
+    }                                                                          \
+  } while (0)
+
+#define CHECK(lbl, e)                                                          \
+  do {                                                                         \
+    if (!(e)) {                                                                \
+      log_error("%s:%d check failed: %s", __FILE__, __LINE__, #e);             \
+      goto lbl;                                                                \
+    }                                                                          \
+  } while (0)
+
+static uint64_t
+ceildiv(uint64_t a, uint64_t b)
+{
+  return (a + b - 1) / b;
+}
+
+// ---------------------------------------------------------------------------
+// Kernel 1: permute_sizes_k
+//   Thread i (0..M-1) computes P[i] via lifted-stride unravel, then writes:
+//     d_permuted_sizes[P[i]] = d_comp_sizes[i]
+//     d_perm[i] = P[i]
+// ---------------------------------------------------------------------------
+__global__ void
+permute_sizes_k(const size_t* __restrict__ d_comp_sizes,
+                size_t* __restrict__ d_permuted_sizes,
+                uint32_t* __restrict__ d_perm,
+                uint64_t M,
+                uint8_t lifted_rank,
+                const uint64_t* __restrict__ shape,
+                const int64_t* __restrict__ strides)
+{
+  const uint64_t i = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
+  if (i >= M)
+    return;
+
+  // Unravel tile index i against lifted_shape, dot with lifted_strides
+  uint64_t out = 0;
+  uint64_t rest = i;
+  for (int d = lifted_rank - 1; d >= 0; --d) {
+    const uint64_t coord = rest % shape[d];
+    rest /= shape[d];
+    out += coord * strides[d];
+  }
+
+  uint32_t pi = (uint32_t)out;
+  d_permuted_sizes[pi] = d_comp_sizes[i];
+  d_perm[i] = pi;
+}
+
+// ---------------------------------------------------------------------------
+// Kernel 2 (tiny): write the total at d_offsets[C]
+// ---------------------------------------------------------------------------
+__global__ void
+write_total_k(size_t* __restrict__ d_offsets,
+              const size_t* __restrict__ d_permuted_sizes,
+              uint64_t C)
+{
+  d_offsets[C] = d_offsets[C - 1] + d_permuted_sizes[C - 1];
+}
+
+// ---------------------------------------------------------------------------
+// Kernel 3: gather_k
+//   Block i copies d_comp_sizes[i] bytes from
+//     d_compressed + i * max_comp_chunk_bytes
+//   to
+//     d_aggregated + d_offsets[d_perm[i]]
+// ---------------------------------------------------------------------------
+__global__ void
+gather_k(const void* __restrict__ d_compressed,
+         void* __restrict__ d_aggregated,
+         const size_t* __restrict__ d_comp_sizes,
+         const size_t* __restrict__ d_offsets,
+         const uint32_t* __restrict__ d_perm,
+         size_t max_comp_chunk_bytes)
+{
+  const uint64_t i = blockIdx.x;
+  const size_t nbytes = d_comp_sizes[i];
+  if (nbytes == 0)
+    return;
+
+  const uint8_t* src = (const uint8_t*)d_compressed + i * max_comp_chunk_bytes;
+  uint8_t* dst = (uint8_t*)d_aggregated + d_offsets[d_perm[i]];
+
+  for (size_t off = threadIdx.x; off < nbytes; off += blockDim.x)
+    dst[off] = src[off];
+}
+
+// ---------------------------------------------------------------------------
+// Host functions
+// ---------------------------------------------------------------------------
+
+extern "C" int
+aggregate_layout_init(struct aggregate_layout* layout,
+                      uint8_t rank,
+                      const uint64_t* tile_count,
+                      const uint64_t* tiles_per_shard,
+                      uint64_t slot_count,
+                      size_t max_comp_chunk_bytes)
+{
+  uint64_t shard_count[MAX_RANK];
+  uint64_t eff_tps[MAX_RANK];
+  uint64_t tps_inner = 1;
+  uint8_t D;
+
+  CHECK(Error, layout);
+  CHECK(Error, rank >= 2);
+  CHECK(Error, rank <= MAX_RANK / 2);
+  CHECK(Error, tile_count);
+  CHECK(Error, tiles_per_shard);
+  for (int d = 1; d < rank; ++d)
+    CHECK(Error, tiles_per_shard[d] >= 1);
+
+  memset(layout, 0, sizeof(*layout));
+  layout->slot_count = slot_count;
+  layout->max_comp_chunk_bytes = max_comp_chunk_bytes;
+
+  D = rank;
+  layout->lifted_rank = 2 * (D - 1);
+
+  // Build lifted shape and strides for dims 1..D-1
+  // lifted_shape[2*k]   = shard_count[d]
+  // lifted_shape[2*k+1] = eff_tps[d]
+  layout->covering_count = 1;
+  for (int d = 1; d < D; ++d) {
+    eff_tps[d] = tiles_per_shard[d];
+    shard_count[d] = ceildiv(tile_count[d], eff_tps[d]);
+    int k = d - 1;
+    layout->lifted_shape[2 * k] = shard_count[d];
+    layout->lifted_shape[2 * k + 1] = eff_tps[d];
+    layout->covering_count *= shard_count[d] * eff_tps[d];
+  }
+
+  // tps_inner = prod(eff_tps[d] for d=1..D-1)
+  for (int d = 1; d < D; ++d)
+    tps_inner *= eff_tps[d];
+
+  // Shard strides: stride(sc[d]) = prod(sc[j] for j>d) * tps_inner
+  {
+    uint64_t sc_accum = 1;
+    for (int d = D - 1; d >= 1; --d) {
+      int k = d - 1;
+      layout->lifted_strides[2 * k] = (int64_t)(sc_accum * tps_inner);
+      sc_accum *= shard_count[d];
+    }
+  }
+
+  // Within strides: stride(tps[d]) = prod(tps[j] for j>d)
+  {
+    uint64_t tps_accum = 1;
+    for (int d = D - 1; d >= 1; --d) {
+      int k = d - 1;
+      layout->lifted_strides[2 * k + 1] = (int64_t)tps_accum;
+      tps_accum *= eff_tps[d];
+    }
+  }
+
+  // Allocate device copies
+  {
+    const size_t shape_bytes = layout->lifted_rank * sizeof(uint64_t);
+    const size_t strides_bytes = layout->lifted_rank * sizeof(int64_t);
+    CU(Error, cuMemAlloc((CUdeviceptr*)&layout->d_lifted_shape, shape_bytes));
+    CU(Error,
+       cuMemAlloc((CUdeviceptr*)&layout->d_lifted_strides, strides_bytes));
+    CU(Error,
+       cuMemcpyHtoD((CUdeviceptr)layout->d_lifted_shape,
+                    layout->lifted_shape,
+                    shape_bytes));
+    CU(Error,
+       cuMemcpyHtoD((CUdeviceptr)layout->d_lifted_strides,
+                    layout->lifted_strides,
+                    strides_bytes));
+  }
+
+  return 0;
+
+Error:
+  aggregate_layout_destroy(layout);
+  return 1;
+}
+
+extern "C" void
+aggregate_layout_destroy(struct aggregate_layout* layout)
+{
+  if (!layout)
+    return;
+  if (layout->d_lifted_shape)
+    cuMemFree((CUdeviceptr)layout->d_lifted_shape);
+  if (layout->d_lifted_strides)
+    cuMemFree((CUdeviceptr)layout->d_lifted_strides);
+  memset(layout, 0, sizeof(*layout));
+}
+
+extern "C" int
+aggregate_slot_init(struct aggregate_slot* slot,
+                    const struct aggregate_layout* layout,
+                    size_t comp_pool_bytes)
+{
+  uint64_t C, M;
+
+  CHECK(Error, slot);
+  CHECK(Error, layout);
+  memset(slot, 0, sizeof(*slot));
+
+  C = layout->covering_count;
+  M = layout->slot_count;
+
+  CU(Error,
+     cuMemAlloc((CUdeviceptr*)&slot->d_permuted_sizes,
+                (C + 1) * sizeof(size_t)));
+  CU(Error,
+     cuMemAlloc((CUdeviceptr*)&slot->d_offsets, (C + 1) * sizeof(size_t)));
+  CU(Error, cuMemAlloc((CUdeviceptr*)&slot->d_perm, M * sizeof(uint32_t)));
+  CU(Error, cuMemAlloc((CUdeviceptr*)&slot->d_aggregated, comp_pool_bytes));
+  CU(Error, cuMemHostAlloc(&slot->h_aggregated, comp_pool_bytes, 0));
+  CU(Error,
+     cuMemHostAlloc((void**)&slot->h_offsets, (C + 1) * sizeof(size_t), 0));
+
+  // Query CUB temp storage requirement
+  slot->temp_bytes = 0;
+  cub::DeviceScan::ExclusiveSum(nullptr,
+                                slot->temp_bytes,
+                                slot->d_permuted_sizes,
+                                slot->d_offsets,
+                                (int)C,
+                                (cudaStream_t)0);
+
+  if (slot->temp_bytes > 0)
+    CU(Error, cuMemAlloc((CUdeviceptr*)&slot->d_temp, slot->temp_bytes));
+
+  CU(Error, cuEventCreate(&slot->ready, CU_EVENT_DEFAULT));
+
+  return 0;
+
+Error:
+  aggregate_slot_destroy(slot);
+  return 1;
+}
+
+extern "C" void
+aggregate_slot_destroy(struct aggregate_slot* slot)
+{
+  if (!slot)
+    return;
+  if (slot->ready)
+    cuEventDestroy(slot->ready);
+  if (slot->d_permuted_sizes)
+    cuMemFree((CUdeviceptr)slot->d_permuted_sizes);
+  if (slot->d_offsets)
+    cuMemFree((CUdeviceptr)slot->d_offsets);
+  if (slot->d_perm)
+    cuMemFree((CUdeviceptr)slot->d_perm);
+  if (slot->d_aggregated)
+    cuMemFree((CUdeviceptr)slot->d_aggregated);
+  if (slot->h_aggregated)
+    cuMemFreeHost(slot->h_aggregated);
+  if (slot->h_offsets)
+    cuMemFreeHost(slot->h_offsets);
+  if (slot->d_temp)
+    cuMemFree((CUdeviceptr)slot->d_temp);
+  memset(slot, 0, sizeof(*slot));
+}
+
+extern "C" int
+aggregate_by_shard_async(const struct aggregate_layout* layout,
+                         void* d_compressed,
+                         size_t* d_comp_sizes,
+                         struct aggregate_slot* slot,
+                         CUstream stream)
+{
+  const uint64_t M = layout->slot_count;
+  const uint64_t C = layout->covering_count;
+  cudaStream_t cuda_stream = (cudaStream_t)stream;
+
+  // Zero permuted_sizes (C+1 entries so the prefix-sum total slot is clean)
+  CU(Error,
+     cuMemsetD8Async((CUdeviceptr)slot->d_permuted_sizes,
+                     0,
+                     (C + 1) * sizeof(size_t),
+                     stream));
+
+  // Pass 1: permute sizes
+  {
+    const int block = 256;
+    const int grid = (int)((M + block - 1) / block);
+    permute_sizes_k<<<grid, block, 0, cuda_stream>>>(d_comp_sizes,
+                                                     slot->d_permuted_sizes,
+                                                     slot->d_perm,
+                                                     M,
+                                                     layout->lifted_rank,
+                                                     layout->d_lifted_shape,
+                                                     layout->d_lifted_strides);
+  }
+
+  // Pass 2: exclusive prefix sum on C elements
+  {
+    size_t temp = slot->temp_bytes;
+    cub::DeviceScan::ExclusiveSum(slot->d_temp,
+                                  temp,
+                                  slot->d_permuted_sizes,
+                                  slot->d_offsets,
+                                  (int)C,
+                                  cuda_stream);
+
+    // Write total at d_offsets[C]
+    write_total_k<<<1, 1, 0, cuda_stream>>>(
+      slot->d_offsets, slot->d_permuted_sizes, C);
+  }
+
+  // Pass 3: gather compressed chunks in shard order
+  {
+    const int block = 256;
+    const int grid = (int)M;
+    gather_k<<<grid, block, 0, cuda_stream>>>(d_compressed,
+                                              slot->d_aggregated,
+                                              d_comp_sizes,
+                                              slot->d_offsets,
+                                              slot->d_perm,
+                                              layout->max_comp_chunk_bytes);
+  }
+
+  return 0;
+
+Error:
+  return 1;
+}

@@ -240,7 +240,7 @@ test_stream_chunked_append(void)
   struct mem_writer mw = mem_writer_new(2 * pool_bytes);
   CHECK(Fail0, mw.buf);
 
-  // Small buffer: 10 elements worth
+  // Small buffer: 10 elements worth (rounded up to 4KB internally)
   const struct transpose_stream_configuration config = {
     .buffer_capacity_bytes = 10 * sizeof(uint16_t),
     .bytes_per_element = sizeof(uint16_t),
@@ -336,70 +336,78 @@ Fail0:
   return 1;
 }
 
-// --- Compressed tile collector for roundtrip test ---
+// --- Collecting shard writer for compressed roundtrip test ---
 
-struct comp_tile_collector
+struct mem_shard_writer
 {
-  struct tile_writer base;
-  // Flat buffer storing all compressed tile data across epochs
+  struct shard_writer base;
   uint8_t* buf;
-  size_t* sizes; // compressed size of each tile (all epochs)
   size_t capacity;
-  size_t count;     // total tiles received so far
-  size_t max_count; // max tiles we can store
-  size_t max_chunk; // max compressed bytes per tile
+  size_t size; // high water mark
+};
+
+struct mem_shard_sink
+{
+  struct shard_sink base;
+  struct mem_shard_writer writer;
 };
 
 static int
-comp_collector_append(struct tile_writer* self,
-                      const void* const* tiles,
-                      const size_t* sizes,
-                      size_t count)
+mem_shard_write(struct shard_writer* self,
+                uint64_t offset,
+                const void* beg,
+                const void* end)
 {
-  struct comp_tile_collector* c = (struct comp_tile_collector*)self;
-  if (c->count + count > c->max_count) {
-    log_error("comp_collector: overflow");
+  struct mem_shard_writer* w = (struct mem_shard_writer*)self;
+  size_t nbytes = (size_t)((const char*)end - (const char*)beg);
+  if (offset + nbytes > w->capacity) {
+    log_error("mem_shard_write: overflow");
     return 1;
   }
-  for (size_t i = 0; i < count; ++i) {
-    size_t idx = c->count + i;
-    memcpy(c->buf + idx * c->max_chunk, tiles[i], sizes[i]);
-    c->sizes[idx] = sizes[i];
-  }
-  c->count += count;
+  memcpy(w->buf + offset, beg, nbytes);
+  if (offset + nbytes > w->size)
+    w->size = offset + nbytes;
   return 0;
 }
 
 static int
-comp_collector_flush(struct tile_writer* self)
+mem_shard_finalize(struct shard_writer* self)
 {
   (void)self;
   return 0;
 }
 
-static struct comp_tile_collector
-comp_collector_new(size_t max_tiles, size_t max_chunk_bytes)
+static struct shard_writer*
+mem_shard_open(struct shard_sink* self, uint64_t shard_index)
 {
-  struct comp_tile_collector c = {
-    .base = { .append = comp_collector_append, .flush = comp_collector_flush },
-    .buf = (uint8_t*)malloc(max_tiles * max_chunk_bytes),
-    .sizes = (size_t*)calloc(max_tiles, sizeof(size_t)),
-    .max_count = max_tiles,
-    .max_chunk = max_chunk_bytes,
-  };
-  return c;
+  (void)shard_index;
+  struct mem_shard_sink* s = (struct mem_shard_sink*)self;
+  return &s->writer.base;
 }
 
 static void
-comp_collector_free(struct comp_tile_collector* c)
+mem_shard_sink_init(struct mem_shard_sink* s, size_t capacity)
 {
-  free(c->buf);
-  free(c->sizes);
-  *c = (struct comp_tile_collector){ 0 };
+  *s = (struct mem_shard_sink){
+    .base = { .open = mem_shard_open },
+  };
+  s->writer = (struct mem_shard_writer){
+    .base = { .write = mem_shard_write, .finalize = mem_shard_finalize },
+    .buf = (uint8_t*)calloc(1, capacity),
+    .capacity = capacity,
+  };
 }
 
-// Test: compressed roundtrip — compress tiles with nvcomp, decompress with
-// libzstd, verify contents match expected tile pool.
+static void
+mem_shard_sink_free(struct mem_shard_sink* s)
+{
+  free(s->writer.buf);
+  *s = (struct mem_shard_sink){ 0 };
+}
+
+// Test: compressed roundtrip via shard path — compress tiles with nvcomp,
+// collect shard data, parse index, decompress with libzstd, verify contents
+// match expected tile pool.
 static int
 test_stream_compressed_roundtrip(void)
 {
@@ -411,16 +419,14 @@ test_stream_compressed_roundtrip(void)
     { .size = 6, .tile_size = 3 },
   };
 
-  // 2 epochs, 4 tiles/epoch = 8 tiles total
-  const size_t total_tiles = 8;
+  // tiles_per_shard defaults to tile_count → single shard containing all tiles.
+  // tile_count = (2, 2, 2), tiles_per_shard_total = 8.
+  const size_t tiles_per_shard_total = 8;
 
-  // Create stream first to query max_comp_chunk_bytes, then build collector.
-  // We need a two-pass approach or use a generous upper bound.
-  // Use a generous upper bound for the collector.
-  const size_t max_chunk_est = 4096; // generous for 24-byte tiles
-  struct comp_tile_collector cc =
-    comp_collector_new(total_tiles, max_chunk_est);
-  CHECK(Fail0, cc.buf);
+  // Generous buffer for compressed shard data + index
+  struct mem_shard_sink mss;
+  mem_shard_sink_init(&mss, 256 * 1024);
+  CHECK(Fail0, mss.writer.buf);
 
   const struct transpose_stream_configuration config = {
     .buffer_capacity_bytes = 96 * sizeof(uint16_t),
@@ -428,7 +434,7 @@ test_stream_compressed_roundtrip(void)
     .rank = 3,
     .dimensions = dims,
     .compress = 1,
-    .compressed_sink = &cc.base,
+    .shard_sink = &mss.base,
   };
 
   struct transpose_stream s;
@@ -458,16 +464,34 @@ test_stream_compressed_roundtrip(void)
   struct writer_result r = writer_append(&s.writer, input);
   CHECK(Fail, r.error == 0);
 
-  // Epoch 0 should have been delivered
-  CHECK(Fail, cc.count >= 4);
-
   r = writer_flush(&s.writer);
   CHECK(Fail, r.error == 0);
-  CHECK(Fail, cc.count == total_tiles);
+  CHECK(Fail, mss.writer.size > 0);
 
-  // Decompress each tile and verify against expected
+  // Parse shard index from the end of the buffer.
+  // Index layout: tiles_per_shard_total * 2 * uint64_t + 4-byte CRC32C
+  const size_t index_data_bytes = tiles_per_shard_total * 2 * sizeof(uint64_t);
   const size_t tile_bytes = s.layout.tile_stride * sizeof(uint16_t);
 
+  // The index is the last write. Read tile offsets/sizes from it.
+  // Shard data layout: [compressed tile data...] [index block + crc]
+  // The index block starts at (shard_size - index_data_bytes - 4).
+  const size_t shard_size = mss.writer.size;
+  CHECK(Fail, shard_size > index_data_bytes + 4);
+  const uint8_t* index_ptr =
+    mss.writer.buf + shard_size - index_data_bytes - 4;
+
+  // Parse index: tiles_per_shard_total pairs of (offset, nbytes) as uint64
+  uint64_t tile_offsets[8], tile_sizes[8];
+  for (size_t i = 0; i < tiles_per_shard_total; ++i) {
+    memcpy(&tile_offsets[i], index_ptr + i * 16, sizeof(uint64_t));
+    memcpy(&tile_sizes[i], index_ptr + i * 16 + 8, sizeof(uint64_t));
+  }
+
+  // With single shard + identity permutation, shard index slots map:
+  //   slot = epoch * tiles_per_shard_inner + within_inner
+  // where tiles_per_shard_inner = 4, within_inner = tile pool index.
+  // So slot 0..3 = epoch 0 tiles 0..3, slot 4..7 = epoch 1 tiles 0..3.
   for (int epoch = 0; epoch < 2; ++epoch) {
     uint16_t* expected = make_expected_tiles(
       (uint64_t)epoch * s.layout.epoch_elements,
@@ -481,17 +505,16 @@ test_stream_compressed_roundtrip(void)
 
     int err = 0;
     for (uint64_t t = 0; t < s.layout.slot_count; ++t) {
-      size_t idx = (size_t)epoch * s.layout.slot_count + t;
-      const uint8_t* comp_data = cc.buf + idx * cc.max_chunk;
-      size_t comp_size = cc.sizes[idx];
+      size_t slot = (size_t)epoch * s.layout.slot_count + t;
+      CHECK(Fail, tile_sizes[slot] > 0);
 
-      CHECK(Fail, comp_size > 0);
+      const uint8_t* comp_data = mss.writer.buf + tile_offsets[slot];
 
-      // Decompress with libzstd
       uint8_t* decomp = (uint8_t*)calloc(1, tile_bytes);
       CHECK(Fail, decomp);
 
-      size_t result = ZSTD_decompress(decomp, tile_bytes, comp_data, comp_size);
+      size_t result =
+        ZSTD_decompress(decomp, tile_bytes, comp_data, tile_sizes[slot]);
       if (ZSTD_isError(result)) {
         log_error("  ZSTD_decompress failed for tile %lu epoch %d: %s",
                   (unsigned long)t,
@@ -503,19 +526,6 @@ test_stream_compressed_roundtrip(void)
       }
       CHECK(Fail, result == tile_bytes);
 
-      // Compare the first tile_elements of the decompressed data against
-      // the expected tile pool at offset t * tile_stride.
-      // With stride padding, tile data starts at t * tile_stride elements
-      // in the expected pool (which uses tile_elements stride since
-      // make_expected_tiles doesn't account for stride padding).
-      // Actually, make_expected_tiles uses the lifted strides which already
-      // incorporate tile_stride, so the offset is t * tile_elements in the
-      // expected array, but the decompressed data uses tile_stride layout.
-      //
-      // The decompressed tile has tile_stride elements. The expected pool
-      // is slot_count * tile_elements with no padding. We need to compare
-      // the first tile_elements of the decompressed data against the
-      // expected pool at offset t * tile_elements.
       const uint16_t* decomp_u16 = (const uint16_t*)decomp;
       const uint16_t* expected_tile = expected + t * s.layout.tile_elements;
       for (uint64_t e = 0; e < s.layout.tile_elements; ++e) {
@@ -540,14 +550,14 @@ test_stream_compressed_roundtrip(void)
   }
 
   transpose_stream_destroy(&s);
-  comp_collector_free(&cc);
+  mem_shard_sink_free(&mss);
   log_info("  PASS");
   return 0;
 
 Fail:
   transpose_stream_destroy(&s);
 Fail0:
-  comp_collector_free(&cc);
+  mem_shard_sink_free(&mss);
   log_error("  FAIL");
   return 1;
 }

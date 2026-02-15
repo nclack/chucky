@@ -172,3 +172,42 @@ transpose_u16_v0(CUdeviceptr d_dst_beg,
                                                 d_shape,
                                                 d_strides);
 }
+
+extern "C" void
+transpose_u32_v0(CUdeviceptr d_dst_beg,
+                 CUdeviceptr d_dst_end,
+                 CUdeviceptr d_src_beg,
+                 CUdeviceptr d_src_end,
+                 uint64_t i_offset,
+                 uint8_t rank,
+                 const uint64_t* d_shape,
+                 const int64_t* d_strides,
+                 CUstream stream)
+{
+  (void)d_dst_end; // UNUSED
+
+  cudaStream_t cuda_stream = (cudaStream_t)stream;
+
+  uint32_t* src_beg = (uint32_t*)d_src_beg;
+  uint32_t* src_end = (uint32_t*)d_src_end;
+  const uint64_t src_size = src_end - src_beg;
+
+  if (src_size == 0)
+    return;
+
+  const int block_size = 256;
+  const int elements_per_block = (1 << 12) / sizeof(uint32_t);
+
+  assert(d_src_beg % sizeof(uint32_t) == 0);
+  const int grid_size =
+    (src_size + elements_per_block - 1) / elements_per_block;
+
+  transpose_v0_k<uint32_t>
+    <<<grid_size, block_size, 0, cuda_stream>>>((uint32_t*)d_dst_beg,
+                                                src_beg,
+                                                src_size,
+                                                i_offset,
+                                                rank,
+                                                d_shape,
+                                                d_strides);
+}

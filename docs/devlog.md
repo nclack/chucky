@@ -2,6 +2,8 @@
 
 ## 2026-02-14
 
+### Profiling
+
 Trying to look at nsight on the 5090 (oreb).
 
 I noticed I was doing 2-byte loads for the transpose. Changed to 4-bytes.
@@ -16,8 +18,41 @@ Scatter         79.69   119.00 -- After
 Scatter         69.62   118.87 -- After
 ```
 
-So faster but not a lot faster. nsight predictably complains about non-coallesced
+Throughput by wall time is 12 GB/s.
+
+So faster but not a lot faster. nsight predictably complains about non-coalesced
 stores.
+
+### Sharding
+
+I'll want to write a cuda kernel to aggregate the compressed chunks by shard. My
+guess is that will look like a segmented scan. This will necessrily generate the
+list of offsets for each chunk. The chunks will get reordered to group them by
+shard. That reorder is conceptually the same kind of lifting/transpose that was
+done to scatter the input  into the chunks. This time though, we're transposing
+the logical tiles into something tiled by the `tiles_by_shard`.
+
+I'm thinking that array of offsets + the aggregated bytes are enough to transmit
+back to the host. The host side will have to do some index operations to map
+each chunk to a shard and figure out how to update the chunk index for that
+shard.
+
+We'll probably want to keep the index for each shard in memory. That'll help
+with the crc32 checksum (which just checksums the index). Shards will complete
+in layers/epochs, just like tiles, so we can limit the amount of memory
+required.
+
+Added the kernel for aggregating the compressed chunks into shards. It's a
+three step process where we permute the compressed sizes, do a scan to compute
+offsets and then a gather to copy the compressed chunks into shard order.
+
+The aggregated compressed bytes and the offsets buffer then get copied back
+to host. The host side figures out how to dispatch those ranges to shards, and
+maintain the shard indices. I abstract the shard writer for now.
+
+Wrote a test that uses a coordinate encoding to:
+- verify the right chunks are getting copied into the right places (and values)
+- verify the chunk index for the shard looks right
 
 ## 2026-02-13
 
@@ -56,6 +91,11 @@ $r_d = (s_{d-1},t_{d-1},n_{d-1},...,s_0,t_0,n_0)$
 and (virtually) transposed
 
 $r'_d = (s_{d-1},...,s_0,t_{d-1},...,t_0,n_{d-1}...n_0)$
+
+Focusing on the output side, I just need to prepare the data for updating
+shards following the [zarr sharding codec].
+
+[zarr sharding codec]: https://zarr-specs.readthedocs.io/en/latest/v3/codecs/sharding-indexed/index.html 
 
 ## 2026-02-12
 

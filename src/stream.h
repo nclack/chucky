@@ -1,5 +1,6 @@
 #pragma once
 
+#include "aggregate.h"
 #include "transpose.h"
 #include <cuda.h>
 #include <stddef.h>
@@ -23,13 +24,19 @@ struct writer
   struct writer_result (*flush)(struct writer* self);
 };
 
-struct tile_writer
+struct shard_writer
 {
-  int (*append)(struct tile_writer* self,
-                const void* const* tiles, // array of pointers to tile data
-                const size_t* sizes,      // array of byte counts per tile
-                size_t count);            // number of tiles (= slot_count)
-  int (*flush)(struct tile_writer* self);
+  int (*write)(struct shard_writer* self,
+               uint64_t offset, // byte offset within the shard
+               const void* beg,
+               const void* end);
+  int (*finalize)(struct shard_writer* self); // shard complete, close/flush
+};
+
+struct shard_sink
+{
+  // Open/get a writer for the given flat shard index. Sink manages lifetime.
+  struct shard_writer* (*open)(struct shard_sink* self, uint64_t shard_index);
 };
 
 struct stream_metric
@@ -45,6 +52,7 @@ struct stream_metrics
   struct stream_metric h2d;
   struct stream_metric scatter;
   struct stream_metric compress;
+  struct stream_metric aggregate;
   struct stream_metric d2h;
 };
 
@@ -65,6 +73,7 @@ struct dimension
 {
   uint64_t size;
   uint64_t tile_size;
+  uint64_t tiles_per_shard; // 0 means all tiles along this dimension
 };
 
 struct transpose_stream_configuration
@@ -73,10 +82,9 @@ struct transpose_stream_configuration
   size_t bytes_per_element;
   uint8_t rank;
   const struct dimension* dimensions;
-  struct writer* sink; // downstream writer (uncompressed), not owned
-  struct tile_writer*
-    compressed_sink; // downstream writer (compressed), not owned
-  int compress;      // enable nvcomp zstd compression
+  struct writer* sink;           // downstream writer (uncompressed), not owned
+  struct shard_sink* shard_sink; // downstream shard writer factory, not owned
+  int compress;                  // enable nvcomp zstd compression
 };
 
 struct staging_slot
@@ -135,8 +143,9 @@ struct tile_pool_slot
   struct buffer d_tiles; // device: tile_pool_bytes
   struct buffer h_tiles; // host:   tile_pool_bytes
   struct compression_slot comp;
-  CUevent t_compress_start; // recorded before compress
-  CUevent t_d2h_start;      // recorded before D2H memcpy
+  struct aggregate_slot agg; // per-pool aggregate buffers (shard path)
+  CUevent t_compress_start;  // recorded before compress
+  CUevent t_d2h_start;       // recorded before D2H memcpy
 };
 
 struct tile_pool_state
@@ -144,6 +153,24 @@ struct tile_pool_state
   struct tile_pool_slot slot[2];
   int current;       // which pool scatter writes to
   int flush_pending; // async D2H in flight, not yet delivered to sink
+};
+
+struct active_shard
+{
+  size_t data_cursor;
+  uint64_t* index;             // 2 * tiles_per_shard_total entries
+  struct shard_writer* writer; // from sink->open, NULL until first use
+};
+
+struct shard_state
+{
+  uint64_t epoch_in_shard;        // 0..tiles_per_shard[0]-1
+  uint64_t shard_epoch;           // s_0 coordinate (0, 1, 2, ...)
+  uint64_t shard_inner_count;     // S_inner = prod(shard_count[d] for d>0)
+  uint64_t tiles_per_shard_inner; // prod(tps[d] for d>0)
+  uint64_t tiles_per_shard_total; // prod(tps[d] for all d)
+  uint64_t tiles_per_shard_0;     // tps[0]
+  struct active_shard* shards;    // array[shard_inner_count]
 };
 
 struct transpose_stream
@@ -154,6 +181,8 @@ struct transpose_stream
   struct tile_pool_state tiles;
   struct stream_layout layout;
   struct compression_shared comp;
+  struct aggregate_layout agg_layout; // shared shard permutation layout
+  struct shard_state shard;           // host-side shard bookkeeping
   struct stream_metrics metrics;
   uint64_t cursor;
   struct transpose_stream_configuration config;

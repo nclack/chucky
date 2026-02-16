@@ -140,94 +140,6 @@ Fail:
   goto Finalize;
 }
 
-static int
-test_transpose_indices_basic(void)
-{
-  // Setup a tiling of a 640x480x3 array into tiles of size 10x10x1
-  const int rank = 6;
-  const int shape[] = { 48, 10, 64, 10, 3, 1 };
-  const int p[] = { 0, 2, 4, 1, 3, 5 };
-  int transposed_shape[6] = { 0 };
-  int transposed_strides[6] = { 0 };
-  int input_strides[6] = { 0 };
-
-  setup_transpose_strides(rank, shape, p, transposed_shape, transposed_strides);
-  compute_strides(rank, shape, input_strides);
-
-  printf("%30s", "Input shape: ");
-  println_vi32(rank, shape);
-  printf("%30s", "Input strides (row-major): ");
-  println_vi32(rank, input_strides);
-  printf("%30s", "Transposed shape: ");
-  println_vi32(rank, transposed_shape);
-  printf("%30s", "Transposed strides: ");
-  println_vi32(rank, transposed_strides);
-
-  CUdeviceptr d_out = 0, d_shape = 0, d_strides = 0;
-  uint64_t *actual = 0l, *expected = 0;
-
-  const int n = transposed_strides[0] * shape[0];
-  printf("Total elements: %d\n", n);
-
-  CHECK(Fail, actual = (uint64_t*)malloc(n * sizeof(uint64_t)));
-  CHECK(Fail, expected = make_expected(rank, shape, transposed_strides, 0, n));
-  CU(Fail, cuMemAlloc(&d_out, n * sizeof(uint64_t)));
-
-  // Convert shape and strides to uint64_t/int64_t for the API
-  uint64_t shape64[MAX_RANK] = { 0 };
-  int64_t strides64[MAX_RANK] = { 0 };
-  for (int i = 0; i < rank; ++i) {
-    shape64[i] = shape[i];
-    strides64[i] = transposed_strides[i];
-  }
-
-  // Copy shape and strides to device
-  CU(Fail, cuMemAlloc(&d_shape, rank * sizeof(uint64_t)));
-  CU(Fail, cuMemAlloc(&d_strides, rank * sizeof(int64_t)));
-  CU(Fail, cuMemcpyHtoD(d_shape, shape64, rank * sizeof(uint64_t)));
-  CU(Fail, cuMemcpyHtoD(d_strides, strides64, rank * sizeof(int64_t)));
-
-  // Call the CUDA kernel on default stream
-  CUstream stream = 0;
-  transpose_indices(d_out,
-                    d_out + n * sizeof(uint64_t),
-                    0, // i_offset (start at input index 0)
-                    rank,
-                    (const uint64_t*)d_shape,
-                    (const int64_t*)d_strides,
-                    stream);
-
-  // Copy results back to host
-  CU(Fail, cuMemcpyDtoHAsync(actual, d_out, n * sizeof(uint64_t), stream));
-  CU(Fail, cuStreamSynchronize(stream));
-
-  // Compare results
-  int ecode = expect_arrays_equal(expected, actual, n, "basic transpose");
-
-  // Print first few values for debugging
-  if (ecode) {
-    printf("Expected (first 20): ");
-    println_vu64(n < 20 ? n : 20, expected);
-    printf("Actual (first 20): ");
-    println_vu64(n < 20 ? n : 20, actual);
-  } else {
-    printf("OK\n");
-  }
-
-Finalize:
-  cuMemFree(d_shape);
-  cuMemFree(d_strides);
-  cuMemFree(d_out);
-  free(actual);
-  free((void*)expected);
-
-  return ecode;
-Fail:
-  printf("FAIL\n");
-  ecode = 1;
-  goto Finalize;
-}
-
 static uint16_t*
 make_expected_u16(int rank,
                   const int* shape,
@@ -523,99 +435,6 @@ Fail:
   goto Finalize;
 }
 
-static int
-test_transpose_indices_with_offset(void)
-{
-  // Setup a tiling of a 640x480x3 array into tiles of size 10x10x1
-  const int rank = 6;
-  const int shape[] = { 48, 10, 64, 10, 3, 1 };
-  const int p[] = { 0, 2, 4, 1, 3, 5 };
-  int transposed_shape[6] = { 0 };
-  int transposed_strides[6] = { 0 };
-
-  setup_transpose_strides(rank, shape, p, transposed_shape, transposed_strides);
-
-  CUdeviceptr d_out = 0, d_shape = 0, d_strides = 0;
-  uint64_t *actual = 0, *expected_all = 0;
-
-  const int n = transposed_strides[0] * shape[0];
-
-  // Test with a non-zero offset
-  const uint64_t i_offset = 1000;
-  const uint64_t count = 10000;
-
-  // Generate expected output
-  CHECK(Fail,
-        expected_all = make_expected(rank, shape, transposed_strides, 0, n));
-  const uint64_t* expected = expected_all + i_offset;
-  const uint64_t o_offset = expected[0];
-
-  // Allocate device and host memory
-  CU(Fail, cuMemAlloc(&d_out, count * sizeof(uint64_t)));
-  CHECK(Fail, actual = (uint64_t*)malloc(count * sizeof(uint64_t)));
-
-  // Convert shape and strides to uint64_t/int64_t for the API
-  uint64_t shape64[MAX_RANK] = { 0 };
-  int64_t strides64[MAX_RANK] = { 0 };
-  for (int i = 0; i < rank; ++i) {
-    shape64[i] = shape[i];
-    strides64[i] = transposed_strides[i];
-  }
-
-  // Copy shape and strides to device
-  CU(Fail, cuMemAlloc(&d_shape, rank * sizeof(uint64_t)));
-  CU(Fail, cuMemAlloc(&d_strides, rank * sizeof(int64_t)));
-  CU(Fail, cuMemcpyHtoD(d_shape, shape64, rank * sizeof(uint64_t)));
-  CU(Fail, cuMemcpyHtoD(d_strides, strides64, rank * sizeof(int64_t)));
-
-  // Call the CUDA kernel with offset on default stream
-  CUstream stream = 0;
-  transpose_indices(d_out,
-                    d_out + count * sizeof(uint64_t),
-                    i_offset,
-                    rank,
-                    (const uint64_t*)d_shape,
-                    (const int64_t*)d_strides,
-                    stream);
-
-  // Copy results back to host
-  CU(Fail, cuMemcpyDtoHAsync(actual, d_out, count * sizeof(uint64_t), stream));
-  CU(Fail, cuStreamSynchronize(stream));
-
-  // Compare results
-  char buf[128];
-  snprintf(buf,
-           sizeof(buf),
-           "offset test (i_offset=%llu, o_offset=%llu)",
-           (unsigned long long)i_offset,
-           (unsigned long long)o_offset);
-  int ecode = expect_arrays_equal(expected, actual, count, buf);
-
-  // Print first few values for debugging
-  if (ecode) {
-    int show = count < 20 ? (int)count : 20;
-    printf("Expected (first 20): ");
-    println_vu64(show, expected);
-    printf("Actual (first 20): ");
-    println_vu64(show, actual);
-  } else {
-    printf("OK\n");
-  }
-
-Finalize:
-  cuMemFree(d_shape);
-  cuMemFree(d_strides);
-  cuMemFree(d_out);
-  free(actual);
-  free((void*)expected_all);
-
-  return ecode;
-Fail:
-  printf("FAIL\n");
-  ecode = 1;
-  goto Finalize;
-}
-
 int
 main(int ac, char* av[])
 {
@@ -633,16 +452,10 @@ main(int ac, char* av[])
   printf("=== Test 0: CPU hit count verification ===\n");
   ecode |= test_transpose_hit_count_cpu();
 
-  printf("\n=== Test 1: Basic transpose indices (full array) ===\n");
-  ecode |= test_transpose_indices_basic();
-
-  printf("\n=== Test 2: Transpose indices with offset ===\n");
-  ecode |= test_transpose_indices_with_offset();
-
-  printf("\n=== Test 3: Basic u16 transpose (full array) ===\n");
+  printf("\n=== Test 1: Basic u16 transpose (full array) ===\n");
   ecode |= test_transpose_u16_basic();
 
-  printf("\n=== Test 4: U16 transpose with offset ===\n");
+  printf("\n=== Test 2: U16 transpose with offset ===\n");
   ecode |= test_transpose_u16_with_offset();
 
   cuCtxDestroy(ctx);

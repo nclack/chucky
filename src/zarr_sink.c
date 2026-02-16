@@ -538,3 +538,228 @@ zarr_sink_as_shard_sink(struct zarr_sink* s)
 {
   return &s->base;
 }
+
+// --- Multiscale (LOD) zarr sink ---
+
+struct zarr_multiscale_sink
+{
+  struct zarr_sink** levels; // [num_levels]
+  int num_levels;
+};
+
+static int
+write_multiscale_attributes(const char* store_path,
+                            const struct zarr_multiscale_config* cfg,
+                            const struct dimension* const* level_dims)
+{
+  char path[4096];
+  snprintf(path, sizeof(path), "%s/zarr.json", store_path);
+
+  char buf[8192];
+  struct json_writer jw;
+  jw_init(&jw, buf, sizeof(buf));
+
+  jw_object_begin(&jw);
+
+  jw_key(&jw, "zarr_format");
+  jw_int(&jw, 3);
+
+  jw_key(&jw, "node_type");
+  jw_string(&jw, "group");
+
+  jw_key(&jw, "attributes");
+  jw_object_begin(&jw);
+
+  jw_key(&jw, "multiscales");
+  jw_array_begin(&jw);
+  jw_object_begin(&jw);
+
+  jw_key(&jw, "version");
+  jw_string(&jw, "0.4");
+
+  // axes
+  jw_key(&jw, "axes");
+  jw_array_begin(&jw);
+  for (int d = 0; d < cfg->rank; ++d) {
+    jw_object_begin(&jw);
+    jw_key(&jw, "name");
+    if (cfg->dimensions[d].name)
+      jw_string(&jw, cfg->dimensions[d].name);
+    else {
+      char dim_name[4];
+      snprintf(dim_name, sizeof(dim_name), "d%d", d);
+      jw_string(&jw, dim_name);
+    }
+    jw_key(&jw, "type");
+    jw_string(&jw, "space");
+    jw_object_end(&jw);
+  }
+  jw_array_end(&jw);
+
+  // datasets
+  jw_key(&jw, "datasets");
+  jw_array_begin(&jw);
+  for (int lv = 0; lv < cfg->num_levels; ++lv) {
+    jw_object_begin(&jw);
+
+    jw_key(&jw, "path");
+    char arr_name[16];
+    snprintf(arr_name, sizeof(arr_name), "s%d", lv);
+    jw_string(&jw, arr_name);
+
+    jw_key(&jw, "coordinateTransformations");
+    jw_array_begin(&jw);
+    jw_object_begin(&jw);
+    jw_key(&jw, "type");
+    jw_string(&jw, "scale");
+    jw_key(&jw, "scale");
+    jw_array_begin(&jw);
+    for (int d = 0; d < cfg->rank; ++d) {
+      // Scale = level_0_size / level_lv_size (or equivalently, 2^lv for
+      // downsampled dims). Compute from actual dimension sizes.
+      double scale = 1.0;
+      if (cfg->dimensions[d].downsample && lv > 0 && level_dims[lv]) {
+        scale = (double)cfg->dimensions[d].size /
+                (double)level_dims[lv][d].size;
+      }
+      jw_float(&jw, scale);
+    }
+    jw_array_end(&jw);
+    jw_object_end(&jw);
+    jw_array_end(&jw);
+
+    jw_object_end(&jw);
+  }
+  jw_array_end(&jw);
+
+  jw_key(&jw, "type");
+  jw_string(&jw, "mean");
+
+  jw_object_end(&jw); // multiscales[0]
+  jw_array_end(&jw);  // multiscales
+  jw_object_end(&jw); // attributes
+  jw_object_end(&jw); // root
+
+  if (jw_error(&jw))
+    return -1;
+  return write_file(path, buf, jw_length(&jw));
+}
+
+struct zarr_multiscale_sink*
+zarr_multiscale_sink_create(const struct zarr_multiscale_config* cfg)
+{
+  CHECK(Fail, cfg);
+  CHECK(Fail, cfg->store_path);
+  CHECK(Fail, cfg->rank > 0 && cfg->rank <= MAX_ZARR_RANK);
+  CHECK(Fail, cfg->dimensions);
+  CHECK(Fail, cfg->num_levels > 0);
+
+  struct zarr_multiscale_sink* ms =
+    (struct zarr_multiscale_sink*)calloc(1, sizeof(*ms));
+  CHECK(Fail, ms);
+  ms->num_levels = cfg->num_levels;
+
+  ms->levels =
+    (struct zarr_sink**)calloc((size_t)cfg->num_levels, sizeof(struct zarr_sink*));
+  CHECK(Fail_ms, ms->levels);
+
+  // Build dimensions for each level
+  struct dimension* all_dims =
+    (struct dimension*)calloc(
+      (size_t)cfg->num_levels * cfg->rank, sizeof(struct dimension));
+  CHECK(Fail_levels, all_dims);
+
+  // Pointer array for attributes writing
+  const struct dimension** dim_ptrs =
+    (const struct dimension**)calloc((size_t)cfg->num_levels,
+                                     sizeof(const struct dimension*));
+  CHECK(Fail_dims, dim_ptrs);
+
+  // Level 0: copy dimensions as-is
+  for (int d = 0; d < cfg->rank; ++d)
+    all_dims[d] = cfg->dimensions[d];
+  dim_ptrs[0] = all_dims;
+
+  // Compute dimensions for each subsequent level
+  for (int lv = 1; lv < cfg->num_levels; ++lv) {
+    struct dimension* prev = all_dims + (lv - 1) * cfg->rank;
+    struct dimension* cur = all_dims + lv * cfg->rank;
+    for (int d = 0; d < cfg->rank; ++d) {
+      cur[d] = prev[d];
+      if (prev[d].downsample)
+        cur[d].size = ceildiv(prev[d].size, 2);
+    }
+    dim_ptrs[lv] = cur;
+  }
+
+  // Create zarr_sink for each level
+  for (int lv = 0; lv < cfg->num_levels; ++lv) {
+    char arr_name[16];
+    snprintf(arr_name, sizeof(arr_name), "s%d", lv);
+
+    struct zarr_config zcfg = {
+      .store_path = cfg->store_path,
+      .array_name = arr_name,
+      .data_type = cfg->data_type,
+      .fill_value = cfg->fill_value,
+      .rank = cfg->rank,
+      .dimensions = dim_ptrs[lv],
+    };
+    ms->levels[lv] = zarr_sink_create(&zcfg);
+    CHECK(Fail_sinks, ms->levels[lv]);
+  }
+
+  // Write OME-NGFF multiscale attributes
+  CHECK(Fail_sinks,
+        write_multiscale_attributes(cfg->store_path, cfg, dim_ptrs) == 0);
+
+  free(dim_ptrs);
+  free(all_dims);
+  return ms;
+
+Fail_sinks:
+  for (int lv = 0; lv < cfg->num_levels; ++lv) {
+    if (ms->levels[lv])
+      zarr_sink_destroy(ms->levels[lv]);
+  }
+Fail_dims:
+  free(dim_ptrs);
+Fail_levels:
+  free(all_dims);
+  free(ms->levels);
+Fail_ms:
+  free(ms);
+Fail:
+  return NULL;
+}
+
+void
+zarr_multiscale_sink_destroy(struct zarr_multiscale_sink* s)
+{
+  if (!s)
+    return;
+
+  if (s->levels) {
+    for (int lv = 0; lv < s->num_levels; ++lv)
+      zarr_sink_destroy(s->levels[lv]);
+    free(s->levels);
+  }
+  free(s);
+}
+
+void
+zarr_multiscale_sink_flush(struct zarr_multiscale_sink* s)
+{
+  if (!s)
+    return;
+  for (int lv = 0; lv < s->num_levels; ++lv)
+    zarr_sink_flush(s->levels[lv]);
+}
+
+struct shard_sink*
+zarr_multiscale_get_level_sink(struct zarr_multiscale_sink* s, int level)
+{
+  if (!s || level < 0 || level >= s->num_levels)
+    return NULL;
+  return zarr_sink_as_shard_sink(s->levels[level]);
+}

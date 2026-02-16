@@ -1,23 +1,29 @@
 #include "compress.h"
-#include <nvcomp/zstd.h>
-
-extern "C" {
 #include "log/log.h"
-}
+#include <nvcomp/zstd.h>
 
 static const char*
 nvcomp_status_name(nvcompStatus_t st)
 {
   switch (st) {
-    case nvcompSuccess: return "nvcompSuccess";
-    case nvcompErrorInvalidValue: return "nvcompErrorInvalidValue";
-    case nvcompErrorNotSupported: return "nvcompErrorNotSupported";
-    case nvcompErrorCannotDecompress: return "nvcompErrorCannotDecompress";
-    case nvcompErrorBadChecksum: return "nvcompErrorBadChecksum";
-    case nvcompErrorCannotVerifyChecksums: return "nvcompErrorCannotVerifyChecksums";
-    case nvcompErrorCudaError: return "nvcompErrorCudaError";
-    case nvcompErrorInternal: return "nvcompErrorInternal";
-    default: return "nvcompUnknown";
+    case nvcompSuccess:
+      return "nvcompSuccess";
+    case nvcompErrorInvalidValue:
+      return "nvcompErrorInvalidValue";
+    case nvcompErrorNotSupported:
+      return "nvcompErrorNotSupported";
+    case nvcompErrorCannotDecompress:
+      return "nvcompErrorCannotDecompress";
+    case nvcompErrorBadChecksum:
+      return "nvcompErrorBadChecksum";
+    case nvcompErrorCannotVerifyChecksums:
+      return "nvcompErrorCannotVerifyChecksums";
+    case nvcompErrorCudaError:
+      return "nvcompErrorCudaError";
+    case nvcompErrorInternal:
+      return "nvcompErrorInternal";
+    default:
+      return "nvcompUnknown";
   }
 }
 
@@ -30,7 +36,13 @@ handle_nvcomp(int level,
 {
   if (st == nvcompSuccess)
     return 0;
-  log_log(level, file, line, "nvcomp error: %s (%d) %s", nvcomp_status_name(st), (int)st, expr);
+  log_log(level,
+          file,
+          line,
+          "nvcomp error: %s (%d) %s",
+          nvcomp_status_name(st),
+          (int)st,
+          expr);
   return 1;
 }
 
@@ -55,7 +67,9 @@ compress_get_max_output_size(size_t uncompressed_bytes)
   size_t max_compressed = 0;
   NVCOMP(Fail,
          nvcompBatchedZstdCompressGetMaxOutputChunkSize(
-           uncompressed_bytes, nvcompBatchedZstdCompressDefaultOpts, &max_compressed));
+           uncompressed_bytes,
+           nvcompBatchedZstdCompressDefaultOpts,
+           &max_compressed));
   return max_compressed;
 
 Fail:
@@ -92,18 +106,17 @@ compress_batch_async(const void* const* d_uncomp_ptrs,
 {
   cudaStream_t cuda_stream = (cudaStream_t)stream;
   NVCOMP(Fail,
-         nvcompBatchedZstdCompressAsync(
-           d_uncomp_ptrs,
-           d_uncomp_sizes,
-           max_uncompressed_bytes,
-           num_chunks,
-           d_temp,
-           temp_bytes,
-           d_comp_ptrs,
-           d_comp_sizes,
-           nvcompBatchedZstdCompressDefaultOpts,
-           NULL,
-           cuda_stream));
+         nvcompBatchedZstdCompressAsync(d_uncomp_ptrs,
+                                        d_uncomp_sizes,
+                                        max_uncompressed_bytes,
+                                        num_chunks,
+                                        d_temp,
+                                        temp_bytes,
+                                        d_comp_ptrs,
+                                        d_comp_sizes,
+                                        nvcompBatchedZstdCompressDefaultOpts,
+                                        NULL,
+                                        cuda_stream));
   return 0;
 
 Fail:

@@ -5,10 +5,10 @@
 #include "test_platform.h"
 #include "zarr_sink.h"
 #include <cuda.h>
+#include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <math.h>
 #include <string.h>
 #include <zstd.h>
 
@@ -89,7 +89,7 @@ fill_chunk_visual(uint16_t* buf, size_t count, size_t offset)
   const size_t row = (size_t)C;
   const size_t plane = (size_t)W * row;
   const size_t vol = (size_t)W * plane;
-  const int GRID = 32, RADIUS_SQ = 12 * 12; // 144
+  const int RADIUS_SQ = 12 * 12; // 144
 
   for (size_t i = 0; i < count; ++i) {
     size_t gi = offset + i;
@@ -121,7 +121,7 @@ fill_chunk_visual(uint16_t* buf, size_t count, size_t offset)
       continue;
     }
 
-    int falloff = RADIUS_SQ - d2; // [1, 144]
+    int falloff = RADIUS_SQ - d2;                // [1, 144]
     int base = 8000 + (int)((h >> 11) & 0x1FFF); // 8000–16191
     int val = (base * falloff) / RADIUS_SQ;
 
@@ -234,7 +234,8 @@ discard_shard_sink_init(struct discard_shard_sink* s)
     .sink = { .name = "Sink", .best_ms = 1e30f },
   };
   s->writer = (struct discard_shard_writer){
-    .base = { .write = discard_shard_write, .finalize = discard_shard_finalize },
+    .base = { .write = discard_shard_write,
+              .finalize = discard_shard_finalize },
     .parent = s,
   };
 }
@@ -298,7 +299,8 @@ metered_shard_open(struct shard_sink* self, uint64_t shard_index)
   if (!w)
     return NULL;
   *w = (struct metered_shard_writer){
-    .base = { .write = metered_shard_write, .finalize = metered_shard_finalize },
+    .base = { .write = metered_shard_write,
+              .finalize = metered_shard_finalize },
     .inner = inner,
     .parent = s,
   };
@@ -431,8 +433,7 @@ print_bench_report(const struct transpose_stream* s,
                    float wall_s)
 {
   struct stream_metrics m = transpose_stream_get_metrics(s);
-  const size_t tile_bytes =
-    s->layout.tile_stride * s->config.bytes_per_element;
+  const size_t tile_bytes = s->layout.tile_stride * s->config.bytes_per_element;
   const size_t num_epochs =
     (total_elements + s->layout.epoch_elements - 1) / s->layout.epoch_elements;
   const size_t total_tiles = num_epochs * s->layout.slot_count;
@@ -476,10 +477,11 @@ print_bench_report(const struct transpose_stream* s,
   print_metric_row(&m.scatter, scatter_per_dispatch);
   print_metric_row(&m.compress, pool_bytes);
   double agg_per = m.aggregate.count > 0
-    ? m.aggregate.total_bytes / m.aggregate.count : comp_pool;
+                     ? m.aggregate.total_bytes / m.aggregate.count
+                     : comp_pool;
   print_metric_row(&m.aggregate, agg_per);
-  double d2h_per = m.d2h.count > 0
-    ? m.d2h.total_bytes / m.d2h.count : comp_pool;
+  double d2h_per =
+    m.d2h.count > 0 ? m.d2h.total_bytes / m.d2h.count : comp_pool;
   print_metric_row(&m.d2h, d2h_per);
   double sink_per_call =
     ss->sink->count > 0 ? (double)ss->total_bytes / ss->sink->count : 0;
@@ -613,7 +615,8 @@ test_bench(void)
   }
 
   {
-    struct sink_stats ss = { .total_bytes = dss.total_bytes, .sink = &dss.sink };
+    struct sink_stats ss = { .total_bytes = dss.total_bytes,
+                             .sink = &dss.sink };
     print_bench_report(
       &s, &ss, &src, total_bytes, total_elements, chunk_elements, wall_s);
   }
@@ -629,7 +632,6 @@ Fail:
 }
 
 // --- Benchmark with zarr file output ---
-
 
 static int
 test_bench_zarr(const char* output_path)
@@ -757,7 +759,8 @@ test_bench_zarr(const char* output_path)
   }
 
   {
-    struct sink_stats ss = { .total_bytes = mss.total_bytes, .sink = &mss.sink };
+    struct sink_stats ss = { .total_bytes = mss.total_bytes,
+                             .sink = &mss.sink };
     print_bench_report(
       &s, &ss, &src, total_bytes, total_elements, chunk_elements, wall_s);
   }
@@ -904,7 +907,8 @@ test_visual_zarr(const char* output_path)
   }
 
   {
-    struct sink_stats ss = { .total_bytes = mss.total_bytes, .sink = &mss.sink };
+    struct sink_stats ss = { .total_bytes = mss.total_bytes,
+                             .sink = &mss.sink };
     print_bench_report(
       &s, &ss, &src, total_bytes, total_elements, chunk_elements, wall_s);
   }

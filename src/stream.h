@@ -76,6 +76,7 @@ struct dimension
   uint64_t tile_size;
   uint64_t tiles_per_shard; // 0 means all tiles along this dimension
   const char* name;         // optional label (e.g. "x"), may be NULL
+  int downsample;           // 1 => halve this dim at each LOD level
 };
 
 struct transpose_stream_configuration
@@ -87,6 +88,9 @@ struct transpose_stream_configuration
   struct writer* sink;           // downstream writer (uncompressed), not owned
   struct shard_sink* shard_sink; // downstream shard writer factory, not owned
   int compress;                  // enable nvcomp zstd compression
+  int enable_lod;                // enable multiscale LOD generation
+  struct shard_sink** lod_sinks; // [num_lod_sinks], not owned. lod_sinks[0] = level 1
+  int num_lod_sinks;
 };
 
 struct staging_slot
@@ -176,6 +180,30 @@ struct shard_state
   struct active_shard* shards;    // array[shard_inner_count]
 };
 
+struct lod_level
+{
+  struct stream_layout layout;
+  struct tile_pool_state tiles;
+  struct compression_shared comp;
+  struct aggregate_layout agg_layout;
+  struct shard_state shard;
+  struct shard_sink* shard_sink; // not owned
+
+  // Dimensions at this level
+  struct dimension dimensions[MAX_RANK / 2];
+
+  // Downsample kernel params (device copies)
+  uint64_t* d_dst_tile_size;
+  uint64_t* d_src_tile_size;
+  uint64_t* d_src_extent;
+  int64_t* d_src_pool_strides;
+  int64_t* d_dst_pool_strides;
+
+  uint64_t epoch_count;
+  uint8_t downsample_mask;
+  int needs_two_epochs; // dim 0 is downsampled
+};
+
 struct transpose_stream
 {
   struct writer writer;
@@ -189,6 +217,9 @@ struct transpose_stream
   struct stream_metrics metrics;
   uint64_t cursor;
   struct transpose_stream_configuration config;
+
+  int num_lod_levels;
+  struct lod_level* lod_levels; // [num_lod_levels], index 0 = level 1
 };
 
 // Initialize a transpose_stream. Returns 0 on success, non-zero on error.

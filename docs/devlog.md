@@ -1,5 +1,18 @@
 # dev log
 
+## 2026-02-16
+
+Adding multiscale. Starting with mean.
+
+Downsampling kernel turned out pretty complicated. Seems like there's got to
+be a way to simplify.
+
+Each epoch we yield chunks across potentially several scales. It would be nice
+if these could be handled uniformly to downstream compress/aggregation steps.
+At that point, we're mostly doing the same things to the tiles, we just need
+some more complicated shard addressing.
+
+
 ## 2026-02-15
 
 Testing on 5090 (oreb). New data distribution hits pretty hard :(

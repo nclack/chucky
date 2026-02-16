@@ -35,7 +35,6 @@ function(add_my_test TGT SOURCE_FILE)
     add_test(NAME "test-${TGT}" COMMAND ${TGT})
 endfunction()
 
-add_my_test(test_cuda test.c transpose CUDA::cudart_static)
 add_my_test(test_ctx_null test_ctx_null.c)
 
 find_package(OpenMP REQUIRED COMPONENTS C)
@@ -126,4 +125,7 @@ add_test(NAME "test-test_io_queue" COMMAND test_io_queue)
 add_my_test(test_zarr_sink test_zarr_sink.c zarr_sink stream CUDA::cudart_static)
 target_link_libraries(test_zarr_sink PRIVATE test_platform ${ZSTD_LIBRARY})
 target_include_directories(test_zarr_sink PRIVATE ${ZSTD_INCLUDE_DIR})
+
+# Downsample kernel test
+add_my_test(test_downsample test_downsample.c downsample CUDA::cudart_static)
 

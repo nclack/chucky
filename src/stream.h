@@ -44,6 +44,7 @@ struct stream_metric
   const char* name;
   float ms;      // cumulative
   float best_ms; // best single measurement (1e30f = not yet measured)
+  double total_bytes; // cumulative bytes (for throughput from real data)
   int count;
 };
 
@@ -146,6 +147,7 @@ struct tile_pool_slot
   struct compression_slot comp;
   struct aggregate_slot agg; // per-pool aggregate buffers (shard path)
   CUevent t_compress_start;  // recorded before compress
+  CUevent t_agg_end;         // recorded after aggregate kernel
   CUevent t_d2h_start;       // recorded before D2H memcpy
 };
 
@@ -177,7 +179,7 @@ struct shard_state
 struct transpose_stream
 {
   struct writer writer;
-  CUstream h2d, compute, d2h;
+  CUstream h2d, compute, compress, d2h;
   struct staging_state stage;
   struct tile_pool_state tiles;
   struct stream_layout layout;

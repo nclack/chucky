@@ -190,7 +190,8 @@ dispatch_scatter(struct transpose_stream* s)
   struct staging_slot* ss = &s->stage.slot[idx];
   struct tile_pool_slot* ts = &s->tiles.slot[tidx];
 
-  // H2D
+  // H2D — wait for prior scatter to finish reading d_in before overwriting
+  CU(Error, cuStreamWaitEvent(s->h2d, ss->t_scatter_end, 0));
   CU(Error, cuEventRecord(ss->t_h2d_start, s->h2d));
   CU(Error,
      cuMemcpyHtoDAsync(
@@ -367,8 +368,11 @@ kick_epoch_d2h(struct transpose_stream* s, int pool)
     struct compression_slot* cs = &ts->comp;
     struct aggregate_slot* agg = &ts->agg;
 
-    // Compress on compute (ordered after scatter on same stream)
-    CU(Error, cuEventRecord(ts->t_compress_start, s->compute));
+    // Wait for scatter to finish before compressing
+    CU(Error, cuStreamWaitEvent(s->compress, ts->d_tiles.ready, 0));
+
+    // Compress on dedicated stream (overlaps with next epoch's scatter)
+    CU(Error, cuEventRecord(ts->t_compress_start, s->compress));
     CHECK(
       Error,
       compress_batch_async((const void* const*)cs->d_uncomp_ptrs,
@@ -379,22 +383,23 @@ kick_epoch_d2h(struct transpose_stream* s, int pool)
                            s->comp.comp_temp_bytes,
                            cs->d_comp_ptrs,
                            cs->d_comp_sizes,
-                           s->compute) == 0);
+                           s->compress) == 0);
 
-    // Sync compute stream (nvcomp internal ops race with events)
-    CU(Error, cuStreamSynchronize(s->compute));
-    CU(Error, cuEventRecord(cs->d_compressed.ready, s->compute));
+    CU(Error, cuEventRecord(cs->d_compressed.ready, s->compress));
 
-    // Aggregate: permute + prefix-sum + gather
+    // Aggregate: permute + prefix-sum + gather (on compress stream)
     CHECK(Error,
           aggregate_by_shard_async(&s->agg_layout,
                                    cs->d_compressed.data,
                                    cs->d_comp_sizes,
                                    agg,
-                                   s->compute) == 0);
-    CU(Error, cuEventRecord(agg->ready, s->compute));
+                                   s->compress) == 0);
+    CU(Error, cuEventRecord(ts->t_agg_end, s->compress));
+    CU(Error, cuEventRecord(agg->ready, s->compress));
 
-    // D2H aggregated buffer
+    // D2H: full aggregated buffer + offsets in one async batch.
+    // Transfers comp_pool_bytes (pessimistic) to avoid a CPU sync bubble
+    // that would idle the d2h stream while the host fills the next epoch.
     CU(Error, cuStreamWaitEvent(s->d2h, agg->ready, 0));
     CU(Error, cuEventRecord(ts->t_d2h_start, s->d2h));
     CU(Error,
@@ -402,8 +407,6 @@ kick_epoch_d2h(struct transpose_stream* s, int pool)
                          (CUdeviceptr)agg->d_aggregated,
                          s->comp.comp_pool_bytes,
                          s->d2h));
-
-    // D2H offsets
     CU(Error,
        cuMemcpyDtoHAsync(agg->h_offsets,
                          (CUdeviceptr)agg->d_offsets,
@@ -436,12 +439,19 @@ wait_and_deliver(struct transpose_stream* s, int pool)
   if (s->config.compress && s->config.shard_sink) {
     struct compression_slot* cs = &ts->comp;
     struct aggregate_slot* agg = &ts->agg;
+
+    // Full D2H (data + offsets) was enqueued in kick_epoch_d2h; wait for it.
     CU(Error, cuEventSynchronize(agg->ready));
     accumulate_metric(
       &s->metrics.compress, ts->t_compress_start, cs->d_compressed.ready);
     accumulate_metric(
-      &s->metrics.aggregate, cs->d_compressed.ready, agg->ready);
+      &s->metrics.aggregate, cs->d_compressed.ready, ts->t_agg_end);
     accumulate_metric(&s->metrics.d2h, ts->t_d2h_start, agg->ready);
+
+    size_t total_compressed = agg->h_offsets[s->agg_layout.covering_count];
+    s->metrics.aggregate.total_bytes += total_compressed;
+    s->metrics.d2h.total_bytes += s->comp.comp_pool_bytes;
+
     if (deliver_to_shards(s, pool))
       goto Error;
   } else {
@@ -627,6 +637,7 @@ transpose_stream_destroy(struct transpose_stream* stream)
 
   CUWARN(cuStreamDestroy(stream->h2d));
   CUWARN(cuStreamDestroy(stream->compute));
+  CUWARN(cuStreamDestroy(stream->compress));
   CUWARN(cuStreamDestroy(stream->d2h));
 
   if (stream->layout.d_lifted_shape)
@@ -648,6 +659,8 @@ transpose_stream_destroy(struct transpose_stream* stream)
     struct tile_pool_slot* ts = &stream->tiles.slot[i];
     if (ts->t_compress_start)
       CUWARN(cuEventDestroy(ts->t_compress_start));
+    if (ts->t_agg_end)
+      CUWARN(cuEventDestroy(ts->t_agg_end));
     if (ts->t_d2h_start)
       CUWARN(cuEventDestroy(ts->t_d2h_start));
     buffer_free(&ts->d_tiles);
@@ -792,6 +805,7 @@ transpose_stream_create(const struct transpose_stream_configuration* config,
 
   CU(Fail, cuStreamCreate(&out->h2d, CU_STREAM_NON_BLOCKING));
   CU(Fail, cuStreamCreate(&out->compute, CU_STREAM_NON_BLOCKING));
+  CU(Fail, cuStreamCreate(&out->compress, CU_STREAM_NON_BLOCKING));
   CU(Fail, cuStreamCreate(&out->d2h, CU_STREAM_NON_BLOCKING));
 
   for (int i = 0; i < 2; ++i) {
@@ -802,6 +816,8 @@ transpose_stream_create(const struct transpose_stream_configuration* config,
        cuEventCreate(&out->stage.slot[i].t_scatter_end, CU_EVENT_DEFAULT));
     CU(Fail,
        cuEventCreate(&out->tiles.slot[i].t_compress_start, CU_EVENT_DEFAULT));
+    CU(Fail,
+       cuEventCreate(&out->tiles.slot[i].t_agg_end, CU_EVENT_DEFAULT));
     CU(Fail, cuEventCreate(&out->tiles.slot[i].t_d2h_start, CU_EVENT_DEFAULT));
   }
 
@@ -880,12 +896,13 @@ transpose_stream_create(const struct transpose_stream_configuration* config,
   }
 
   // Allocate input staging buffers (double-buffered)
-  // h_in: host writes sequentially, GPU reads via H2D -> write-combined
+  // h_in: cached pinned memory. WC would help GPU-side PCIe reads but H2D
+  // has 100x headroom vs compress, while WC hurts CPU memcpy throughput.
   for (int i = 0; i < 2; ++i) {
     CHECK(Fail,
           (out->stage.slot[i].h_in = buffer_new(config->buffer_capacity_bytes,
                                                 host,
-                                                CU_MEMHOSTALLOC_WRITECOMBINED))
+                                                0))
             .data);
     CHECK(Fail,
           (out->stage.slot[i].d_in =
@@ -983,6 +1000,7 @@ transpose_stream_create(const struct transpose_stream_configuration* config,
     CU(Fail, cuEventRecord(out->stage.slot[i].t_scatter_start, out->compute));
     CU(Fail, cuEventRecord(out->stage.slot[i].t_scatter_end, out->compute));
     CU(Fail, cuEventRecord(out->tiles.slot[i].t_compress_start, out->compute));
+    CU(Fail, cuEventRecord(out->tiles.slot[i].t_agg_end, out->compute));
     CU(Fail, cuEventRecord(out->tiles.slot[i].t_d2h_start, out->compute));
   }
 
@@ -1043,12 +1061,11 @@ transpose_stream_append(struct writer* self, struct slice input)
           struct staging_slot* ss = &s->stage.slot[si];
           CU(Error, cuEventSynchronize(ss->h_in.ready));
 
-          // Accumulate H2D and scatter time from previous dispatch on this slot
+          // Accumulate H2D time from previous dispatch on this slot.
+          // Scatter metrics skipped here to avoid syncing the compute stream
+          // in the hot path — scatter time can be inferred from other metrics.
           if (s->cursor > 0) {
             accumulate_metric(&s->metrics.h2d, ss->t_h2d_start, ss->h_in.ready);
-            CU(Error, cuEventSynchronize(ss->t_scatter_end));
-            accumulate_metric(
-              &s->metrics.scatter, ss->t_scatter_start, ss->t_scatter_end);
           }
         }
 

@@ -52,6 +52,10 @@ Next is probably to start thinking about multiscale.
 I'm still a little annoyed by the performance. The compression is pretty heavily
 the bottleneck.
 
+Found another unneccessary sync in the compression pipeline. Removing that 
+and putting compress+downstream on another stream got it to 2.9 GB/s (without
+the write to disk).
+
 [neuroglancer]: https://neuroglancer-demo.appspot.com/
 
 ## 2026-02-14

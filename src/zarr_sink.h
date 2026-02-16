@@ -4,8 +4,6 @@
 
 #include <stdint.h>
 
-struct io_queue;
-
 enum zarr_dtype
 {
   zarr_dtype_uint8,
@@ -33,12 +31,13 @@ struct zarr_config
 struct zarr_sink;
 
 // Create a zarr v3 store sink. Writes directory structure and metadata files.
-// queue may be NULL for synchronous I/O.
 // Returns NULL on error.
-struct zarr_sink* zarr_sink_create(const struct zarr_config* cfg,
-                                   struct io_queue* queue);
+struct zarr_sink* zarr_sink_create(const struct zarr_config* cfg);
 
 void zarr_sink_destroy(struct zarr_sink* s);
+
+// Block until all queued I/O has completed.
+void zarr_sink_flush(struct zarr_sink* s);
 
 // Get the shard_sink interface for use with transpose_stream.
 struct shard_sink* zarr_sink_as_shard_sink(struct zarr_sink* s);

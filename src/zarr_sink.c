@@ -422,7 +422,7 @@ write_array_metadata(const char* array_dir, const struct zarr_config* cfg,
 // --- Create / Destroy ---
 
 struct zarr_sink*
-zarr_sink_create(const struct zarr_config* cfg, struct io_queue* queue)
+zarr_sink_create(const struct zarr_config* cfg)
 {
   CHECK(Fail, cfg);
   CHECK(Fail, cfg->store_path);
@@ -434,7 +434,8 @@ zarr_sink_create(const struct zarr_config* cfg, struct io_queue* queue)
   CHECK(Fail, zs);
 
   zs->base.open = zarr_sink_open;
-  zs->queue = queue;
+  zs->queue = io_queue_create();
+  CHECK(Fail_alloc, zs->queue);
   zs->rank = cfg->rank;
 
   // Compute geometry
@@ -492,7 +493,7 @@ zarr_sink_create(const struct zarr_config* cfg, struct io_queue* queue)
     zs->writers[i].base.write = zarr_shard_write;
     zs->writers[i].base.finalize = zarr_shard_finalize;
     zs->writers[i].fd = PLATFORM_FD_INVALID;
-    zs->writers[i].queue = queue;
+    zs->writers[i].queue = zs->queue;
   }
 
   return zs;
@@ -505,10 +506,21 @@ Fail:
 }
 
 void
+zarr_sink_flush(struct zarr_sink* s)
+{
+  if (!s || !s->queue)
+    return;
+  struct io_event ev = io_queue_record(s->queue);
+  io_event_wait(s->queue, ev);
+}
+
+void
 zarr_sink_destroy(struct zarr_sink* s)
 {
   if (!s)
     return;
+
+  zarr_sink_flush(s);
 
   if (s->writers) {
     for (uint64_t i = 0; i < s->num_writers; ++i) {
@@ -517,6 +529,7 @@ zarr_sink_destroy(struct zarr_sink* s)
     }
     free(s->writers);
   }
+  io_queue_destroy(s->queue);
   free(s);
 }
 

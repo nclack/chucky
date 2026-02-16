@@ -475,8 +475,12 @@ print_bench_report(const struct transpose_stream* s,
   print_metric_row(&m.h2d, h2d_per_dispatch);
   print_metric_row(&m.scatter, scatter_per_dispatch);
   print_metric_row(&m.compress, pool_bytes);
-  print_metric_row(&m.aggregate, comp_pool);
-  print_metric_row(&m.d2h, comp_pool);
+  double agg_per = m.aggregate.count > 0
+    ? m.aggregate.total_bytes / m.aggregate.count : comp_pool;
+  print_metric_row(&m.aggregate, agg_per);
+  double d2h_per = m.d2h.count > 0
+    ? m.d2h.total_bytes / m.d2h.count : comp_pool;
+  print_metric_row(&m.d2h, d2h_per);
   double sink_per_call =
     ss->sink->count > 0 ? (double)ss->total_bytes / ss->sink->count : 0;
   print_metric_row(ss->sink, sink_per_call);
@@ -655,7 +659,7 @@ test_bench_zarr(const char* output_path)
   const size_t total_bytes = total_elements * sizeof(uint16_t);
 
   struct transpose_stream s = { 0 };
-  struct zarr_sink* zs = zarr_sink_create(&zarr_cfg, NULL);
+  struct zarr_sink* zs = zarr_sink_create(&zarr_cfg);
   CHECK(Fail, zs);
 
   struct metered_shard_sink mss;
@@ -738,6 +742,8 @@ test_bench_zarr(const char* output_path)
     }
   }
 
+  zarr_sink_flush(zs);
+
   float wall_s = platform_toc(&clock);
   free(chunk);
   chunk = NULL;
@@ -799,7 +805,7 @@ test_visual_zarr(const char* output_path)
   const size_t total_bytes = total_elements * sizeof(uint16_t);
 
   struct transpose_stream s = { 0 };
-  struct zarr_sink* zs = zarr_sink_create(&zarr_cfg, NULL);
+  struct zarr_sink* zs = zarr_sink_create(&zarr_cfg);
   CHECK(Fail, zs);
 
   struct metered_shard_sink mss;
@@ -882,6 +888,8 @@ test_visual_zarr(const char* output_path)
       goto Fail;
     }
   }
+
+  zarr_sink_flush(zs);
 
   float wall_s = platform_toc(&clock);
   free(chunk);

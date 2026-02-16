@@ -1,4 +1,3 @@
-#include "io_queue.h"
 #include "log/log.h"
 #include "stream.h"
 #include "zarr_sink.h"
@@ -63,16 +62,9 @@ read_file_all(const char* path, uint8_t** out, size_t* out_len)
 // --- Test: metadata files ---
 
 static int
-test_metadata(const char* tmpdir, int use_queue)
+test_metadata(const char* tmpdir)
 {
-  const char* mode = use_queue ? "async" : "sync";
-  log_info("=== test_metadata (%s) ===", mode);
-
-  struct io_queue* q = NULL;
-  if (use_queue) {
-    q = io_queue_create();
-    CHECK(Fail, q);
-  }
+  log_info("=== test_metadata ===");
 
   struct dimension dims[] = {
     { .size = 12, .tile_size = 2, .tiles_per_shard = 3, .name = "z" },
@@ -89,21 +81,21 @@ test_metadata(const char* tmpdir, int use_queue)
     .dimensions = dims,
   };
 
-  struct zarr_sink* zs = zarr_sink_create(&cfg, q);
-  CHECK(Fail2, zs);
+  struct zarr_sink* zs = zarr_sink_create(&cfg);
+  CHECK(Fail, zs);
 
   // Check root zarr.json
   {
     char path[4096];
     snprintf(path, sizeof(path), "%s/zarr.json", tmpdir);
-    CHECK(Fail3, test_file_exists(path));
+    CHECK(Fail2, test_file_exists(path));
 
     uint8_t* data;
     size_t len;
-    CHECK(Fail3, read_file_all(path, &data, &len) == 0);
+    CHECK(Fail2, read_file_all(path, &data, &len) == 0);
     data[len < 4095 ? len : 4095] = '\0';
-    CHECK(Fail3, strstr((char*)data, "\"zarr_format\":3"));
-    CHECK(Fail3, strstr((char*)data, "\"node_type\":\"group\""));
+    CHECK(Fail2, strstr((char*)data, "\"zarr_format\":3"));
+    CHECK(Fail2, strstr((char*)data, "\"node_type\":\"group\""));
     free(data);
   }
 
@@ -111,35 +103,30 @@ test_metadata(const char* tmpdir, int use_queue)
   {
     char path[4096];
     snprintf(path, sizeof(path), "%s/0/zarr.json", tmpdir);
-    CHECK(Fail3, test_file_exists(path));
+    CHECK(Fail2, test_file_exists(path));
 
     uint8_t* data;
     size_t len;
-    CHECK(Fail3, read_file_all(path, &data, &len) == 0);
+    CHECK(Fail2, read_file_all(path, &data, &len) == 0);
     data[len < 4095 ? len : 4095] = '\0';
 
-    CHECK(Fail3, strstr((char*)data, "\"zarr_format\":3"));
-    CHECK(Fail3, strstr((char*)data, "\"node_type\":\"array\""));
-    CHECK(Fail3, strstr((char*)data, "\"data_type\":\"uint32\""));
-    CHECK(Fail3, strstr((char*)data, "\"shape\":[12,8,12]"));
+    CHECK(Fail2, strstr((char*)data, "\"zarr_format\":3"));
+    CHECK(Fail2, strstr((char*)data, "\"node_type\":\"array\""));
+    CHECK(Fail2, strstr((char*)data, "\"data_type\":\"uint32\""));
+    CHECK(Fail2, strstr((char*)data, "\"shape\":[12,8,12]"));
     // chunk_shape (shard shape) = tile_size * tiles_per_shard = [6,8,6]
-    CHECK(Fail3, strstr((char*)data, "\"chunk_shape\":[6,8,6]"));
-    CHECK(Fail3, strstr((char*)data, "\"sharding_indexed\""));
-    CHECK(Fail3, strstr((char*)data, "\"dimension_names\":[\"z\",\"y\",\"x\"]"));
+    CHECK(Fail2, strstr((char*)data, "\"chunk_shape\":[6,8,6]"));
+    CHECK(Fail2, strstr((char*)data, "\"sharding_indexed\""));
+    CHECK(Fail2, strstr((char*)data, "\"dimension_names\":[\"z\",\"y\",\"x\"]"));
     free(data);
   }
 
   zarr_sink_destroy(zs);
-  if (q)
-    io_queue_destroy(q);
   log_info("  PASS");
   return 0;
 
-Fail3:
-  zarr_sink_destroy(zs);
 Fail2:
-  if (q)
-    io_queue_destroy(q);
+  zarr_sink_destroy(zs);
 Fail:
   log_error("  FAIL");
   return 1;
@@ -148,10 +135,9 @@ Fail:
 // --- Test: full pipeline → zarr → verify ---
 
 static int
-test_pipeline(const char* tmpdir, int use_queue)
+test_pipeline(const char* tmpdir)
 {
-  const char* mode = use_queue ? "async" : "sync";
-  log_info("=== test_pipeline (%s) ===", mode);
+  log_info("=== test_pipeline ===");
 
   const int size[3] = { 12, 8, 12 };
   const int tile_size[3] = { 2, 4, 3 };
@@ -174,13 +160,7 @@ test_pipeline(const char* tmpdir, int use_queue)
     tiles_per_shard[0] * tiles_per_shard[1] * tiles_per_shard[2];
   const int voxels_per_tile = tile_size[0] * tile_size[1] * tile_size[2];
 
-  struct io_queue* q = NULL;
   uint32_t* src = NULL;
-
-  if (use_queue) {
-    q = io_queue_create();
-    CHECK(Fail, q);
-  }
 
   // Generate source data
   src = (uint32_t*)malloc((size_t)total_elements * sizeof(uint32_t));
@@ -218,7 +198,7 @@ test_pipeline(const char* tmpdir, int use_queue)
     .dimensions = dims,
   };
 
-  struct zarr_sink* zs = zarr_sink_create(&zcfg, q);
+  struct zarr_sink* zs = zarr_sink_create(&zcfg);
   CHECK(Fail2, zs);
 
   // Configure transpose stream
@@ -245,11 +225,7 @@ test_pipeline(const char* tmpdir, int use_queue)
     CHECK(Fail4, r.error == 0);
   }
 
-  // Wait for async I/O to complete
-  if (q) {
-    struct io_event ev = io_queue_record(q);
-    io_event_wait(q, ev);
-  }
+  zarr_sink_flush(zs);
 
   // Verify shard files exist and contents are correct
   {
@@ -356,8 +332,6 @@ test_pipeline(const char* tmpdir, int use_queue)
   transpose_stream_destroy(&s);
   zarr_sink_destroy(zs);
   free(src);
-  if (q)
-    io_queue_destroy(q);
   log_info("  PASS");
   return 0;
 
@@ -367,8 +341,6 @@ Fail3:
   zarr_sink_destroy(zs);
 Fail2:
   free(src);
-  if (q)
-    io_queue_destroy(q);
 Fail:
   log_error("  FAIL");
   return 1;
@@ -390,15 +362,9 @@ main(int ac, char* av[])
   // Metadata tests (no CUDA needed)
   {
     char sub[4200];
-    snprintf(sub, sizeof(sub), "%s/meta_sync", tmpdir);
+    snprintf(sub, sizeof(sub), "%s/meta", tmpdir);
     test_mkdir(sub);
-    ecode |= test_metadata(sub, 0);
-  }
-  {
-    char sub[4200];
-    snprintf(sub, sizeof(sub), "%s/meta_async", tmpdir);
-    test_mkdir(sub);
-    ecode |= test_metadata(sub, 1);
+    ecode |= test_metadata(sub);
   }
 
   // Pipeline tests (need CUDA)
@@ -424,15 +390,9 @@ main(int ac, char* av[])
 
     {
       char sub[4200];
-      snprintf(sub, sizeof(sub), "%s/pipe_sync", tmpdir);
+      snprintf(sub, sizeof(sub), "%s/pipe", tmpdir);
       test_mkdir(sub);
-      ecode |= test_pipeline(sub, 0);
-    }
-    {
-      char sub[4200];
-      snprintf(sub, sizeof(sub), "%s/pipe_async", tmpdir);
-      test_mkdir(sub);
-      ecode |= test_pipeline(sub, 1);
+      ecode |= test_pipeline(sub);
     }
 
     cuCtxDestroy(ctx);

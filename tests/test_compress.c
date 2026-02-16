@@ -1,4 +1,5 @@
 #include "compress.h"
+#include "prelude.h"
 #include "prelude.cuda.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -188,22 +189,14 @@ Fail:
   free(h_compressed);
   free(h_comp_sizes);
   free(decomp_buf);
-  if (d_data)
-    cuMemFree((CUdeviceptr)d_data);
-  if (d_compressed)
-    cuMemFree((CUdeviceptr)d_compressed);
-  if (d_temp)
-    cuMemFree((CUdeviceptr)d_temp);
-  if (d_comp_sizes)
-    cuMemFree((CUdeviceptr)d_comp_sizes);
-  if (d_in_ptrs)
-    cuMemFree((CUdeviceptr)d_in_ptrs);
-  if (d_out_ptrs)
-    cuMemFree((CUdeviceptr)d_out_ptrs);
-  if (d_in_sizes)
-    cuMemFree((CUdeviceptr)d_in_sizes);
-  if (stream)
-    cuStreamDestroy(stream);
+  cuMemFree((CUdeviceptr)d_data);
+  cuMemFree((CUdeviceptr)d_compressed);
+  cuMemFree((CUdeviceptr)d_temp);
+  cuMemFree((CUdeviceptr)d_comp_sizes);
+  cuMemFree((CUdeviceptr)d_in_ptrs);
+  cuMemFree((CUdeviceptr)d_out_ptrs);
+  cuMemFree((CUdeviceptr)d_in_sizes);
+  cuStreamDestroy(stream);
 
   if (ok) {
     log_info("  PASS");
@@ -233,7 +226,6 @@ main(int ac, char* av[])
   return ecode;
 
 Fail:
-  if (ctx)
-    cuCtxDestroy(ctx);
+  cuCtxDestroy(ctx);
   return 1;
 }

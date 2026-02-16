@@ -2,6 +2,7 @@
 #include "transpose.h"
 #include <cuda.h>
 #include <cuda_runtime_api.h>
+#include "prelude.h"
 #include "prelude.cuda.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -423,7 +424,6 @@ main(int ac, char* av[])
   cuCtxDestroy(ctx);
   return ecode;
 Fail:
-  if (ctx)
-    cuCtxDestroy(ctx);
+  cuCtxDestroy(ctx);
   return 1;
 }

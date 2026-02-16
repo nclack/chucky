@@ -1,6 +1,7 @@
 #include "stream.h"
 #include "test_platform.h"
 #include "zarr_sink.h"
+#include "prelude.h"
 #include "prelude.cuda.h"
 
 #include <stdio.h>

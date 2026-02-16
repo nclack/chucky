@@ -1,4 +1,5 @@
 #include "aggregate.h"
+#include "prelude.h"
 #include "prelude.cuda.h"
 
 #include <cub/cub.cuh>
@@ -174,10 +175,8 @@ aggregate_layout_destroy(struct aggregate_layout* layout)
 {
   if (!layout)
     return;
-  if (layout->d_lifted_shape)
-    cuMemFree((CUdeviceptr)layout->d_lifted_shape);
-  if (layout->d_lifted_strides)
-    cuMemFree((CUdeviceptr)layout->d_lifted_strides);
+  cuMemFree((CUdeviceptr)layout->d_lifted_shape);
+  cuMemFree((CUdeviceptr)layout->d_lifted_strides);
   memset(layout, 0, sizeof(*layout));
 }
 
@@ -232,22 +231,14 @@ aggregate_slot_destroy(struct aggregate_slot* slot)
 {
   if (!slot)
     return;
-  if (slot->ready)
-    cuEventDestroy(slot->ready);
-  if (slot->d_permuted_sizes)
-    cuMemFree((CUdeviceptr)slot->d_permuted_sizes);
-  if (slot->d_offsets)
-    cuMemFree((CUdeviceptr)slot->d_offsets);
-  if (slot->d_perm)
-    cuMemFree((CUdeviceptr)slot->d_perm);
-  if (slot->d_aggregated)
-    cuMemFree((CUdeviceptr)slot->d_aggregated);
-  if (slot->h_aggregated)
-    cuMemFreeHost(slot->h_aggregated);
-  if (slot->h_offsets)
-    cuMemFreeHost(slot->h_offsets);
-  if (slot->d_temp)
-    cuMemFree((CUdeviceptr)slot->d_temp);
+  cuEventDestroy(slot->ready);
+  cuMemFree((CUdeviceptr)slot->d_permuted_sizes);
+  cuMemFree((CUdeviceptr)slot->d_offsets);
+  cuMemFree((CUdeviceptr)slot->d_perm);
+  cuMemFree((CUdeviceptr)slot->d_aggregated);
+  cuMemFreeHost(slot->h_aggregated);
+  cuMemFreeHost(slot->h_offsets);
+  cuMemFree((CUdeviceptr)slot->d_temp);
   memset(slot, 0, sizeof(*slot));
 }
 

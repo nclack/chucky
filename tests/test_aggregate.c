@@ -1,4 +1,5 @@
 #include "aggregate.h"
+#include "prelude.h"
 #include "prelude.cuda.h"
 
 #include <stdio.h>
@@ -146,12 +147,9 @@ Fail:
   free(h_agg);
   free(h_input);
   free(h_sizes);
-  if (d_compressed)
-    cuMemFree(d_compressed);
-  if (d_comp_sizes)
-    cuMemFree(d_comp_sizes);
-  if (stream)
-    cuStreamDestroy(stream);
+  cuMemFree(d_compressed);
+  cuMemFree(d_comp_sizes);
+  cuStreamDestroy(stream);
   aggregate_slot_destroy(&slot);
   aggregate_layout_destroy(&layout);
   return ok ? 0 : 1;
@@ -284,12 +282,9 @@ Fail:
   free(h_agg);
   free(h_input);
   free(h_sizes);
-  if (d_compressed)
-    cuMemFree(d_compressed);
-  if (d_comp_sizes)
-    cuMemFree(d_comp_sizes);
-  if (stream)
-    cuStreamDestroy(stream);
+  cuMemFree(d_compressed);
+  cuMemFree(d_comp_sizes);
+  cuStreamDestroy(stream);
   aggregate_slot_destroy(&slot);
   aggregate_layout_destroy(&layout);
   return ok ? 0 : 1;

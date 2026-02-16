@@ -3,6 +3,7 @@
 #include "stream.h"
 #include "test_platform.h"
 #include "zarr_sink.h"
+#include "prelude.h"
 #include "prelude.cuda.h"
 #include <math.h>
 #include <stdio.h>
@@ -167,11 +168,8 @@ discard_shard_write(struct shard_writer* self,
   struct discard_shard_writer* w = (struct discard_shard_writer*)self;
   platform_toc(&w->parent->clock);
   w->parent->total_bytes += (size_t)((const char*)end - (const char*)beg);
-  float ms = (float)(platform_toc(&w->parent->clock) * 1000.0);
-  w->parent->sink.ms += ms;
-  w->parent->sink.count++;
-  if (ms < w->parent->sink.best_ms)
-    w->parent->sink.best_ms = ms;
+  accumulate_metric_ms(&w->parent->sink,
+                       (float)(platform_toc(&w->parent->clock) * 1000.0));
   return 0;
 }
 
@@ -235,11 +233,8 @@ metered_shard_write(struct shard_writer* self,
   platform_toc(&w->parent->clock);
   w->parent->total_bytes += (size_t)((const char*)end - (const char*)beg);
   int rc = w->inner->write(w->inner, offset, beg, end);
-  float ms = (float)(platform_toc(&w->parent->clock) * 1000.0);
-  w->parent->sink.ms += ms;
-  w->parent->sink.count++;
-  if (ms < w->parent->sink.best_ms)
-    w->parent->sink.best_ms = ms;
+  accumulate_metric_ms(&w->parent->sink,
+                       (float)(platform_toc(&w->parent->clock) * 1000.0));
   return rc;
 }
 
@@ -391,10 +386,8 @@ struct sink_stats
 static void
 print_bench_report(const struct transpose_stream* s,
                    const struct sink_stats* ss,
-                   const struct stream_metric* src,
                    size_t total_bytes,
                    size_t total_elements,
-                   size_t chunk_elements,
                    float wall_s)
 {
   struct stream_metrics m = transpose_stream_get_metrics(s);
@@ -410,7 +403,6 @@ print_bench_report(const struct transpose_stream* s,
 
   const double pool_bytes = (double)s->layout.tile_pool_bytes;
   const double comp_pool = (double)s->comp.comp_pool_bytes;
-  const double chunk_bytes = (double)chunk_elements * sizeof(uint16_t);
 
   log_info("");
   log_info("  --- Benchmark Results ---");
@@ -433,9 +425,11 @@ print_bench_report(const struct transpose_stream* s,
            "avg ms",
            "best ms");
 
+  double memcpy_per =
+    m.memcpy.count > 0 ? (double)total_bytes / m.memcpy.count : 0;
+  print_metric_row(&m.memcpy, memcpy_per);
   double h2d_per_dispatch =
     m.h2d.count > 0 ? (double)total_bytes / m.h2d.count : 0;
-  print_metric_row(src, chunk_bytes);
   double scatter_per_dispatch =
     m.scatter.count > 0 ? (double)total_bytes / m.scatter.count : 0;
   print_metric_row(&m.h2d, h2d_per_dispatch);
@@ -533,8 +527,6 @@ test_bench(void)
 
   // Run the pipeline
   struct platform_clock clock = { 0 };
-  struct platform_clock src_clock = { 0 };
-  struct stream_metric src = { .name = "Source", .best_ms = 1e30f };
   platform_toc(&clock);
 
   for (size_t offset = 0; offset < total_elements; offset += chunk_elements) {
@@ -543,13 +535,7 @@ test_bench(void)
       n = total_elements - offset;
 
     struct slice input = { .beg = chunk, .end = chunk + n };
-    platform_toc(&src_clock);
     struct writer_result r = writer_append_wait(&s.writer, input);
-    float ms = (float)(platform_toc(&src_clock) * 1000.0);
-    src.ms += ms;
-    src.count++;
-    if (ms < src.best_ms)
-      src.best_ms = ms;
     if (r.error) {
       log_error("  append failed at offset %zu", offset);
       free(chunk);
@@ -583,7 +569,7 @@ test_bench(void)
     struct sink_stats ss = { .total_bytes = dss.total_bytes,
                              .sink = &dss.sink };
     print_bench_report(
-      &s, &ss, &src, total_bytes, total_elements, chunk_elements, wall_s);
+      &s, &ss, total_bytes, total_elements, wall_s);
   }
 
   transpose_stream_destroy(&s);
@@ -676,8 +662,6 @@ test_bench_zarr(const char* output_path)
   fill_chunk(chunk, chunk_elements, 0, total_elements);
 
   struct platform_clock clock = { 0 };
-  struct platform_clock src_clock = { 0 };
-  struct stream_metric src = { .name = "Source", .best_ms = 1e30f };
   platform_toc(&clock);
 
   for (size_t offset = 0; offset < total_elements; offset += chunk_elements) {
@@ -686,13 +670,7 @@ test_bench_zarr(const char* output_path)
       n = total_elements - offset;
 
     struct slice input = { .beg = chunk, .end = chunk + n };
-    platform_toc(&src_clock);
     struct writer_result r = writer_append_wait(&s.writer, input);
-    float ms = (float)(platform_toc(&src_clock) * 1000.0);
-    src.ms += ms;
-    src.count++;
-    if (ms < src.best_ms)
-      src.best_ms = ms;
     if (r.error) {
       log_error("  append failed at offset %zu", offset);
       free(chunk);
@@ -727,7 +705,7 @@ test_bench_zarr(const char* output_path)
     struct sink_stats ss = { .total_bytes = mss.total_bytes,
                              .sink = &mss.sink };
     print_bench_report(
-      &s, &ss, &src, total_bytes, total_elements, chunk_elements, wall_s);
+      &s, &ss, total_bytes, total_elements, wall_s);
   }
 
   transpose_stream_destroy(&s);
@@ -737,8 +715,7 @@ test_bench_zarr(const char* output_path)
 
 Fail:
   transpose_stream_destroy(&s);
-  if (zs)
-    zarr_sink_destroy(zs);
+  zarr_sink_destroy(zs);
   log_error("  FAIL");
   return 1;
 }
@@ -822,8 +799,6 @@ test_visual_zarr(const char* output_path)
   CHECK(Fail, chunk);
 
   struct platform_clock clock = { 0 };
-  struct platform_clock src_clock = { 0 };
-  struct stream_metric src = { .name = "Source", .best_ms = 1e30f };
   platform_toc(&clock);
 
   for (size_t offset = 0; offset < total_elements; offset += chunk_elements) {
@@ -834,13 +809,7 @@ test_visual_zarr(const char* output_path)
     fill_chunk_visual(chunk, n, offset);
 
     struct slice input = { .beg = chunk, .end = chunk + n };
-    platform_toc(&src_clock);
     struct writer_result r = writer_append_wait(&s.writer, input);
-    float ms = (float)(platform_toc(&src_clock) * 1000.0);
-    src.ms += ms;
-    src.count++;
-    if (ms < src.best_ms)
-      src.best_ms = ms;
     if (r.error) {
       log_error("  append failed at offset %zu", offset);
       free(chunk);
@@ -875,7 +844,7 @@ test_visual_zarr(const char* output_path)
     struct sink_stats ss = { .total_bytes = mss.total_bytes,
                              .sink = &mss.sink };
     print_bench_report(
-      &s, &ss, &src, total_bytes, total_elements, chunk_elements, wall_s);
+      &s, &ss, total_bytes, total_elements, wall_s);
   }
 
   transpose_stream_destroy(&s);
@@ -885,8 +854,7 @@ test_visual_zarr(const char* output_path)
 
 Fail:
   transpose_stream_destroy(&s);
-  if (zs)
-    zarr_sink_destroy(zs);
+  zarr_sink_destroy(zs);
   log_error("  FAIL");
   return 1;
 }
@@ -931,7 +899,6 @@ main(int ac, char* av[])
   return ecode;
 
 Fail:
-  if (ctx)
-    cuCtxDestroy(ctx);
+  cuCtxDestroy(ctx);
   return 1;
 }

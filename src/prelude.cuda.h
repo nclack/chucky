@@ -1,3 +1,4 @@
+/// PRIVATE: never include in other headers.
 #pragma once
 
 #include "log/log.h"

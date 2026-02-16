@@ -1,6 +1,7 @@
 #include "index.ops.util.h"
 #include "stream.h"
 #include "writer.mem.h"
+#include "prelude.h"
 #include "prelude.cuda.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -549,7 +550,6 @@ main(int ac, char* av[])
   return ecode;
 
 Fail:
-  if (ctx)
-    cuCtxDestroy(ctx);
+  cuCtxDestroy(ctx);
   return 1;
 }

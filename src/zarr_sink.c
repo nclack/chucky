@@ -704,10 +704,8 @@ zarr_multiscale_sink_create(const struct zarr_multiscale_config* cfg)
   return ms;
 
 Fail_sinks:
-  for (int lv = 0; lv < cfg->num_levels; ++lv) {
-    if (ms->levels[lv])
-      zarr_sink_destroy(ms->levels[lv]);
-  }
+  for (int lv = 0; lv < cfg->num_levels; ++lv)
+    zarr_sink_destroy(ms->levels[lv]);
 Fail_dims:
   free(dim_ptrs);
 Fail_levels:

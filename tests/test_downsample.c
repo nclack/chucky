@@ -1,5 +1,6 @@
 /// Test: downsampling kernels
 #include "downsample.h"
+#include "prelude.h"
 #include "prelude.cuda.h"
 
 #include <stdio.h>
@@ -216,20 +217,13 @@ Cleanup:
   free(h_src);
   free(h_expected);
   free(h_result);
-  if (d_src)
-    cuMemFree(d_src);
-  if (d_dst)
-    cuMemFree(d_dst);
-  if (d_src_ts)
-    cuMemFree(d_src_ts);
-  if (d_dst_ts)
-    cuMemFree(d_dst_ts);
-  if (d_src_ext)
-    cuMemFree(d_src_ext);
-  if (d_src_ps)
-    cuMemFree(d_src_ps);
-  if (d_dst_ps)
-    cuMemFree(d_dst_ps);
+  cuMemFree(d_src);
+  cuMemFree(d_dst);
+  cuMemFree(d_src_ts);
+  cuMemFree(d_dst_ts);
+  cuMemFree(d_src_ext);
+  cuMemFree(d_src_ps);
+  cuMemFree(d_dst_ps);
   return ok ? 0 : 1;
 }
 
@@ -447,22 +441,14 @@ Cleanup:
   free(h_pool_b);
   free(h_expected);
   free(h_result);
-  if (d_pool_a)
-    cuMemFree(d_pool_a);
-  if (d_pool_b)
-    cuMemFree(d_pool_b);
-  if (d_dst)
-    cuMemFree(d_dst);
-  if (d_src_ts)
-    cuMemFree(d_src_ts);
-  if (d_dst_ts)
-    cuMemFree(d_dst_ts);
-  if (d_src_ext)
-    cuMemFree(d_src_ext);
-  if (d_src_ps)
-    cuMemFree(d_src_ps);
-  if (d_dst_ps)
-    cuMemFree(d_dst_ps);
+  cuMemFree(d_pool_a);
+  cuMemFree(d_pool_b);
+  cuMemFree(d_dst);
+  cuMemFree(d_src_ts);
+  cuMemFree(d_dst_ts);
+  cuMemFree(d_src_ext);
+  cuMemFree(d_src_ps);
+  cuMemFree(d_dst_ps);
   return ok ? 0 : 1;
 }
 

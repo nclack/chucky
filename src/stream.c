@@ -1,8 +1,10 @@
 #include "compress.h"
 #include "downsample.h"
+#include "metric.cuda.h"
 #include "platform.h"
-#include "stream.h"
 #include "prelude.cuda.h"
+#include "prelude.h"
+#include "stream.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -82,35 +84,19 @@ Fail:
   return (struct buffer){ 0 };
 }
 
-static void
-accumulate_metric(struct stream_metric* m, CUevent start, CUevent end)
-{
-  float ms = 0;
-  cuEventElapsedTime(&ms, start, end);
-  if (ms < 1e-2f)
-    return; // skip bogus measurements from seeded events
-  m->ms += ms;
-  m->count++;
-  if (ms < m->best_ms)
-    m->best_ms = ms;
-}
 
-
-
-// Free a device pointer if non-NULL.
+// FIXME: don't need this function
 static void
 device_free(void* ptr)
 {
-  if (ptr)
-    CUWARN(cuMemFree((CUdeviceptr)ptr));
+  CUWARN(cuMemFree((CUdeviceptr)ptr));
 }
 
-// Free a host-pinned pointer if non-NULL.
+// FIXME: don't need this function
 static void
 host_free(void* ptr)
 {
-  if (ptr)
-    cuMemFreeHost(ptr);
+  cuMemFreeHost(ptr);
 }
 
 // Dispatch staged data: H2D transfer + scatter kernel
@@ -156,7 +142,8 @@ dispatch_scatter(struct transpose_stream* s)
       break;
     case 2:
       transpose_u16_v0((CUdeviceptr)ts->d_tiles.data,
-                       (CUdeviceptr)ts->d_tiles.data + s->layout.tile_pool_bytes,
+                       (CUdeviceptr)ts->d_tiles.data +
+                         s->layout.tile_pool_bytes,
                        (CUdeviceptr)ss->d_in.data,
                        (CUdeviceptr)ss->d_in.data + s->stage.fill,
                        s->cursor,
@@ -167,7 +154,8 @@ dispatch_scatter(struct transpose_stream* s)
       break;
     case 4:
       transpose_u32_v0((CUdeviceptr)ts->d_tiles.data,
-                       (CUdeviceptr)ts->d_tiles.data + s->layout.tile_pool_bytes,
+                       (CUdeviceptr)ts->d_tiles.data +
+                         s->layout.tile_pool_bytes,
                        (CUdeviceptr)ss->d_in.data,
                        (CUdeviceptr)ss->d_in.data + s->stage.fill,
                        s->cursor,
@@ -178,7 +166,8 @@ dispatch_scatter(struct transpose_stream* s)
       break;
     case 8:
       transpose_u64_v0((CUdeviceptr)ts->d_tiles.data,
-                       (CUdeviceptr)ts->d_tiles.data + s->layout.tile_pool_bytes,
+                       (CUdeviceptr)ts->d_tiles.data +
+                         s->layout.tile_pool_bytes,
                        (CUdeviceptr)ss->d_in.data,
                        (CUdeviceptr)ss->d_in.data + s->stage.fill,
                        s->cursor,
@@ -273,12 +262,16 @@ crc32c(const void* data, size_t len)
 }
 
 // Forward declarations for shard delivery
-static int deliver_to_shards(struct transpose_stream* s, int pool);
-static int emit_shards(struct transpose_stream* s);
+static int
+deliver_to_shards(struct transpose_stream* s, int pool);
+static int
+emit_shards(struct transpose_stream* s);
 
 // Forward declarations for LOD
-static int lod_cascade(struct transpose_stream* s, int src_level, int src_pool);
-static int lod_flush_epoch(struct transpose_stream* s, int level_idx);
+static int
+lod_cascade(struct transpose_stream* s, int src_level, int src_pool);
+static int
+lod_flush_epoch(struct transpose_stream* s, int level_idx);
 
 // Wait for source, record timing, memcpy D2H, record completion.
 // Returns 0 on success.
@@ -387,11 +380,11 @@ wait_and_deliver(struct transpose_stream* s, int pool)
 
     // Full D2H (data + offsets) was enqueued in kick_epoch_d2h; wait for it.
     CU(Error, cuEventSynchronize(agg->ready));
-    accumulate_metric(
+    accumulate_metric_cu(
       &s->metrics.compress, ts->t_compress_start, cs->d_compressed.ready);
-    accumulate_metric(
+    accumulate_metric_cu(
       &s->metrics.aggregate, cs->d_compressed.ready, ts->t_agg_end);
-    accumulate_metric(&s->metrics.d2h, ts->t_d2h_start, agg->ready);
+    accumulate_metric_cu(&s->metrics.d2h, ts->t_d2h_start, agg->ready);
 
     size_t total_compressed = agg->h_offsets[s->agg_layout.covering_count];
     s->metrics.aggregate.total_bytes += total_compressed;
@@ -401,7 +394,7 @@ wait_and_deliver(struct transpose_stream* s, int pool)
       goto Error;
   } else {
     CU(Error, cuEventSynchronize(ts->h_tiles.ready));
-    accumulate_metric(&s->metrics.d2h, ts->t_d2h_start, ts->h_tiles.ready);
+    accumulate_metric_cu(&s->metrics.d2h, ts->t_d2h_start, ts->h_tiles.ready);
     if (s->config.sink) {
       struct slice tiles = {
         .beg = ts->h_tiles.data,
@@ -504,9 +497,8 @@ emit_shards(struct transpose_stream* s)
     // Reset for next shard-epoch
     sh->writer = NULL;
     sh->data_cursor = 0;
-    memset(sh->index,
-           0xFF,
-           s->shard.tiles_per_shard_total * 2 * sizeof(uint64_t));
+    memset(
+      sh->index, 0xFF, s->shard.tiles_per_shard_total * 2 * sizeof(uint64_t));
   }
 
   s->shard.epoch_in_shard = 0;
@@ -606,9 +598,8 @@ lod_emit_shards(struct lod_level* lod)
 
     sh->writer = NULL;
     sh->data_cursor = 0;
-    memset(sh->index,
-           0xFF,
-           lod->shard.tiles_per_shard_total * 2 * sizeof(uint64_t));
+    memset(
+      sh->index, 0xFF, lod->shard.tiles_per_shard_total * 2 * sizeof(uint64_t));
   }
 
   lod->shard.epoch_in_shard = 0;
@@ -634,7 +625,8 @@ lod_deliver_to_shards(struct lod_level* lod, int pool)
     struct active_shard* sh = &lod->shard.shards[si];
 
     if (!sh->writer) {
-      uint64_t flat = lod->shard.shard_epoch * lod->shard.shard_inner_count + si;
+      uint64_t flat =
+        lod->shard.shard_epoch * lod->shard.shard_inner_count + si;
       sh->writer = lod->shard_sink->open(lod->shard_sink, flat);
       CHECK(Error, sh->writer);
     }
@@ -685,16 +677,17 @@ lod_kick_epoch_d2h(struct transpose_stream* s, struct lod_level* lod, int pool)
 
   CU(Error, cuStreamWaitEvent(s->compress, ts->d_tiles.ready, 0));
   CU(Error, cuEventRecord(ts->t_compress_start, s->compress));
-  CHECK(Error,
-        compress_batch_async((const void* const*)cs->d_uncomp_ptrs,
-                             lod->comp.d_uncomp_sizes,
-                             lod->layout.tile_stride * s->config.bytes_per_element,
-                             lod->layout.slot_count,
-                             lod->comp.d_comp_temp,
-                             lod->comp.comp_temp_bytes,
-                             cs->d_comp_ptrs,
-                             cs->d_comp_sizes,
-                             s->compress) == 0);
+  CHECK(
+    Error,
+    compress_batch_async((const void* const*)cs->d_uncomp_ptrs,
+                         lod->comp.d_uncomp_sizes,
+                         lod->layout.tile_stride * s->config.bytes_per_element,
+                         lod->layout.slot_count,
+                         lod->comp.d_comp_temp,
+                         lod->comp.comp_temp_bytes,
+                         cs->d_comp_ptrs,
+                         cs->d_comp_sizes,
+                         s->compress) == 0);
   CU(Error, cuEventRecord(cs->d_compressed.ready, s->compress));
 
   CHECK(Error,
@@ -742,8 +735,7 @@ Error:
 
 // Drain pending flush for an LOD level.
 static int
-lod_drain_pending_flush(struct transpose_stream* s,
-                        struct lod_level* lod)
+lod_drain_pending_flush(struct transpose_stream* s, struct lod_level* lod)
 {
   (void)s;
   if (!lod->tiles.flush_pending)
@@ -822,37 +814,57 @@ lod_cascade(struct transpose_stream* s, int src_level, int src_pool)
   const size_t bpe = s->config.bytes_per_element;
   switch (bpe) {
     case 1:
-      downsample_mean_u8(dst, pool_a, pool_b,
-                         s->config.rank, lod->downsample_mask,
-                         lod->d_dst_tile_size, lod->d_src_tile_size,
-                         lod->d_src_extent, lod->d_src_pool_strides,
+      downsample_mean_u8(dst,
+                         pool_a,
+                         pool_b,
+                         s->config.rank,
+                         lod->downsample_mask,
+                         lod->d_dst_tile_size,
+                         lod->d_src_tile_size,
+                         lod->d_src_extent,
+                         lod->d_src_pool_strides,
                          lod->d_dst_pool_strides,
                          lod->layout.slot_count * lod->layout.tile_elements,
                          s->compute);
       break;
     case 2:
-      downsample_mean_u16(dst, pool_a, pool_b,
-                          s->config.rank, lod->downsample_mask,
-                          lod->d_dst_tile_size, lod->d_src_tile_size,
-                          lod->d_src_extent, lod->d_src_pool_strides,
+      downsample_mean_u16(dst,
+                          pool_a,
+                          pool_b,
+                          s->config.rank,
+                          lod->downsample_mask,
+                          lod->d_dst_tile_size,
+                          lod->d_src_tile_size,
+                          lod->d_src_extent,
+                          lod->d_src_pool_strides,
                           lod->d_dst_pool_strides,
                           lod->layout.slot_count * lod->layout.tile_elements,
                           s->compute);
       break;
     case 4:
-      downsample_mean_u32(dst, pool_a, pool_b,
-                          s->config.rank, lod->downsample_mask,
-                          lod->d_dst_tile_size, lod->d_src_tile_size,
-                          lod->d_src_extent, lod->d_src_pool_strides,
+      downsample_mean_u32(dst,
+                          pool_a,
+                          pool_b,
+                          s->config.rank,
+                          lod->downsample_mask,
+                          lod->d_dst_tile_size,
+                          lod->d_src_tile_size,
+                          lod->d_src_extent,
+                          lod->d_src_pool_strides,
                           lod->d_dst_pool_strides,
                           lod->layout.slot_count * lod->layout.tile_elements,
                           s->compute);
       break;
     case 8:
-      downsample_mean_u64(dst, pool_a, pool_b,
-                          s->config.rank, lod->downsample_mask,
-                          lod->d_dst_tile_size, lod->d_src_tile_size,
-                          lod->d_src_extent, lod->d_src_pool_strides,
+      downsample_mean_u64(dst,
+                          pool_a,
+                          pool_b,
+                          s->config.rank,
+                          lod->downsample_mask,
+                          lod->d_dst_tile_size,
+                          lod->d_src_tile_size,
+                          lod->d_src_extent,
+                          lod->d_src_pool_strides,
                           lod->d_dst_pool_strides,
                           lod->layout.slot_count * lod->layout.tile_elements,
                           s->compute);
@@ -862,8 +874,7 @@ lod_cascade(struct transpose_stream* s, int src_level, int src_pool)
       return 1;
   }
 
-  CU(Error,
-     cuEventRecord(lod->tiles.slot[dst_cur].d_tiles.ready, s->compute));
+  CU(Error, cuEventRecord(lod->tiles.slot[dst_cur].d_tiles.ready, s->compute));
 
   return lod_flush_epoch(s, dst_level_idx);
 
@@ -888,29 +899,21 @@ transpose_stream_destroy(struct transpose_stream* stream)
   CUWARN(cuStreamDestroy(stream->compress));
   CUWARN(cuStreamDestroy(stream->d2h));
 
-  if (stream->layout.d_lifted_shape)
-    CUWARN(cuMemFree((CUdeviceptr)stream->layout.d_lifted_shape));
-  if (stream->layout.d_lifted_strides)
-    CUWARN(cuMemFree((CUdeviceptr)stream->layout.d_lifted_strides));
+  CUWARN(cuMemFree((CUdeviceptr)stream->layout.d_lifted_shape));
+  CUWARN(cuMemFree((CUdeviceptr)stream->layout.d_lifted_strides));
 
   for (int i = 0; i < 2; ++i) {
     struct staging_slot* ss = &stream->stage.slot[i];
-    if (ss->t_h2d_start)
-      CUWARN(cuEventDestroy(ss->t_h2d_start));
-    if (ss->t_scatter_start)
-      CUWARN(cuEventDestroy(ss->t_scatter_start));
-    if (ss->t_scatter_end)
-      CUWARN(cuEventDestroy(ss->t_scatter_end));
+    CUWARN(cuEventDestroy(ss->t_h2d_start));
+    CUWARN(cuEventDestroy(ss->t_scatter_start));
+    CUWARN(cuEventDestroy(ss->t_scatter_end));
     buffer_free(&ss->h_in);
     buffer_free(&ss->d_in);
 
     struct tile_pool_slot* ts = &stream->tiles.slot[i];
-    if (ts->t_compress_start)
-      CUWARN(cuEventDestroy(ts->t_compress_start));
-    if (ts->t_agg_end)
-      CUWARN(cuEventDestroy(ts->t_agg_end));
-    if (ts->t_d2h_start)
-      CUWARN(cuEventDestroy(ts->t_d2h_start));
+    CUWARN(cuEventDestroy(ts->t_compress_start));
+    CUWARN(cuEventDestroy(ts->t_agg_end));
+    CUWARN(cuEventDestroy(ts->t_d2h_start));
     buffer_free(&ts->d_tiles);
     buffer_free(&ts->h_tiles);
 
@@ -945,12 +948,9 @@ transpose_stream_destroy(struct transpose_stream* stream)
 
       for (int i = 0; i < 2; ++i) {
         struct tile_pool_slot* ts = &lod->tiles.slot[i];
-        if (ts->t_compress_start)
-          CUWARN(cuEventDestroy(ts->t_compress_start));
-        if (ts->t_agg_end)
-          CUWARN(cuEventDestroy(ts->t_agg_end));
-        if (ts->t_d2h_start)
-          CUWARN(cuEventDestroy(ts->t_d2h_start));
+        CUWARN(cuEventDestroy(ts->t_compress_start));
+        CUWARN(cuEventDestroy(ts->t_agg_end));
+        CUWARN(cuEventDestroy(ts->t_d2h_start));
         buffer_free(&ts->d_tiles);
         buffer_free(&ts->h_tiles);
 
@@ -1113,8 +1113,7 @@ transpose_stream_create(const struct transpose_stream_configuration* config,
        cuEventCreate(&out->stage.slot[i].t_scatter_end, CU_EVENT_DEFAULT));
     CU(Fail,
        cuEventCreate(&out->tiles.slot[i].t_compress_start, CU_EVENT_DEFAULT));
-    CU(Fail,
-       cuEventCreate(&out->tiles.slot[i].t_agg_end, CU_EVENT_DEFAULT));
+    CU(Fail, cuEventCreate(&out->tiles.slot[i].t_agg_end, CU_EVENT_DEFAULT));
     CU(Fail, cuEventCreate(&out->tiles.slot[i].t_d2h_start, CU_EVENT_DEFAULT));
   }
 
@@ -1197,9 +1196,8 @@ transpose_stream_create(const struct transpose_stream_configuration* config,
   // has 100x headroom vs compress, while WC hurts CPU memcpy throughput.
   for (int i = 0; i < 2; ++i) {
     CHECK(Fail,
-          (out->stage.slot[i].h_in = buffer_new(config->buffer_capacity_bytes,
-                                                host,
-                                                0))
+          (out->stage.slot[i].h_in =
+             buffer_new(config->buffer_capacity_bytes, host, 0))
             .data);
     CHECK(Fail,
           (out->stage.slot[i].d_in =
@@ -1303,7 +1301,8 @@ transpose_stream_create(const struct transpose_stream_configuration* config,
       uint64_t shard_count_0[MAX_RANK / 2];
       for (int d = 0; d < rank; ++d) {
         uint64_t tps = dims[d].tiles_per_shard;
-        if (tps == 0) tps = tile_count[d];
+        if (tps == 0)
+          tps = tile_count[d];
         shard_count_0[d] = ceildiv(tile_count[d], tps);
       }
 
@@ -1325,7 +1324,8 @@ transpose_stream_create(const struct transpose_stream_configuration* config,
             }
             uint64_t tc = ceildiv(next[d].size, next[d].tile_size);
             uint64_t tps = next[d].tiles_per_shard;
-            if (tps == 0) tps = tc;
+            if (tps == 0)
+              tps = tc;
             uint64_t sc = ceildiv(tc, tps);
             if (next[d].downsample && sc > 1)
               any_multi_shard = 1;
@@ -1346,8 +1346,8 @@ transpose_stream_create(const struct transpose_stream_configuration* config,
 
       if (num_levels > 0) {
         out->num_lod_levels = num_levels;
-        out->lod_levels = (struct lod_level*)calloc(
-          (size_t)num_levels, sizeof(struct lod_level));
+        out->lod_levels = (struct lod_level*)calloc((size_t)num_levels,
+                                                    sizeof(struct lod_level));
         CHECK(Fail, out->lod_levels);
 
         // Build each level from its parent
@@ -1454,20 +1454,19 @@ transpose_stream_create(const struct transpose_stream_configuration* config,
                      buffer_new(lod->layout.tile_pool_bytes, host, 0))
                     .data);
             CU(Fail,
-               cuMemsetD8Async(
-                 (CUdeviceptr)lod->tiles.slot[i].d_tiles.data,
-                 0,
-                 lod->layout.tile_pool_bytes,
-                 out->compute));
+               cuMemsetD8Async((CUdeviceptr)lod->tiles.slot[i].d_tiles.data,
+                               0,
+                               lod->layout.tile_pool_bytes,
+                               out->compute));
 
             CU(Fail,
                cuEventCreate(&lod->tiles.slot[i].t_compress_start,
                              CU_EVENT_DEFAULT));
             CU(Fail,
                cuEventCreate(&lod->tiles.slot[i].t_agg_end, CU_EVENT_DEFAULT));
-            CU(Fail,
-               cuEventCreate(&lod->tiles.slot[i].t_d2h_start,
-                             CU_EVENT_DEFAULT));
+            CU(
+              Fail,
+              cuEventCreate(&lod->tiles.slot[i].t_d2h_start, CU_EVENT_DEFAULT));
           }
 
           lod->tiles.current = 0;
@@ -1479,14 +1478,13 @@ transpose_stream_create(const struct transpose_stream_configuration* config,
             const uint64_t M = lod->layout.slot_count;
             const size_t tile_bytes = lod->layout.tile_stride * bpe;
 
-            lod->comp.max_comp_chunk_bytes = align_up(
-              compress_get_max_output_size(tile_bytes),
-              compress_get_input_alignment());
+            lod->comp.max_comp_chunk_bytes =
+              align_up(compress_get_max_output_size(tile_bytes),
+                       compress_get_input_alignment());
             CHECK(Fail, lod->comp.max_comp_chunk_bytes > 0);
             lod->comp.comp_pool_bytes = M * lod->comp.max_comp_chunk_bytes;
 
-            lod->comp.comp_temp_bytes =
-              compress_get_temp_size(M, tile_bytes);
+            lod->comp.comp_temp_bytes = compress_get_temp_size(M, tile_bytes);
             if (lod->comp.comp_temp_bytes > 0)
               CU(Fail,
                  cuMemAlloc((CUdeviceptr*)&lod->comp.d_comp_temp,
@@ -1506,8 +1504,8 @@ transpose_stream_create(const struct transpose_stream_configuration* config,
                  cuMemAlloc((CUdeviceptr*)&cs->d_comp_sizes,
                             M * sizeof(size_t)));
               CU(Fail,
-                 cuMemHostAlloc((void**)&cs->h_comp_sizes,
-                                M * sizeof(size_t), 0));
+                 cuMemHostAlloc(
+                   (void**)&cs->h_comp_sizes, M * sizeof(size_t), 0));
             }
 
             // Build device pointer arrays
@@ -1520,23 +1518,21 @@ transpose_stream_create(const struct transpose_stream_configuration* config,
                  cuMemAlloc((CUdeviceptr*)&cs->d_uncomp_ptrs,
                             M * sizeof(void*)));
               CU(LodFree,
-                 cuMemAlloc((CUdeviceptr*)&cs->d_comp_ptrs,
-                            M * sizeof(void*)));
+                 cuMemAlloc((CUdeviceptr*)&cs->d_comp_ptrs, M * sizeof(void*)));
 
               for (uint64_t k = 0; k < M; ++k)
                 h_ptrs[k] =
                   (char*)lod->tiles.slot[i].d_tiles.data + k * tile_bytes;
               CU(LodFree,
-                 cuMemcpyHtoD((CUdeviceptr)cs->d_uncomp_ptrs, h_ptrs,
-                              M * sizeof(void*)));
+                 cuMemcpyHtoD(
+                   (CUdeviceptr)cs->d_uncomp_ptrs, h_ptrs, M * sizeof(void*)));
 
               for (uint64_t k = 0; k < M; ++k)
-                h_ptrs[k] =
-                  (char*)cs->d_compressed.data +
-                  k * lod->comp.max_comp_chunk_bytes;
+                h_ptrs[k] = (char*)cs->d_compressed.data +
+                            k * lod->comp.max_comp_chunk_bytes;
               CU(LodFree,
-                 cuMemcpyHtoD((CUdeviceptr)cs->d_comp_ptrs, h_ptrs,
-                              M * sizeof(void*)));
+                 cuMemcpyHtoD(
+                   (CUdeviceptr)cs->d_comp_ptrs, h_ptrs, M * sizeof(void*)));
             }
 
             // Uncompressed sizes array
@@ -1552,9 +1548,9 @@ transpose_stream_create(const struct transpose_stream_configuration* config,
               CU(LodFree,
                  cuMemAlloc((CUdeviceptr*)&lod->comp.d_uncomp_sizes,
                             M * sizeof(size_t)));
-              CUresult rc = cuMemcpyHtoD(
-                (CUdeviceptr)lod->comp.d_uncomp_sizes, h_sizes,
-                M * sizeof(size_t));
+              CUresult rc = cuMemcpyHtoD((CUdeviceptr)lod->comp.d_uncomp_sizes,
+                                         h_sizes,
+                                         M * sizeof(size_t));
               free(h_sizes);
               if (rc != CUDA_SUCCESS) {
                 free(h_ptrs);
@@ -1624,8 +1620,7 @@ transpose_stream_create(const struct transpose_stream_configuration* config,
 
           // Seed aggregate slot events
           for (int i = 0; i < 2; ++i)
-            CU(Fail,
-               cuEventRecord(lod->tiles.slot[i].agg.ready, out->compute));
+            CU(Fail, cuEventRecord(lod->tiles.slot[i].agg.ready, out->compute));
 
           // Upload downsample kernel params to device
           {
@@ -1636,8 +1631,7 @@ transpose_stream_create(const struct transpose_stream_configuration* config,
             uint64_t h_dst_ts[MAX_RANK / 2];
             for (int d = 0; d < rank; ++d)
               h_dst_ts[d] = lod->dimensions[d].tile_size;
-            CU(Fail,
-               cuMemAlloc((CUdeviceptr*)&lod->d_dst_tile_size, sz));
+            CU(Fail, cuMemAlloc((CUdeviceptr*)&lod->d_dst_tile_size, sz));
             CU(Fail,
                cuMemcpyHtoD((CUdeviceptr)lod->d_dst_tile_size, h_dst_ts, sz));
 
@@ -1645,8 +1639,7 @@ transpose_stream_create(const struct transpose_stream_configuration* config,
             uint64_t h_src_ts[MAX_RANK / 2];
             for (int d = 0; d < rank; ++d)
               h_src_ts[d] = parent_dims[d].tile_size;
-            CU(Fail,
-               cuMemAlloc((CUdeviceptr*)&lod->d_src_tile_size, sz));
+            CU(Fail, cuMemAlloc((CUdeviceptr*)&lod->d_src_tile_size, sz));
             CU(Fail,
                cuMemcpyHtoD((CUdeviceptr)lod->d_src_tile_size, h_src_ts, sz));
 
@@ -1654,8 +1647,7 @@ transpose_stream_create(const struct transpose_stream_configuration* config,
             uint64_t h_src_ext[MAX_RANK / 2];
             for (int d = 0; d < rank; ++d)
               h_src_ext[d] = parent_dims[d].size;
-            CU(Fail,
-               cuMemAlloc((CUdeviceptr*)&lod->d_src_extent, sz));
+            CU(Fail, cuMemAlloc((CUdeviceptr*)&lod->d_src_extent, sz));
             CU(Fail,
                cuMemcpyHtoD((CUdeviceptr)lod->d_src_extent, h_src_ext, sz));
 
@@ -1680,11 +1672,10 @@ transpose_stream_create(const struct transpose_stream_configuration* config,
                 h_src_ps[d] = parent_layout->lifted_strides[2 * d];
               }
             }
+            CU(Fail, cuMemAlloc((CUdeviceptr*)&lod->d_src_pool_strides, ssz));
             CU(Fail,
-               cuMemAlloc((CUdeviceptr*)&lod->d_src_pool_strides, ssz));
-            CU(Fail,
-               cuMemcpyHtoD((CUdeviceptr)lod->d_src_pool_strides, h_src_ps,
-                            ssz));
+               cuMemcpyHtoD(
+                 (CUdeviceptr)lod->d_src_pool_strides, h_src_ps, ssz));
 
             // Destination pool strides
             int64_t h_dst_ps[MAX_RANK / 2];
@@ -1695,22 +1686,20 @@ transpose_stream_create(const struct transpose_stream_configuration* config,
                 h_dst_ps[d] = lod->layout.lifted_strides[2 * d];
               }
             }
+            CU(Fail, cuMemAlloc((CUdeviceptr*)&lod->d_dst_pool_strides, ssz));
             CU(Fail,
-               cuMemAlloc((CUdeviceptr*)&lod->d_dst_pool_strides, ssz));
-            CU(Fail,
-               cuMemcpyHtoD((CUdeviceptr)lod->d_dst_pool_strides, h_dst_ps,
-                            ssz));
+               cuMemcpyHtoD(
+                 (CUdeviceptr)lod->d_dst_pool_strides, h_dst_ps, ssz));
           }
 
           // Seed timing events for LOD pool slots
           for (int i = 0; i < 2; ++i) {
             CU(Fail,
                cuEventRecord(lod->tiles.slot[i].d_tiles.ready, out->compute));
-            CU(Fail,
-               cuEventRecord(lod->tiles.slot[i].t_compress_start,
-                             out->compute));
-            CU(Fail,
-               cuEventRecord(lod->tiles.slot[i].t_agg_end, out->compute));
+            CU(
+              Fail,
+              cuEventRecord(lod->tiles.slot[i].t_compress_start, out->compute));
+            CU(Fail, cuEventRecord(lod->tiles.slot[i].t_agg_end, out->compute));
             CU(Fail,
                cuEventRecord(lod->tiles.slot[i].t_d2h_start, out->compute));
           }
@@ -1739,6 +1728,8 @@ transpose_stream_create(const struct transpose_stream_configuration* config,
 
   CU(Fail, cuStreamSynchronize(out->compute));
 
+  out->metrics.memcpy =
+    (struct stream_metric){ .name = "Memcpy", .best_ms = 1e30f };
   out->metrics.h2d = (struct stream_metric){ .name = "H2D", .best_ms = 1e30f };
   out->metrics.scatter =
     (struct stream_metric){ .name = "Scatter", .best_ms = 1e30f };
@@ -1798,14 +1789,20 @@ transpose_stream_append(struct writer* self, struct slice input)
           // Scatter metrics skipped here to avoid syncing the compute stream
           // in the hot path — scatter time can be inferred from other metrics.
           if (s->cursor > 0) {
-            accumulate_metric(&s->metrics.h2d, ss->t_h2d_start, ss->h_in.ready);
+            accumulate_metric_cu(&s->metrics.h2d, ss->t_h2d_start, ss->h_in.ready);
           }
         }
 
-        memcpy((uint8_t*)s->stage.slot[s->stage.current].h_in.data +
-                 s->stage.fill,
-               src + written,
-               payload);
+        {
+          struct platform_clock mc = { 0 };
+          platform_toc(&mc);
+          memcpy((uint8_t*)s->stage.slot[s->stage.current].h_in.data +
+                   s->stage.fill,
+                 src + written,
+                 payload);
+          accumulate_metric_ms(&s->metrics.memcpy,
+                               (float)(platform_toc(&mc) * 1000.0));
+        }
         s->stage.fill += payload;
         written += payload;
 
@@ -1885,46 +1882,65 @@ transpose_stream_flush(struct writer* self)
         }
 
         int dst_cur = lod->tiles.current;
-        CUdeviceptr dst =
-          (CUdeviceptr)lod->tiles.slot[dst_cur].d_tiles.data;
+        CUdeviceptr dst = (CUdeviceptr)lod->tiles.slot[dst_cur].d_tiles.data;
 
         const size_t bpe = s->config.bytes_per_element;
         switch (bpe) {
           case 1:
-            downsample_mean_u8(dst, pool_src, pool_src,
-                               s->config.rank, lod->downsample_mask,
-                               lod->d_dst_tile_size, lod->d_src_tile_size,
-                               lod->d_src_extent, lod->d_src_pool_strides,
+            downsample_mean_u8(dst,
+                               pool_src,
+                               pool_src,
+                               s->config.rank,
+                               lod->downsample_mask,
+                               lod->d_dst_tile_size,
+                               lod->d_src_tile_size,
+                               lod->d_src_extent,
+                               lod->d_src_pool_strides,
                                lod->d_dst_pool_strides,
                                lod->layout.slot_count *
                                  lod->layout.tile_elements,
                                s->compute);
             break;
           case 2:
-            downsample_mean_u16(dst, pool_src, pool_src,
-                                s->config.rank, lod->downsample_mask,
-                                lod->d_dst_tile_size, lod->d_src_tile_size,
-                                lod->d_src_extent, lod->d_src_pool_strides,
+            downsample_mean_u16(dst,
+                                pool_src,
+                                pool_src,
+                                s->config.rank,
+                                lod->downsample_mask,
+                                lod->d_dst_tile_size,
+                                lod->d_src_tile_size,
+                                lod->d_src_extent,
+                                lod->d_src_pool_strides,
                                 lod->d_dst_pool_strides,
                                 lod->layout.slot_count *
                                   lod->layout.tile_elements,
                                 s->compute);
             break;
           case 4:
-            downsample_mean_u32(dst, pool_src, pool_src,
-                                s->config.rank, lod->downsample_mask,
-                                lod->d_dst_tile_size, lod->d_src_tile_size,
-                                lod->d_src_extent, lod->d_src_pool_strides,
+            downsample_mean_u32(dst,
+                                pool_src,
+                                pool_src,
+                                s->config.rank,
+                                lod->downsample_mask,
+                                lod->d_dst_tile_size,
+                                lod->d_src_tile_size,
+                                lod->d_src_extent,
+                                lod->d_src_pool_strides,
                                 lod->d_dst_pool_strides,
                                 lod->layout.slot_count *
                                   lod->layout.tile_elements,
                                 s->compute);
             break;
           case 8:
-            downsample_mean_u64(dst, pool_src, pool_src,
-                                s->config.rank, lod->downsample_mask,
-                                lod->d_dst_tile_size, lod->d_src_tile_size,
-                                lod->d_src_extent, lod->d_src_pool_strides,
+            downsample_mean_u64(dst,
+                                pool_src,
+                                pool_src,
+                                s->config.rank,
+                                lod->downsample_mask,
+                                lod->d_dst_tile_size,
+                                lod->d_src_tile_size,
+                                lod->d_src_extent,
+                                lod->d_src_pool_strides,
                                 lod->d_dst_pool_strides,
                                 lod->layout.slot_count *
                                   lod->layout.tile_elements,

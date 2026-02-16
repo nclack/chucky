@@ -1,6 +1,7 @@
 #pragma once
 
 #include "aggregate.h"
+#include "metric.h"
 #include "transpose.h"
 #include <cuda.h>
 #include <stddef.h>
@@ -39,17 +40,9 @@ struct shard_sink
   struct shard_writer* (*open)(struct shard_sink* self, uint64_t shard_index);
 };
 
-struct stream_metric
-{
-  const char* name;
-  float ms;           // cumulative
-  float best_ms;      // best single measurement (1e30f = not yet measured)
-  double total_bytes; // cumulative bytes (for throughput from real data)
-  int count;
-};
-
 struct stream_metrics
 {
+  struct stream_metric memcpy;
   struct stream_metric h2d;
   struct stream_metric scatter;
   struct stream_metric compress;
@@ -244,6 +237,6 @@ writer_flush(struct writer* w);
 struct writer_result
 writer_append_wait(struct writer* w, struct slice data);
 
-// Return accumulated GPU timing metrics.
+// Return accumulated timing metrics.
 struct stream_metrics
 transpose_stream_get_metrics(const struct transpose_stream* s);

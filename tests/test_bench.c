@@ -1,10 +1,10 @@
 #define _USE_MATH_DEFINES
 #include "platform.h"
+#include "prelude.cuda.h"
+#include "prelude.h"
 #include "stream.h"
 #include "test_platform.h"
 #include "zarr_sink.h"
-#include "prelude.h"
-#include "prelude.cuda.h"
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -182,8 +182,9 @@ discard_shard_finalize(struct shard_writer* self)
 }
 
 static struct shard_writer*
-discard_shard_open(struct shard_sink* self, uint64_t shard_index)
+discard_shard_open(struct shard_sink* self, uint8_t level, uint64_t shard_index)
 {
+  (void)level;
   (void)shard_index;
   struct discard_shard_sink* s = (struct discard_shard_sink*)self;
   return &s->writer.base;
@@ -208,14 +209,14 @@ discard_shard_sink_init(struct discard_shard_sink* s)
 
 struct metered_shard_writer
 {
-  struct shard_writer base;
+  struct shard_writer shard_writer;
   struct shard_writer* inner;
   struct metered_shard_sink* parent;
 };
 
 struct metered_shard_sink
 {
-  struct shard_sink base;
+  struct shard_sink shard_writer;
   struct shard_sink* inner;
   size_t total_bytes;
   size_t shards_finalized;
@@ -249,29 +250,29 @@ metered_shard_finalize(struct shard_writer* self)
 }
 
 static struct shard_writer*
-metered_shard_open(struct shard_sink* self, uint64_t shard_index)
+metered_shard_open(struct shard_sink* self, uint8_t level, uint64_t shard_index)
 {
   struct metered_shard_sink* s = (struct metered_shard_sink*)self;
-  struct shard_writer* inner = s->inner->open(s->inner, shard_index);
+  struct shard_writer* inner = s->inner->open(s->inner, level, shard_index);
   if (!inner)
     return NULL;
   struct metered_shard_writer* w = malloc(sizeof(*w));
   if (!w)
     return NULL;
   *w = (struct metered_shard_writer){
-    .base = { .write = metered_shard_write,
-              .finalize = metered_shard_finalize },
+    .shard_writer = { .write = metered_shard_write,
+                      .finalize = metered_shard_finalize },
     .inner = inner,
     .parent = s,
   };
-  return &w->base;
+  return &w->shard_writer;
 }
 
 static void
 metered_shard_sink_init(struct metered_shard_sink* s, struct shard_sink* inner)
 {
   *s = (struct metered_shard_sink){
-    .base = { .open = metered_shard_open },
+    .shard_writer = { .open = metered_shard_open },
     .inner = inner,
     .sink = { .name = "Sink", .best_ms = 1e30f },
   };
@@ -568,8 +569,7 @@ test_bench(void)
   {
     struct sink_stats ss = { .total_bytes = dss.total_bytes,
                              .sink = &dss.sink };
-    print_bench_report(
-      &s, &ss, total_bytes, total_elements, wall_s);
+    print_bench_report(&s, &ss, total_bytes, total_elements, wall_s);
   }
 
   transpose_stream_destroy(&s);
@@ -624,7 +624,7 @@ test_bench_zarr(const char* output_path)
     .rank = 4,
     .dimensions = dims,
     .compress = 1,
-    .shard_sink = &mss.base,
+    .shard_sink = &mss.shard_writer,
   };
 
   CHECK(Fail, transpose_stream_create(&config, &s) == 0);
@@ -704,8 +704,7 @@ test_bench_zarr(const char* output_path)
   {
     struct sink_stats ss = { .total_bytes = mss.total_bytes,
                              .sink = &mss.sink };
-    print_bench_report(
-      &s, &ss, total_bytes, total_elements, wall_s);
+    print_bench_report(&s, &ss, total_bytes, total_elements, wall_s);
   }
 
   transpose_stream_destroy(&s);
@@ -762,7 +761,7 @@ test_visual_zarr(const char* output_path)
     .rank = 4,
     .dimensions = dims,
     .compress = 1,
-    .shard_sink = &mss.base,
+    .shard_sink = &mss.shard_writer,
   };
 
   CHECK(Fail, transpose_stream_create(&config, &s) == 0);
@@ -843,8 +842,7 @@ test_visual_zarr(const char* output_path)
   {
     struct sink_stats ss = { .total_bytes = mss.total_bytes,
                              .sink = &mss.sink };
-    print_bench_report(
-      &s, &ss, total_bytes, total_elements, wall_s);
+    print_bench_report(&s, &ss, total_bytes, total_elements, wall_s);
   }
 
   transpose_stream_destroy(&s);

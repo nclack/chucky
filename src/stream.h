@@ -36,8 +36,11 @@ struct shard_writer
 
 struct shard_sink
 {
-  // Open/get a writer for the given flat shard index. Sink manages lifetime.
-  struct shard_writer* (*open)(struct shard_sink* self, uint64_t shard_index);
+  // Open/get a writer for the given level and flat shard index.
+  // level 0 = full resolution, level 1.. = LOD levels. Sink manages lifetime.
+  struct shard_writer* (*open)(struct shard_sink* self,
+                               uint8_t level,
+                               uint64_t shard_index);
 };
 
 struct stream_metrics
@@ -82,9 +85,6 @@ struct transpose_stream_configuration
   struct shard_sink* shard_sink; // downstream shard writer factory, not owned
   int compress;                  // enable nvcomp zstd compression
   int enable_lod;                // enable multiscale LOD generation
-  struct shard_sink**
-    lod_sinks; // [num_lod_sinks], not owned. lod_sinks[0] = level 1
-  int num_lod_sinks;
 };
 
 struct staging_slot
@@ -178,10 +178,11 @@ struct lod_level
 {
   struct stream_layout layout;
   struct tile_pool_state tiles;
-  struct compression_shared comp;
   struct aggregate_layout agg_layout;
   struct shard_state shard;
-  struct shard_sink* shard_sink; // not owned
+
+  size_t comp_pool_bytes;      // slot_count * max_comp_chunk_bytes
+  size_t max_comp_chunk_bytes; // per-tile max compressed size
 
   // Dimensions at this level
   struct dimension dimensions[MAX_RANK / 2];
@@ -196,6 +197,21 @@ struct lod_level
   uint64_t epoch_count;
   uint8_t downsample_mask;
   int needs_two_epochs; // dim 0 is downsampled
+};
+
+struct lod_compress_batch
+{
+  void** d_uncomp_ptrs;   // device: [max_total_tiles] pointers
+  void** d_comp_ptrs;     // device: [max_total_tiles] pointers
+  size_t* d_comp_sizes;   // device: [max_total_tiles] compress output sizes
+  size_t* d_uncomp_sizes; // device: [max_total_tiles] all same value
+  void* d_comp_temp;      // device scratch for nvcomp
+  size_t comp_temp_bytes;
+  uint64_t max_total_tiles; // sum of slot_count across all LOD levels
+
+  // Host staging for building pointer arrays
+  void** h_uncomp_ptrs; // [max_total_tiles]
+  void** h_comp_ptrs;   // [max_total_tiles]
 };
 
 struct transpose_stream
@@ -213,7 +229,8 @@ struct transpose_stream
   struct transpose_stream_configuration config;
 
   int num_lod_levels;
-  struct lod_level* lod_levels; // [num_lod_levels], index 0 = level 1
+  struct lod_level* lod_levels;         // [num_lod_levels], index 0 = level 1
+  struct lod_compress_batch lod_batch;  // shared compress batch for all LOD levels
 };
 
 // Initialize a transpose_stream. Returns 0 on success, non-zero on error.

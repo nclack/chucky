@@ -103,8 +103,9 @@ collecting_finalize(struct shard_writer* self)
 }
 
 static struct shard_writer*
-collecting_open(struct shard_sink* self, uint64_t shard_index)
+collecting_open(struct shard_sink* self, uint8_t level, uint64_t shard_index)
 {
+  (void)level;
   struct collecting_shard_sink* s = (struct collecting_shard_sink*)self;
   if ((int)shard_index >= s->num_shards) {
     log_error("collecting_open: shard_index %lu >= num_shards %d",

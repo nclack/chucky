@@ -1,5 +1,7 @@
 # dev log
 
+- [ ] interface for streaming from device, integrating with a cuda stream
+
 ## 2026-02-16
 
 Adding multiscale. Starting with mean.
@@ -14,7 +16,36 @@ be a way to simplify.
 Each epoch we yield chunks across potentially several scales. It would be nice
 if these could be handled uniformly to downstream compress/aggregation steps.
 At that point, we're mostly doing the same things to the tiles, we just need
-some more complicated shard addressing.
+some more complicated shard addressing. But the mapping of tile indices to
+lods/shards should be easy to compute.
+
+We may need an extra epoch buffer just to keep the data moving since we'll need
+to have two reserved for the downsampling.
+
+Need to think about what the boundary condition for lods is. If we imagine
+visualizing the array near the boundary as we zoom out, it's nice if there's not
+a gap at the edge when we transition lods. So we want to pad a pixel.
+
+In acquire-zarr, replicate padding is used. Odd dimensions are handled by
+conceptually padding the array by 1 pixel (duplicating the edge), performing
+the 2x2 average, and producing a ceil(N/2) output. The edge pixels get averaged
+with copies of themselves rather than with zeros or neighbors, so there's no
+darkening or artifact at the boundary.
+
+
+
+TODO
+- [x] cleanup
+- [x] uniform handling of tiles across lods
+- [x] shard writer handles lods
+  - could still improve this a bit probably
+- [x] replicate boundary condition
+- [ ] support floats
+- [ ] min, max, median, 2-max
+- [ ] extra epoch?
+- [ ] add metrics, bench
+- [ ] verify the multiscale zarr is visualizable
+
 
 
 ## 2026-02-15

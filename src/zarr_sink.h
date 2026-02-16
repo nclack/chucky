@@ -69,4 +69,4 @@ void zarr_multiscale_sink_flush(struct zarr_multiscale_sink* s);
 
 // Get the shard_sink interface for a specific level.
 struct shard_sink*
-zarr_multiscale_get_level_sink(struct zarr_multiscale_sink* s, int level);
+zarr_multiscale_get_level_sink(struct zarr_multiscale_sink* s, uint8_t level);

@@ -176,8 +176,9 @@ shard_path(char* buf,
 // --- shard_sink open ---
 
 static struct shard_writer*
-zarr_sink_open(struct shard_sink* self, uint64_t shard_index)
+zarr_sink_open(struct shard_sink* self, uint8_t level, uint64_t shard_index)
 {
+  (void)level;
   struct zarr_sink* zs = (struct zarr_sink*)self;
 
   // Map flat shard_index to inner writer index
@@ -741,9 +742,9 @@ zarr_multiscale_sink_flush(struct zarr_multiscale_sink* s)
 }
 
 struct shard_sink*
-zarr_multiscale_get_level_sink(struct zarr_multiscale_sink* s, int level)
+zarr_multiscale_get_level_sink(struct zarr_multiscale_sink* s, uint8_t level)
 {
-  if (!s || level < 0 || level >= s->num_levels)
+  if (!s || level >= s->num_levels)
     return NULL;
   return zarr_sink_as_shard_sink(s->levels[level]);
 }

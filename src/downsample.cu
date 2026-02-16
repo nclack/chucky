@@ -209,16 +209,15 @@ downsample_mean_k(T* __restrict__ d_dst,
           src_global = src_extent[d] - 1;
 
         if (d == 0 && d_src_b != nullptr) {
-          // Dim 0 downsampled: even goes to pool_a, odd goes to pool_b
-          if (src_global & 1)
+          // Dim 0 downsampled: pool_a holds the even-indexed tile (epoch),
+          // pool_b holds the odd-indexed tile. Decompose into tile and
+          // element coordinates, use the tile parity to pick the pool,
+          // and keep the element coordinate for within-pool addressing.
+          uint64_t src_tile_d = src_global / src_tile_size[d];
+          if (src_tile_d & 1)
             use_pool_b = 1;
-          // Both pool_a and pool_b have the same tile layout but represent
-          // consecutive epochs. The src_tile/elem within the pool is just
-          // the same as the non-dim0 address (pool holds one epoch).
-          // For dim 0 in the pool, the tile index is always 0 (epoch is
-          // one slice along dim 0), so src_tile[0] = 0, src_elem[0] = 0.
           src_tile_coord[d] = 0;
-          src_elem_coord[d] = 0;
+          src_elem_coord[d] = src_global % src_tile_size[d];
         } else {
           src_tile_coord[d] = src_global / src_tile_size[d];
           src_elem_coord[d] = src_global % src_tile_size[d];

@@ -269,9 +269,11 @@ emit_shards(struct transpose_stream* s);
 
 // Forward declarations for LOD
 static int
-lod_cascade(struct transpose_stream* s, int src_level, int src_pool);
+lod_cascade_prepare(struct transpose_stream* s, uint8_t dst_level, int src_pool);
 static int
-lod_flush_epoch(struct transpose_stream* s, int level_idx);
+lod_prepare_epoch(struct transpose_stream* s, uint8_t level_idx);
+static int
+lod_kick_batch_d2h(struct transpose_stream* s, int num_firing);
 
 // Wait for source, record timing, memcpy D2H, record completion.
 // Returns 0 on success.
@@ -444,8 +446,13 @@ flush_epoch(struct transpose_stream* s)
   // Cascade to LOD levels (both pools valid at this point: cur has new data,
   // cur^1 has the previous epoch's data which was just delivered above)
   if (s->num_lod_levels > 0) {
-    if (lod_cascade(s, /*src_level=*/-1, cur))
+    int num_fired = lod_cascade_prepare(s, /*dst_level=*/0, cur);
+    if (num_fired < 0)
       return writer_error();
+    if (num_fired > 0) {
+      if (lod_kick_batch_d2h(s, num_fired))
+        return writer_error();
+    }
   }
 
   if (kick_epoch_d2h(s, cur))
@@ -525,7 +532,7 @@ deliver_to_shards(struct transpose_stream* s, int pool)
     // Lazily open writer
     if (!sh->writer) {
       uint64_t flat = s->shard.shard_epoch * s->shard.shard_inner_count + si;
-      sh->writer = s->config.shard_sink->open(s->config.shard_sink, flat);
+      sh->writer = s->config.shard_sink->open(s->config.shard_sink, 0, flat);
       CHECK(Error, sh->writer);
     }
 
@@ -612,7 +619,10 @@ Error:
 
 // Deliver compressed tile data to shards for an LOD level.
 static int
-lod_deliver_to_shards(struct lod_level* lod, int pool)
+lod_deliver_to_shards(struct transpose_stream* s,
+                      uint8_t level,
+                      struct lod_level* lod,
+                      int pool)
 {
   struct aggregate_slot* agg = &lod->tiles.slot[pool].agg;
   const uint64_t tps_inner = lod->shard.tiles_per_shard_inner;
@@ -627,7 +637,8 @@ lod_deliver_to_shards(struct lod_level* lod, int pool)
     if (!sh->writer) {
       uint64_t flat =
         lod->shard.shard_epoch * lod->shard.shard_inner_count + si;
-      sh->writer = lod->shard_sink->open(lod->shard_sink, flat);
+      struct shard_sink* sink = s->config.shard_sink;
+      sh->writer = sink->open(sink, level, flat);
       CHECK(Error, sh->writer);
     }
 
@@ -667,51 +678,104 @@ Error:
   return 1;
 }
 
-// Kick compress + aggregate + D2H for an LOD level's tile pool.
+// Batch compress + aggregate + D2H for all firing LOD levels.
+// num_firing: number of LOD levels (0..num_firing-1) that fired this epoch.
 static int
-lod_kick_epoch_d2h(struct transpose_stream* s, struct lod_level* lod, int pool)
+lod_kick_batch_d2h(struct transpose_stream* s, int num_firing)
 {
-  struct tile_pool_slot* ts = &lod->tiles.slot[pool];
-  struct compression_slot* cs = &ts->comp;
-  struct aggregate_slot* agg = &ts->agg;
+  const size_t bpe = s->config.bytes_per_element;
+  const size_t tile_bytes = s->layout.tile_stride * bpe;
+  struct lod_compress_batch* batch = &s->lod_batch;
 
-  CU(Error, cuStreamWaitEvent(s->compress, ts->d_tiles.ready, 0));
-  CU(Error, cuEventRecord(ts->t_compress_start, s->compress));
-  CHECK(
-    Error,
-    compress_batch_async((const void* const*)cs->d_uncomp_ptrs,
-                         lod->comp.d_uncomp_sizes,
-                         lod->layout.tile_stride * s->config.bytes_per_element,
-                         lod->layout.slot_count,
-                         lod->comp.d_comp_temp,
-                         lod->comp.comp_temp_bytes,
-                         cs->d_comp_ptrs,
-                         cs->d_comp_sizes,
-                         s->compress) == 0);
-  CU(Error, cuEventRecord(cs->d_compressed.ready, s->compress));
+  // Phase 1: Build combined pointer arrays on host
+  uint64_t offset = 0;
+  for (int lv = 0; lv < num_firing; ++lv) {
+    struct lod_level* lod = &s->lod_levels[lv];
+    int pool = lod->tiles.current ^ 1; // the pool being flushed
+    struct tile_pool_slot* ts = &lod->tiles.slot[pool];
+    uint64_t M = lod->layout.slot_count;
+    size_t lod_tile_bytes = lod->layout.tile_stride * bpe;
+    for (uint64_t k = 0; k < M; ++k) {
+      batch->h_uncomp_ptrs[offset + k] =
+        (char*)ts->d_tiles.data + k * lod_tile_bytes;
+      batch->h_comp_ptrs[offset + k] =
+        (char*)ts->comp.d_compressed.data + k * lod->max_comp_chunk_bytes;
+    }
+    offset += M;
+  }
 
+  // Phase 2: Upload pointer arrays to device (on compress stream)
+  CU(Error,
+     cuMemcpyHtoDAsync((CUdeviceptr)batch->d_uncomp_ptrs,
+                       batch->h_uncomp_ptrs,
+                       offset * sizeof(void*),
+                       s->compress));
+  CU(Error,
+     cuMemcpyHtoDAsync((CUdeviceptr)batch->d_comp_ptrs,
+                       batch->h_comp_ptrs,
+                       offset * sizeof(void*),
+                       s->compress));
+
+  // Wait for all tile pools to be ready (compute stream -> compress stream)
+  for (int lv = 0; lv < num_firing; ++lv) {
+    struct lod_level* lod = &s->lod_levels[lv];
+    int pool = lod->tiles.current ^ 1;
+    CU(Error,
+       cuStreamWaitEvent(s->compress, lod->tiles.slot[pool].d_tiles.ready, 0));
+  }
+
+  // Phase 3: One batched compress call for all tiles
   CHECK(Error,
-        aggregate_by_shard_async(&lod->agg_layout,
-                                 cs->d_compressed.data,
-                                 cs->d_comp_sizes,
-                                 agg,
-                                 s->compress) == 0);
-  CU(Error, cuEventRecord(ts->t_agg_end, s->compress));
-  CU(Error, cuEventRecord(agg->ready, s->compress));
+        compress_batch_async((const void* const*)batch->d_uncomp_ptrs,
+                             batch->d_uncomp_sizes,
+                             tile_bytes,
+                             offset,
+                             batch->d_comp_temp,
+                             batch->comp_temp_bytes,
+                             (void* const*)batch->d_comp_ptrs,
+                             batch->d_comp_sizes,
+                             s->compress) == 0);
 
-  CU(Error, cuStreamWaitEvent(s->d2h, agg->ready, 0));
-  CU(Error, cuEventRecord(ts->t_d2h_start, s->d2h));
-  CU(Error,
-     cuMemcpyDtoHAsync(agg->h_aggregated,
-                       (CUdeviceptr)agg->d_aggregated,
-                       lod->comp.comp_pool_bytes,
-                       s->d2h));
-  CU(Error,
-     cuMemcpyDtoHAsync(agg->h_offsets,
-                       (CUdeviceptr)agg->d_offsets,
-                       (lod->agg_layout.covering_count + 1) * sizeof(size_t),
-                       s->d2h));
-  CU(Error, cuEventRecord(agg->ready, s->d2h));
+  // Phase 4: Per-level aggregate + D2H
+  uint64_t agg_offset = 0;
+  for (int lv = 0; lv < num_firing; ++lv) {
+    struct lod_level* lod = &s->lod_levels[lv];
+    int pool = lod->tiles.current ^ 1;
+    struct tile_pool_slot* ts = &lod->tiles.slot[pool];
+    struct compression_slot* cs = &ts->comp;
+    struct aggregate_slot* agg = &ts->agg;
+
+    CU(Error, cuEventRecord(cs->d_compressed.ready, s->compress));
+    CU(Error, cuEventRecord(ts->t_compress_start, s->compress));
+
+    CHECK(Error,
+          aggregate_by_shard_async(&lod->agg_layout,
+                                   cs->d_compressed.data,
+                                   &batch->d_comp_sizes[agg_offset],
+                                   agg,
+                                   s->compress) == 0);
+
+    CU(Error, cuEventRecord(ts->t_agg_end, s->compress));
+    CU(Error, cuEventRecord(agg->ready, s->compress));
+
+    // D2H: aggregated data + offsets
+    CU(Error, cuStreamWaitEvent(s->d2h, agg->ready, 0));
+    CU(Error, cuEventRecord(ts->t_d2h_start, s->d2h));
+    CU(Error,
+       cuMemcpyDtoHAsync(agg->h_aggregated,
+                         (CUdeviceptr)agg->d_aggregated,
+                         lod->comp_pool_bytes,
+                         s->d2h));
+    CU(Error,
+       cuMemcpyDtoHAsync(agg->h_offsets,
+                         (CUdeviceptr)agg->d_offsets,
+                         (lod->agg_layout.covering_count + 1) * sizeof(size_t),
+                         s->d2h));
+    CU(Error, cuEventRecord(agg->ready, s->d2h));
+
+    agg_offset += lod->layout.slot_count;
+  }
+
   return 0;
 
 Error:
@@ -720,12 +784,15 @@ Error:
 
 // Wait for D2H to complete and deliver to shards for an LOD level.
 static int
-lod_wait_and_deliver(struct lod_level* lod, int pool)
+lod_wait_and_deliver(struct transpose_stream* s,
+                     uint8_t level,
+                     struct lod_level* lod,
+                     int pool)
 {
   struct aggregate_slot* agg = &lod->tiles.slot[pool].agg;
   CU(Error, cuEventSynchronize(agg->ready));
 
-  if (lod_deliver_to_shards(lod, pool))
+  if (lod_deliver_to_shards(s, level, lod, pool))
     goto Error;
   return 0;
 
@@ -735,35 +802,37 @@ Error:
 
 // Drain pending flush for an LOD level.
 static int
-lod_drain_pending_flush(struct transpose_stream* s, struct lod_level* lod)
+lod_drain_pending_flush(struct transpose_stream* s,
+                        uint8_t level,
+                        struct lod_level* lod)
 {
-  (void)s;
   if (!lod->tiles.flush_pending)
     return 0;
 
   lod->tiles.flush_pending = 0;
-  return lod_wait_and_deliver(lod, lod->tiles.current ^ 1);
+  return lod_wait_and_deliver(s, level, lod, lod->tiles.current ^ 1);
 }
 
-// Flush one epoch at an LOD level: drain pending, kick compress+D2H, cascade.
+// Prepare one LOD level for batch compress: drain pending, cascade deeper,
+// swap pools. Does NOT kick compress (that's done in lod_kick_batch_d2h).
+// Returns number of firing levels (this + deeper), or -1 on error.
 static int
-lod_flush_epoch(struct transpose_stream* s, int level_idx)
+lod_prepare_epoch(struct transpose_stream* s, uint8_t level_idx)
 {
   struct lod_level* lod = &s->lod_levels[level_idx];
-  int cur = lod->tiles.current;
 
-  if (lod_drain_pending_flush(s, lod))
-    return 1;
+  if (lod_drain_pending_flush(s, level_idx + 1, lod))
+    return -1;
 
-  // Cascade to next LOD level before kicking D2H (both pools valid now)
+  // Cascade deeper before swapping (both pools valid now)
+  int deeper_fired = 0;
   if (level_idx + 1 < s->num_lod_levels) {
-    if (lod_cascade(s, level_idx, cur))
-      return 1;
+    deeper_fired = lod_cascade_prepare(s, level_idx + 1, lod->tiles.current);
+    if (deeper_fired < 0)
+      return -1;
   }
 
-  if (lod_kick_epoch_d2h(s, lod, cur))
-    return 1;
-
+  // Swap pools, mark pending
   lod->tiles.current ^= 1;
   CU(Error,
      cuMemsetD8Async(
@@ -773,19 +842,19 @@ lod_flush_epoch(struct transpose_stream* s, int level_idx)
        s->compute));
 
   lod->tiles.flush_pending = 1;
-  return 0;
+  return 1 + deeper_fired; // this level + deeper
 
 Error:
-  return 1;
+  return -1;
 }
 
-// Cascade downsampling from src_level to src_level+1.
-// src_level == -1 means source is level 0.
+// Cascade downsampling into dst_level, then prepare epoch.
+// dst_level == 0 means source is the base tile pool.
+// Returns number of firing levels, or -1 on error.
 static int
-lod_cascade(struct transpose_stream* s, int src_level, int src_pool)
+lod_cascade_prepare(struct transpose_stream* s, uint8_t dst_level, int src_pool)
 {
-  int dst_level_idx = src_level + 1;
-  struct lod_level* lod = &s->lod_levels[dst_level_idx];
+  struct lod_level* lod = &s->lod_levels[dst_level];
   lod->epoch_count++;
 
   if (lod->needs_two_epochs && (lod->epoch_count & 1))
@@ -793,12 +862,12 @@ lod_cascade(struct transpose_stream* s, int src_level, int src_pool)
 
   // Determine source pools
   CUdeviceptr pool_a, pool_b;
-  if (src_level == -1) {
+  if (dst_level == 0) {
     // Source is level 0 (transpose_stream tile pools)
     pool_a = (CUdeviceptr)s->tiles.slot[src_pool ^ 1].d_tiles.data; // older
     pool_b = (CUdeviceptr)s->tiles.slot[src_pool].d_tiles.data;     // newer
   } else {
-    struct lod_level* parent = &s->lod_levels[src_level];
+    struct lod_level* parent = &s->lod_levels[dst_level - 1];
     pool_a = (CUdeviceptr)parent->tiles.slot[src_pool ^ 1].d_tiles.data;
     pool_b = (CUdeviceptr)parent->tiles.slot[src_pool].d_tiles.data;
   }
@@ -870,16 +939,16 @@ lod_cascade(struct transpose_stream* s, int src_level, int src_pool)
                           s->compute);
       break;
     default:
-      log_error("lod_cascade: unsupported bytes_per_element=%zu", bpe);
-      return 1;
+      log_error("lod_cascade_prepare: unsupported bytes_per_element=%zu", bpe);
+      return -1;
   }
 
   CU(Error, cuEventRecord(lod->tiles.slot[dst_cur].d_tiles.ready, s->compute));
 
-  return lod_flush_epoch(s, dst_level_idx);
+  return lod_prepare_epoch(s, dst_level);
 
 Error:
-  return 1;
+  return -1;
 }
 
 struct stream_metrics
@@ -938,6 +1007,18 @@ transpose_stream_destroy(struct transpose_stream* stream)
     free(stream->shard.shards);
   }
 
+  // Destroy LOD shared batch
+  {
+    struct lod_compress_batch* b = &stream->lod_batch;
+    device_free(b->d_uncomp_ptrs);
+    device_free(b->d_comp_ptrs);
+    device_free(b->d_comp_sizes);
+    device_free(b->d_uncomp_sizes);
+    device_free(b->d_comp_temp);
+    free(b->h_uncomp_ptrs);
+    free(b->h_comp_ptrs);
+  }
+
   // Destroy LOD levels
   if (stream->lod_levels) {
     for (int lv = 0; lv < stream->num_lod_levels; ++lv) {
@@ -955,17 +1036,9 @@ transpose_stream_destroy(struct transpose_stream* stream)
         buffer_free(&ts->h_tiles);
 
         buffer_free(&ts->comp.d_compressed);
-        buffer_free(&ts->comp.h_compressed);
-        device_free(ts->comp.d_uncomp_ptrs);
-        device_free(ts->comp.d_comp_ptrs);
-        device_free(ts->comp.d_comp_sizes);
-        host_free(ts->comp.h_comp_sizes);
 
         aggregate_slot_destroy(&ts->agg);
       }
-
-      device_free(lod->comp.d_uncomp_sizes);
-      device_free(lod->comp.d_comp_temp);
 
       aggregate_layout_destroy(&lod->agg_layout);
 
@@ -1340,10 +1413,6 @@ transpose_stream_create(const struct transpose_stream_configuration* config,
         }
       }
 
-      // Clamp to available sinks
-      if (config->num_lod_sinks > 0 && num_levels > config->num_lod_sinks)
-        num_levels = config->num_lod_sinks;
-
       if (num_levels > 0) {
         out->num_lod_levels = num_levels;
         out->lod_levels = (struct lod_level*)calloc((size_t)num_levels,
@@ -1358,10 +1427,6 @@ transpose_stream_create(const struct transpose_stream_configuration* config,
           struct lod_level* lod = &out->lod_levels[lv];
           lod->downsample_mask = ds_mask;
           lod->needs_two_epochs = (ds_mask & 1) ? 1 : 0; // dim 0 downsampled
-
-          // Assign sink
-          if (config->lod_sinks && lv < config->num_lod_sinks)
-            lod->shard_sink = config->lod_sinks[lv];
 
           // Compute dimensions at this level
           for (int d = 0; d < rank; ++d) {
@@ -1473,105 +1538,24 @@ transpose_stream_create(const struct transpose_stream_configuration* config,
           lod->tiles.flush_pending = 0;
           lod->epoch_count = 0;
 
-          // Init compression state for this LOD level
+          // Init per-level compression sizes (for d_compressed allocation)
           {
             const uint64_t M = lod->layout.slot_count;
             const size_t tile_bytes = lod->layout.tile_stride * bpe;
 
-            lod->comp.max_comp_chunk_bytes =
+            lod->max_comp_chunk_bytes =
               align_up(compress_get_max_output_size(tile_bytes),
                        compress_get_input_alignment());
-            CHECK(Fail, lod->comp.max_comp_chunk_bytes > 0);
-            lod->comp.comp_pool_bytes = M * lod->comp.max_comp_chunk_bytes;
+            CHECK(Fail, lod->max_comp_chunk_bytes > 0);
+            lod->comp_pool_bytes = M * lod->max_comp_chunk_bytes;
 
-            lod->comp.comp_temp_bytes = compress_get_temp_size(M, tile_bytes);
-            if (lod->comp.comp_temp_bytes > 0)
-              CU(Fail,
-                 cuMemAlloc((CUdeviceptr*)&lod->comp.d_comp_temp,
-                            lod->comp.comp_temp_bytes));
-
+            // Only allocate d_compressed per level (needed for aggregate)
             for (int i = 0; i < 2; ++i) {
               struct compression_slot* cs = &lod->tiles.slot[i].comp;
               CHECK(Fail,
                     (cs->d_compressed =
-                       buffer_new(lod->comp.comp_pool_bytes, device, 0))
+                       buffer_new(lod->comp_pool_bytes, device, 0))
                       .data);
-              CHECK(Fail,
-                    (cs->h_compressed =
-                       buffer_new(lod->comp.comp_pool_bytes, host, 0))
-                      .data);
-              CU(Fail,
-                 cuMemAlloc((CUdeviceptr*)&cs->d_comp_sizes,
-                            M * sizeof(size_t)));
-              CU(Fail,
-                 cuMemHostAlloc(
-                   (void**)&cs->h_comp_sizes, M * sizeof(size_t), 0));
-            }
-
-            // Build device pointer arrays
-            void** h_ptrs = (void**)malloc(M * sizeof(void*));
-            CHECK(Fail, h_ptrs);
-
-            for (int i = 0; i < 2; ++i) {
-              struct compression_slot* cs = &lod->tiles.slot[i].comp;
-              CU(LodFree,
-                 cuMemAlloc((CUdeviceptr*)&cs->d_uncomp_ptrs,
-                            M * sizeof(void*)));
-              CU(LodFree,
-                 cuMemAlloc((CUdeviceptr*)&cs->d_comp_ptrs, M * sizeof(void*)));
-
-              for (uint64_t k = 0; k < M; ++k)
-                h_ptrs[k] =
-                  (char*)lod->tiles.slot[i].d_tiles.data + k * tile_bytes;
-              CU(LodFree,
-                 cuMemcpyHtoD(
-                   (CUdeviceptr)cs->d_uncomp_ptrs, h_ptrs, M * sizeof(void*)));
-
-              for (uint64_t k = 0; k < M; ++k)
-                h_ptrs[k] = (char*)cs->d_compressed.data +
-                            k * lod->comp.max_comp_chunk_bytes;
-              CU(LodFree,
-                 cuMemcpyHtoD(
-                   (CUdeviceptr)cs->d_comp_ptrs, h_ptrs, M * sizeof(void*)));
-            }
-
-            // Uncompressed sizes array
-            {
-              size_t* h_sizes = (size_t*)malloc(M * sizeof(size_t));
-              if (!h_sizes) {
-                free(h_ptrs);
-                goto Fail;
-              }
-              for (uint64_t k = 0; k < M; ++k)
-                h_sizes[k] = tile_bytes;
-
-              CU(LodFree,
-                 cuMemAlloc((CUdeviceptr*)&lod->comp.d_uncomp_sizes,
-                            M * sizeof(size_t)));
-              CUresult rc = cuMemcpyHtoD((CUdeviceptr)lod->comp.d_uncomp_sizes,
-                                         h_sizes,
-                                         M * sizeof(size_t));
-              free(h_sizes);
-              if (rc != CUDA_SUCCESS) {
-                free(h_ptrs);
-                goto Fail;
-              }
-            }
-
-            free(h_ptrs);
-            h_ptrs = NULL;
-
-            CU(Fail,
-               cuEventRecord(lod->tiles.slot[0].comp.h_compressed.ready,
-                             out->compute));
-            CU(Fail,
-               cuEventRecord(lod->tiles.slot[1].comp.h_compressed.ready,
-                             out->compute));
-
-            if (0) {
-            LodFree:
-              free(h_ptrs);
-              goto Fail;
             }
           }
 
@@ -1582,13 +1566,13 @@ transpose_stream_create(const struct transpose_stream_configuration* config,
                                       lod_tile_count,
                                       lod_tiles_per_shard,
                                       lod->layout.slot_count,
-                                      lod->comp.max_comp_chunk_bytes) == 0);
+                                      lod->max_comp_chunk_bytes) == 0);
 
           for (int i = 0; i < 2; ++i)
             CHECK(Fail,
                   aggregate_slot_init(&lod->tiles.slot[i].agg,
                                       &lod->agg_layout,
-                                      lod->comp.comp_pool_bytes) == 0);
+                                      lod->comp_pool_bytes) == 0);
 
           // Init shard state for this LOD level
           lod->shard.tiles_per_shard_0 = lod_tiles_per_shard[0];
@@ -1707,6 +1691,64 @@ transpose_stream_create(const struct transpose_stream_configuration* config,
           // Next level's parent is this level
           parent_dims = lod->dimensions;
           parent_layout = &lod->layout;
+        }
+
+        // Allocate shared LOD compress batch
+        {
+          struct lod_compress_batch* batch = &out->lod_batch;
+
+          // Compute max_total_tiles = sum of slot_count across all LOD levels
+          uint64_t total = 0;
+          for (int lv = 0; lv < num_levels; ++lv)
+            total += out->lod_levels[lv].layout.slot_count;
+          batch->max_total_tiles = total;
+
+          // Device arrays
+          CU(Fail,
+             cuMemAlloc((CUdeviceptr*)&batch->d_uncomp_ptrs,
+                        total * sizeof(void*)));
+          CU(Fail,
+             cuMemAlloc((CUdeviceptr*)&batch->d_comp_ptrs,
+                        total * sizeof(void*)));
+          CU(Fail,
+             cuMemAlloc((CUdeviceptr*)&batch->d_comp_sizes,
+                        total * sizeof(size_t)));
+
+          // d_uncomp_sizes: all same tile_bytes (level 0's tile_bytes)
+          {
+            const size_t tile_bytes =
+              out->layout.tile_stride * out->config.bytes_per_element;
+            CU(Fail,
+               cuMemAlloc((CUdeviceptr*)&batch->d_uncomp_sizes,
+                          total * sizeof(size_t)));
+            size_t* h_sizes = (size_t*)malloc(total * sizeof(size_t));
+            CHECK(Fail, h_sizes);
+            for (uint64_t k = 0; k < total; ++k)
+              h_sizes[k] = tile_bytes;
+            CUresult rc = cuMemcpyHtoD((CUdeviceptr)batch->d_uncomp_sizes,
+                                       h_sizes,
+                                       total * sizeof(size_t));
+            free(h_sizes);
+            CU(Fail, rc);
+          }
+
+          // Scratch workspace: sized for max batch
+          {
+            const size_t tile_bytes =
+              out->layout.tile_stride * out->config.bytes_per_element;
+            batch->comp_temp_bytes =
+              compress_get_temp_size(total, tile_bytes);
+            if (batch->comp_temp_bytes > 0)
+              CU(Fail,
+                 cuMemAlloc((CUdeviceptr*)&batch->d_comp_temp,
+                            batch->comp_temp_bytes));
+          }
+
+          // Host staging arrays (plain malloc, rebuilt each kick)
+          batch->h_uncomp_ptrs = (void**)malloc(total * sizeof(void*));
+          CHECK(Fail, batch->h_uncomp_ptrs);
+          batch->h_comp_ptrs = (void**)malloc(total * sizeof(void*));
+          CHECK(Fail, batch->h_comp_ptrs);
         }
       }
     }
@@ -1856,7 +1898,7 @@ transpose_stream_flush(struct writer* self)
   }
 
   if (s->config.compress && s->config.shard_sink) {
-    // Flush LOD levels: handle unpaired epochs and drain pending
+    // Flush LOD levels: handle unpaired epochs, then batch compress
     for (int lv = 0; lv < s->num_lod_levels; ++lv) {
       struct lod_level* lod = &s->lod_levels[lv];
 
@@ -1953,18 +1995,26 @@ transpose_stream_flush(struct writer* self)
         CU(Error,
            cuEventRecord(lod->tiles.slot[dst_cur].d_tiles.ready, s->compute));
 
-        if (lod_flush_epoch(s, lv))
+        // Prepare this level (drain + swap), without kicking compress
+        int num_fired = lod_prepare_epoch(s, lv);
+        if (num_fired < 0)
           return writer_error();
-      }
 
-      // Drain any pending LOD flush
-      if (lod_drain_pending_flush(s, lod))
+        // Batch compress all levels that now have flush_pending
+        if (num_fired > 0) {
+          if (lod_kick_batch_d2h(s, num_fired))
+            return writer_error();
+        }
+      }
+    }
+
+    // Drain all pending LOD flushes and emit partial shards
+    for (int lv = 0; lv < s->num_lod_levels; ++lv) {
+      struct lod_level* lod = &s->lod_levels[lv];
+
+      if (lod_drain_pending_flush(s, lv + 1, lod))
         return writer_error();
 
-      // Flush current partial LOD epoch synchronously if needed
-      // (For LOD levels with data that hasn't been flushed yet)
-
-      // Emit partial shard-epoch for this LOD level
       if (lod->shard.epoch_in_shard > 0) {
         if (lod_emit_shards(lod))
           return writer_error();

@@ -68,7 +68,7 @@ target_compile_options(test_avx2_div PRIVATE ${AVX2_FLAG} ${C_WARN_FLAGS})
 target_link_libraries(test_avx2_div PRIVATE div_avx2)
 
 # Transpose indices CUDA test
-add_my_test(index.ops.cuda index.ops.cuda.c transpose index_ops_util CUDA::cudart_static)
+add_my_test(index.ops.cuda index.ops.cuda.c transpose index_ops_util chucky_log CUDA::cudart_static)
 
 # Test platform utilities
 if(WIN32)
@@ -111,13 +111,13 @@ target_include_directories(test_shard_contents PRIVATE ${ZSTD_INCLUDE_DIR})
 
 # JSON writer test (no CUDA)
 add_executable(test_json_writer test_json_writer.c)
-target_link_libraries(test_json_writer PRIVATE json_writer)
+target_link_libraries(test_json_writer PRIVATE json_writer chucky_log)
 target_compile_options(test_json_writer PRIVATE ${C_WARN_FLAGS})
 add_test(NAME "test-test_json_writer" COMMAND test_json_writer)
 
 # I/O queue test (no CUDA)
 add_executable(test_io_queue test_io_queue.c)
-target_link_libraries(test_io_queue PRIVATE io_queue)
+target_link_libraries(test_io_queue PRIVATE io_queue chucky_log)
 target_compile_options(test_io_queue PRIVATE ${C_WARN_FLAGS})
 add_test(NAME "test-test_io_queue" COMMAND test_io_queue)
 

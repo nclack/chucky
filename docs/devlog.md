@@ -4,6 +4,10 @@
 
 Adding multiscale. Starting with mean.
 
+Also pulling out common error handling macros and trimming some of the old
+unused kernels/tests that I added to when I was just trying to establish the
+repo.
+
 Downsampling kernel turned out pretty complicated. Seems like there's got to
 be a way to simplify.
 

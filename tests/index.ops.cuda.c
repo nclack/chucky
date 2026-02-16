@@ -2,47 +2,9 @@
 #include "transpose.h"
 #include <cuda.h>
 #include <cuda_runtime_api.h>
-#include <stdint.h>
+#include "prelude.cuda.h"
 #include <stdio.h>
 #include <stdlib.h>
-
-#define CU(lbl, e)                                                             \
-  do {                                                                         \
-    if (handle_curesult(e, __FILE__, __LINE__))                                \
-      goto lbl;                                                                \
-  } while (0)
-
-#define CHECK(lbl, expr)                                                       \
-  do {                                                                         \
-    if (!(expr)) {                                                             \
-      fprintf(stderr,                                                          \
-              "%s(%d): Check failed: (%s) != True )\n",                        \
-              __FILE__,                                                        \
-              __LINE__,                                                        \
-              #expr);                                                          \
-      goto lbl;                                                                \
-    }                                                                          \
-  } while (0)
-
-static int
-handle_curesult(CUresult ecode, const char* file, int line)
-{
-  if (ecode == CUDA_SUCCESS)
-    return 0;
-  const char *name, *desc;
-  cuGetErrorName(ecode, &name);
-  cuGetErrorString(ecode, &desc);
-  if (name && desc) {
-    fprintf(stderr, "%s(%d): CUDA error: %s %s\n", file, line, name, desc);
-  } else {
-    fprintf(stderr,
-            "%s(%d): Failed to retrieve error info for CUresult: %d\n",
-            file,
-            line,
-            ecode);
-  }
-  return 1;
-}
 
 static void
 setup_transpose_strides(int rank,

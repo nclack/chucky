@@ -1,10 +1,7 @@
 #include "writer.null.h"
+#include "prelude.h"
 
-#include <stddef.h>
 #include <stdint.h>
-
-#define container_of(ptr, type, member)                                        \
-  ((type*)((char*)(ptr) - offsetof(type, member)))
 
 static struct writer_result
 null_writer_append(struct writer* self, struct slice data)

@@ -1,61 +1,11 @@
 #include "compress.h"
 #include "downsample.h"
-#include "log/log.h"
 #include "platform.h"
 #include "stream.h"
+#include "prelude.cuda.h"
 
 #include <stdlib.h>
 #include <string.h>
-
-#define container_of(ptr, type, member)                                        \
-  ((type*)((char*)(ptr) - offsetof(type, member)))
-
-#define CU(lbl, e)                                                             \
-  do {                                                                         \
-    CUresult res_ = (e);                                                       \
-    if (res_ != CUDA_SUCCESS &&                                                \
-        handle_curesult(LOG_ERROR, res_, __FILE__, __LINE__, #e)) {            \
-      goto lbl;                                                                \
-    }                                                                          \
-  } while (0)
-
-#define CUWARN(e)                                                              \
-  do {                                                                         \
-    handle_curesult(LOG_WARN, (e), __FILE__, __LINE__, #e);                    \
-  } while (0)
-
-#define CHECK(lbl, e)                                                          \
-  do {                                                                         \
-    if (!(e)) {                                                                \
-      log_error("%s:%d check failed: %s", __FILE__, __LINE__, #e);             \
-      goto lbl;                                                                \
-    }                                                                          \
-  } while (0)
-
-static int
-handle_curesult(int level,
-                CUresult ecode,
-                const char* file,
-                int line,
-                const char* expr)
-{
-  if (ecode == CUDA_SUCCESS)
-    return 0;
-  const char *name, *desc;
-  cuGetErrorName(ecode, &name);
-  cuGetErrorString(ecode, &desc);
-  if (name && desc) {
-    log_log(level, file, line, "CUDA error: %s %s %s\n", name, desc, expr);
-  } else {
-    log_log(level,
-            file,
-            line,
-            "%s. Failed to retrieve error info for CUresult: %d\n",
-            expr,
-            ecode);
-  }
-  return 1;
-}
 
 static struct writer_result
 writer_ok(void)
@@ -145,17 +95,7 @@ accumulate_metric(struct stream_metric* m, CUevent start, CUevent end)
     m->best_ms = ms;
 }
 
-static uint64_t
-ceildiv(uint64_t a, uint64_t b)
-{
-  return (a + b - 1) / b;
-}
 
-static size_t
-align_up(size_t x, size_t alignment)
-{
-  return (x + alignment - 1) / alignment * alignment;
-}
 
 // Free a device pointer if non-NULL.
 static void

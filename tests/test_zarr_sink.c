@@ -1,22 +1,12 @@
-#include "log/log.h"
 #include "stream.h"
-#include "zarr_sink.h"
-
-#include <cuda.h>
 #include "test_platform.h"
+#include "zarr_sink.h"
+#include "prelude.cuda.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <zstd.h>
-
-#define CHECK(lbl, expr)                                                       \
-  do {                                                                         \
-    if (!(expr)) {                                                             \
-      log_error("%s(%d): Check failed: (%s)", __FILE__, __LINE__, #expr);      \
-      goto lbl;                                                                \
-    }                                                                          \
-  } while (0)
 
 
 // --- Coordinate encoding (same as test_shard_contents) ---
@@ -372,21 +362,9 @@ main(int ac, char* av[])
     CUcontext ctx = 0;
     CUdevice dev;
 
-    CUresult rc = cuInit(0);
-    if (rc != CUDA_SUCCESS) {
-      log_warn("No CUDA available, skipping pipeline tests");
-      goto Cleanup;
-    }
-    rc = cuDeviceGet(&dev, 0);
-    if (rc != CUDA_SUCCESS) {
-      log_warn("No CUDA device, skipping pipeline tests");
-      goto Cleanup;
-    }
-    rc = cuCtxCreate(&ctx, 0, dev);
-    if (rc != CUDA_SUCCESS) {
-      log_warn("Cannot create CUDA context, skipping pipeline tests");
-      goto Cleanup;
-    }
+    CU(Cleanup, cuInit(0));
+    CU(Cleanup, cuDeviceGet(&dev, 0));
+    CU(Cleanup, cuCtxCreate(&ctx, 0, dev));
 
     {
       char sub[4200];

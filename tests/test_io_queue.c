@@ -1,18 +1,10 @@
 #include "io_queue.h"
+#include "prelude.h"
 
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
-#define CHECK(lbl, expr)                                                       \
-  do {                                                                         \
-    if (!(expr)) {                                                             \
-      fprintf(stderr, "%s(%d): Check failed: (%s)\n", __FILE__, __LINE__,      \
-              #expr);                                                          \
-      goto lbl;                                                                \
-    }                                                                          \
-  } while (0)
 
 // --- test: ordering ---
 

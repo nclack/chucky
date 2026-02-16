@@ -1,48 +1,11 @@
 #include "index.ops.util.h"
-#include "log/log.h"
 #include "stream.h"
 #include "writer.mem.h"
-#include <cuda.h>
-#include <stdint.h>
+#include "prelude.cuda.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <zstd.h>
-
-#define countof(e) (sizeof(e) / sizeof(e[0]))
-
-#define CU(lbl, e)                                                             \
-  do {                                                                         \
-    if (handle_curesult(e, __FILE__, __LINE__))                                \
-      goto lbl;                                                                \
-  } while (0)
-
-#define CHECK(lbl, expr)                                                       \
-  do {                                                                         \
-    if (!(expr)) {                                                             \
-      log_error("%s(%d): Check failed: (%s)", __FILE__, __LINE__, #expr);      \
-      goto lbl;                                                                \
-    }                                                                          \
-  } while (0)
-
-static int
-handle_curesult(CUresult ecode, const char* file, int line)
-{
-  if (ecode == CUDA_SUCCESS)
-    return 0;
-  const char *name, *desc;
-  cuGetErrorName(ecode, &name);
-  cuGetErrorString(ecode, &desc);
-  if (name && desc) {
-    log_error("%s(%d): CUDA error: %s %s", file, line, name, desc);
-  } else {
-    log_error("%s(%d): Failed to retrieve error info for CUresult: %d",
-              file,
-              line,
-              ecode);
-  }
-  return 1;
-}
 
 // --- tile pool verification helpers ---
 

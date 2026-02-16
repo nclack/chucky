@@ -1,45 +1,9 @@
 #include "aggregate.h"
+#include "prelude.cuda.h"
 
-#include <cuda.h>
-#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
-#define CU(lbl, e)                                                             \
-  do {                                                                         \
-    if (handle_curesult(e, __FILE__, __LINE__))                                \
-      goto lbl;                                                                \
-  } while (0)
-
-#define CHECK(lbl, e)                                                          \
-  do {                                                                         \
-    if (!(e)) {                                                                \
-      fprintf(                                                                 \
-        stderr, "%s(%d): Check failed: %s\n", __FILE__, __LINE__, #e);         \
-      goto lbl;                                                                \
-    }                                                                          \
-  } while (0)
-
-static int
-handle_curesult(CUresult ecode, const char* file, int line)
-{
-  if (ecode == CUDA_SUCCESS)
-    return 0;
-  const char *name, *desc;
-  cuGetErrorName(ecode, &name);
-  cuGetErrorString(ecode, &desc);
-  if (name && desc) {
-    fprintf(stderr, "%s(%d): CUDA error: %s %s\n", file, line, name, desc);
-  } else {
-    fprintf(stderr,
-            "%s(%d): Failed to retrieve error info for CUresult: %d\n",
-            file,
-            line,
-            ecode);
-  }
-  return 1;
-}
 
 // CPU reference: compute permutation P[i] using the same unravel-dot logic
 // as the GPU kernel.
@@ -352,6 +316,5 @@ main(int argc, char* argv[])
   return fail ? 1 : 0;
 
 InitFail:
-  fprintf(stderr, "Failed to initialize CUDA\n");
   return 1;
 }

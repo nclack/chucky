@@ -1,16 +1,8 @@
 #include "json_writer.h"
+#include "prelude.h"
 
 #include <stdio.h>
 #include <string.h>
-
-#define CHECK(lbl, expr)                                                       \
-  do {                                                                         \
-    if (!(expr)) {                                                             \
-      fprintf(stderr, "%s(%d): Check failed: (%s)\n", __FILE__, __LINE__,      \
-              #expr);                                                          \
-      goto lbl;                                                                \
-    }                                                                          \
-  } while (0)
 
 static int
 test_simple_object(void)

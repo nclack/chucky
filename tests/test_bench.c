@@ -1,49 +1,14 @@
 #define _USE_MATH_DEFINES
-#include "log/log.h"
 #include "platform.h"
 #include "stream.h"
 #include "test_platform.h"
 #include "zarr_sink.h"
-#include <cuda.h>
+#include "prelude.cuda.h"
 #include <math.h>
-#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <zstd.h>
-
-#define CU(lbl, e)                                                             \
-  do {                                                                         \
-    if (handle_curesult(e, __FILE__, __LINE__))                                \
-      goto lbl;                                                                \
-  } while (0)
-
-#define CHECK(lbl, expr)                                                       \
-  do {                                                                         \
-    if (!(expr)) {                                                             \
-      log_error("%s(%d): Check failed: (%s)", __FILE__, __LINE__, #expr);      \
-      goto lbl;                                                                \
-    }                                                                          \
-  } while (0)
-
-static int
-handle_curesult(CUresult ecode, const char* file, int line)
-{
-  if (ecode == CUDA_SUCCESS)
-    return 0;
-  const char *name, *desc;
-  cuGetErrorName(ecode, &name);
-  cuGetErrorString(ecode, &desc);
-  if (name && desc) {
-    log_error("%s(%d): CUDA error: %s %s", file, line, name, desc);
-  } else {
-    log_error("%s(%d): Failed to retrieve error info for CUresult: %d",
-              file,
-              line,
-              ecode);
-  }
-  return 1;
-}
 
 // Deterministic source data — mix of compressibility levels.
 //   First 1/3:  Gaussian noise in 12-bit range (partially compressible)

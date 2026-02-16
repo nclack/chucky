@@ -42,8 +42,8 @@ struct shard_sink
 struct stream_metric
 {
   const char* name;
-  float ms;      // cumulative
-  float best_ms; // best single measurement (1e30f = not yet measured)
+  float ms;           // cumulative
+  float best_ms;      // best single measurement (1e30f = not yet measured)
   double total_bytes; // cumulative bytes (for throughput from real data)
   int count;
 };
@@ -76,7 +76,7 @@ struct dimension
   uint64_t tile_size;
   uint64_t tiles_per_shard; // 0 means all tiles along this dimension
   const char* name;         // optional label (e.g. "x"), may be NULL
-  int downsample;           // 1 => halve this dim at each LOD level
+  uint8_t downsample;       // 1 => halve this dim at each LOD level
 };
 
 struct transpose_stream_configuration
@@ -89,7 +89,8 @@ struct transpose_stream_configuration
   struct shard_sink* shard_sink; // downstream shard writer factory, not owned
   int compress;                  // enable nvcomp zstd compression
   int enable_lod;                // enable multiscale LOD generation
-  struct shard_sink** lod_sinks; // [num_lod_sinks], not owned. lod_sinks[0] = level 1
+  struct shard_sink**
+    lod_sinks; // [num_lod_sinks], not owned. lod_sinks[0] = level 1
   int num_lod_sinks;
 };
 

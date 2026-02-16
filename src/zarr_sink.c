@@ -1,27 +1,13 @@
 #include "zarr_sink.h"
 #include "io_queue.h"
 #include "json_writer.h"
-#include "log/log.h"
 #include "platform_io.h"
+#include "prelude.h"
 
 #include <stdlib.h>
 #include <string.h>
 
-#define CHECK(lbl, expr)                                                       \
-  do {                                                                         \
-    if (!(expr)) {                                                             \
-      log_error("%s:%d check failed: %s", __FILE__, __LINE__, #expr);          \
-      goto lbl;                                                                \
-    }                                                                          \
-  } while (0)
-
 #define MAX_ZARR_RANK 8
-
-static uint64_t
-ceildiv(uint64_t a, uint64_t b)
-{
-  return (a + b - 1) / b;
-}
 
 // --- Directory creation ---
 

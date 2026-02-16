@@ -1,50 +1,10 @@
 /// Test: downsampling kernels
 #include "downsample.h"
+#include "prelude.cuda.h"
 
-#include <cuda.h>
-#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
-#define CU(lbl, e)                                                             \
-  do {                                                                         \
-    if (handle_curesult(e, __FILE__, __LINE__))                                \
-      goto lbl;                                                                \
-  } while (0)
-
-#define CHECK(lbl, e)                                                          \
-  do {                                                                         \
-    if (!(e)) {                                                                \
-      fprintf(stderr, "%s(%d): Check failed: %s\n", __FILE__, __LINE__, #e);   \
-      goto lbl;                                                                \
-    }                                                                          \
-  } while (0)
-
-static int
-handle_curesult(CUresult ecode, const char* file, int line)
-{
-  if (ecode == CUDA_SUCCESS)
-    return 0;
-  const char *name, *desc;
-  cuGetErrorName(ecode, &name);
-  cuGetErrorString(ecode, &desc);
-  if (name && desc)
-    fprintf(stderr, "%s(%d): CUDA error: %s %s\n", file, line, name, desc);
-  else
-    fprintf(stderr,
-            "%s(%d): Failed to retrieve error info for CUresult: %d\n",
-            file,
-            line,
-            ecode);
-  return 1;
-}
-
-static uint64_t
-ceildiv(uint64_t a, uint64_t b)
-{
-  return (a + b - 1) / b;
-}
 
 // -----------------------------------------------------------------------
 // Test 1: 2D spatial-only downsample (dims 1,2 downsampled, dim 0 not)
@@ -525,6 +485,5 @@ main(void)
   return ecode;
 
 Fail:
-  fprintf(stderr, "Failed to initialize CUDA\n");
   return 1;
 }

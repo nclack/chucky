@@ -530,9 +530,25 @@ zarr_sink_as_shard_sink(struct zarr_sink* s)
 
 struct zarr_multiscale_sink
 {
+  struct shard_sink base; // routing shard_sink — must be first
   struct zarr_sink** levels; // [num_levels]
   int num_levels;
 };
+
+static struct shard_writer*
+zarr_multiscale_open(struct shard_sink* self,
+                     uint8_t level,
+                     uint64_t shard_index)
+{
+  struct zarr_multiscale_sink* ms = (struct zarr_multiscale_sink*)self;
+  if (level >= ms->num_levels) {
+    log_error("zarr_multiscale_open: level %u >= num_levels %d",
+              level, ms->num_levels);
+    return NULL;
+  }
+  struct shard_sink* level_sink = zarr_sink_as_shard_sink(ms->levels[level]);
+  return level_sink->open(level_sink, level, shard_index);
+}
 
 static int
 write_multiscale_attributes(const char* store_path,
@@ -644,6 +660,7 @@ zarr_multiscale_sink_create(const struct zarr_multiscale_config* cfg)
   struct zarr_multiscale_sink* ms =
     (struct zarr_multiscale_sink*)calloc(1, sizeof(*ms));
   CHECK(Fail, ms);
+  ms->base.open = zarr_multiscale_open;
   ms->num_levels = cfg->num_levels;
 
   ms->levels =
@@ -747,4 +764,10 @@ zarr_multiscale_get_level_sink(struct zarr_multiscale_sink* s, uint8_t level)
   if (!s || level >= s->num_levels)
     return NULL;
   return zarr_sink_as_shard_sink(s->levels[level]);
+}
+
+struct shard_sink*
+zarr_multiscale_as_shard_sink(struct zarr_multiscale_sink* s)
+{
+  return &s->base;
 }

@@ -48,6 +48,7 @@ struct stream_metrics
   struct stream_metric memcpy;
   struct stream_metric h2d;
   struct stream_metric scatter;
+  struct stream_metric downsample;
   struct stream_metric compress;
   struct stream_metric aggregate;
   struct stream_metric d2h;
@@ -119,47 +120,10 @@ struct stream_layout
   size_t tile_pool_bytes;  // slot_count * tile_stride * bpe
 };
 
-struct compression_slot
-{
-  struct buffer d_compressed; // device: comp_pool_bytes
-  struct buffer h_compressed; // host:   comp_pool_bytes
-  void** d_uncomp_ptrs;       // device array of pointers into d_tiles
-  void** d_comp_ptrs;         // device array of pointers into d_compressed
-  size_t* d_comp_sizes;       // device: actual compressed sizes per tile
-  size_t* h_comp_sizes;       // host (pinned): compressed sizes per tile
-};
-
-struct compression_shared
-{
-  size_t* d_uncomp_sizes; // device: all = tile_stride * bpe
-  void* d_comp_temp;      // device scratch workspace
-  size_t comp_temp_bytes;
-  size_t max_comp_chunk_bytes; // per-tile max compressed size
-  size_t comp_pool_bytes;      // slot_count * max_comp_chunk_bytes
-};
-
-struct tile_pool_slot
-{
-  struct buffer d_tiles; // device: tile_pool_bytes
-  struct buffer h_tiles; // host:   tile_pool_bytes
-  struct compression_slot comp;
-  struct aggregate_slot agg; // per-pool aggregate buffers (shard path)
-  CUevent t_compress_start;  // recorded before compress
-  CUevent t_agg_end;         // recorded after aggregate kernel
-  CUevent t_d2h_start;       // recorded before D2H memcpy
-};
-
-struct tile_pool_state
-{
-  struct tile_pool_slot slot[2];
-  int current;       // which pool scatter writes to
-  int flush_pending; // async D2H in flight, not yet delivered to sink
-};
-
 struct active_shard
 {
   size_t data_cursor;
-  uint64_t* index;             // 2 * tiles_per_shard_total entries
+  uint64_t* index;           // 2 * tiles_per_shard_total entries
   struct shard_writer* writer; // from sink->open, NULL until first use
 };
 
@@ -174,44 +138,38 @@ struct shard_state
   struct active_shard* shards;    // array[shard_inner_count]
 };
 
-struct lod_level
+#define MAX_LOD_LEVELS 16
+
+// Per flush-slot: holds compressed output + pre-built pointer arrays.
+// flush[0] is used for A-pool epochs, flush[1] for B-pool epochs.
+struct flush_slot
+{
+  struct buffer d_compressed; // device: M_total * max_comp_chunk_bytes
+  void** d_uncomp_ptrs;      // device [M_total], pre-built at init
+  void** d_comp_ptrs;        // device [M_total], pre-built at init
+  CUevent t_compress_start;
+  CUevent t_d2h_start;
+  CUevent ready;             // signals all D2H for this slot is done
+  int num_firing;             // number of levels that fired this epoch
+  uint8_t firing_levels[MAX_LOD_LEVELS + 1]; // which levels fired (L0=0)
+};
+
+// Per LOD level state (level_state[0] = LOD level 1, etc.)
+struct level_state
 {
   struct stream_layout layout;
-  struct tile_pool_state tiles;
   struct aggregate_layout agg_layout;
+  struct aggregate_slot agg[2]; // indexed by flush_current
   struct shard_state shard;
-
-  size_t comp_pool_bytes;      // slot_count * max_comp_chunk_bytes
-  size_t max_comp_chunk_bytes; // per-tile max compressed size
-
-  // Dimensions at this level
   struct dimension dimensions[MAX_RANK / 2];
-
-  // Downsample kernel params (device copies)
   uint64_t* d_dst_tile_size;
   uint64_t* d_src_tile_size;
   uint64_t* d_src_extent;
   int64_t* d_src_pool_strides;
   int64_t* d_dst_pool_strides;
-
-  uint64_t epoch_count;
   uint8_t downsample_mask;
-  int needs_two_epochs; // dim 0 is downsampled
-};
-
-struct lod_compress_batch
-{
-  void** d_uncomp_ptrs;   // device: [max_total_tiles] pointers
-  void** d_comp_ptrs;     // device: [max_total_tiles] pointers
-  size_t* d_comp_sizes;   // device: [max_total_tiles] compress output sizes
-  size_t* d_uncomp_sizes; // device: [max_total_tiles] all same value
-  void* d_comp_temp;      // device scratch for nvcomp
-  size_t comp_temp_bytes;
-  uint64_t max_total_tiles; // sum of slot_count across all LOD levels
-
-  // Host staging for building pointer arrays
-  void** h_uncomp_ptrs; // [max_total_tiles]
-  void** h_comp_ptrs;   // [max_total_tiles]
+  uint64_t epoch_count;
+  int needs_two_epochs;
 };
 
 struct transpose_stream
@@ -219,18 +177,50 @@ struct transpose_stream
   struct writer writer;
   CUstream h2d, compute, compress, d2h;
   struct staging_state stage;
-  struct tile_pool_state tiles;
-  struct stream_layout layout;
-  struct compression_shared comp;
-  struct aggregate_layout agg_layout; // shared shard permutation layout
-  struct shard_state shard;           // host-side shard bookkeeping
+  struct stream_layout layout; // L0 layout
+  struct transpose_stream_configuration config;
   struct stream_metrics metrics;
   uint64_t cursor;
-  struct transpose_stream_configuration config;
 
-  int num_lod_levels;
-  struct lod_level* lod_levels;         // [num_lod_levels], index 0 = level 1
-  struct lod_compress_batch lod_batch;  // shared compress batch for all LOD levels
+  // Tile pools
+  //   A:       M0 tiles (device)
+  //   B:       M0 + M1 + ... + Mn tiles (device, contiguous)
+  //   scratch: M1 tiles (device, only if needs_two_epochs)
+  //   A_host, B_host: M0 tiles each (host pinned, uncompressed path)
+  struct buffer pool_A;      // device: M0 * tile_stride * bpe
+  struct buffer pool_B;      // device: (M0+M1+...+Mn) * tile_stride * bpe
+  struct buffer pool_A_host; // host pinned (uncompressed path)
+  struct buffer pool_B_host; // host pinned (uncompressed path)
+  struct buffer scratch[2];  // device: two alternating scratch buffers for LOD cascade
+  size_t level_offset[MAX_LOD_LEVELS + 1]; // byte offset per level in B
+  uint64_t M_total;          // M0 + M1 + ... + Mn
+  int pool_current;          // 0=A, 1=B — which pool scatter writes to
+
+  // Flush pipeline
+  struct flush_slot flush[2]; // [0]=A epochs, [1]=B epochs
+  int flush_current;          // 0 or 1
+  int flush_pending;
+
+  // Downsample timing
+  CUevent t_downsample_start;
+  CUevent t_downsample_end;
+
+  // Compress (shared across flushes)
+  size_t* d_comp_sizes;   // device [M_total]
+  size_t* d_uncomp_sizes; // device [M_total], all same
+  void* d_comp_temp;
+  size_t comp_temp_bytes;
+  size_t max_comp_chunk_bytes;
+  size_t comp_pool_bytes; // M0 * max_comp_chunk_bytes (for L0 aggregate D2H)
+
+  // L0 aggregate + shard
+  struct aggregate_layout agg_layout;
+  struct aggregate_slot agg[2]; // indexed by flush_current
+  struct shard_state shard;
+
+  // Per-level LOD state
+  struct level_state levels[MAX_LOD_LEVELS];
+  int num_levels;
 };
 
 // Initialize a transpose_stream. Returns 0 on success, non-zero on error.

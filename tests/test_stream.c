@@ -8,6 +8,18 @@
 #include <string.h>
 #include <zstd.h>
 
+// Decompose flat index into C row-major coords: dim 0 slowest, dim rank-1
+// fastest.
+static void
+unravel(int rank, const uint64_t* shape, size_t idx, int* coords)
+{
+  size_t rem = idx;
+  for (int d = rank - 1; d >= 0; --d) {
+    coords[d] = (int)(rem % shape[d]);
+    rem /= shape[d];
+  }
+}
+
 // --- tile pool verification helpers ---
 
 // Build expected tile pool for one epoch.
@@ -469,7 +481,7 @@ test_stream_compressed_roundtrip(void)
            (unsigned long)s.layout.slot_count,
            (unsigned long)s.layout.epoch_elements);
   log_info("  max_comp_chunk_bytes=%zu  tile_pool_bytes=%zu",
-           s.comp.max_comp_chunk_bytes,
+           s.max_comp_chunk_bytes,
            s.layout.tile_pool_bytes);
 
   CHECK(Fail, s.layout.tile_elements == 12);
@@ -651,101 +663,105 @@ expected_lod_value(int rank,
   return (uint16_t)((sum + (uint32_t)(combos / 2)) / (uint32_t)combos);
 }
 
-// Decompress a single-tile shard and verify all elements within the level's
-// extent against expected_lod_value.
-// shard_idx = index along dim 0 (only dim with multiple shards here).
+// Decompress and verify all tiles in a shard against expected values.
+// Works for both L0 (lv=0) and LOD levels (lv>0).
+// shard_idx is the shard index along dim 0. tps0 = tiles_per_shard[0].
 // Returns 0 on success.
 static int
-verify_lod_shard(const char* label,
-                 int rank,
-                 int lv,
-                 int shard_idx,
-                 const struct mem_shard_writer* w,
-                 const uint64_t* tile_size,
-                 const int* lod_sizes,
-                 const int* src_sizes,
-                 const int* ds)
+verify_shard(const char* label,
+             int rank,
+             int lv,
+             int shard_idx,
+             const struct mem_shard_writer* w,
+             const uint64_t* tile_size,
+             const int* level_sizes,
+             const int* src_sizes,
+             const int* ds,
+             int tps0)
 {
-  const size_t tiles_per_shard_total = 1;
-  const size_t tile_elems = 1;
+  // Compute tiles_per_shard along each dim
+  uint64_t tps[8];
+  tps[0] = (uint64_t)tps0;
+  for (int d = 1; d < rank; ++d)
+    tps[d] = ((uint64_t)level_sizes[d] + tile_size[d] - 1) / tile_size[d];
+
+  size_t tps_total = 1;
+  for (int d = 0; d < rank; ++d)
+    tps_total *= (size_t)tps[d];
+
   size_t te = 1;
   for (int d = 0; d < rank; ++d)
     te *= (size_t)tile_size[d];
 
-  // tile_stride: next multiple of 512 bytes / bpe
   size_t tile_bytes = te * sizeof(uint16_t);
   size_t padded_bytes = (tile_bytes + 511) & ~(size_t)511;
-  (void)tile_elems;
 
-  size_t index_data_bytes = tiles_per_shard_total * 2 * sizeof(uint64_t);
+  // Parse shard index
+  size_t index_data_bytes = tps_total * 2 * sizeof(uint64_t);
   if (w->size <= index_data_bytes + 4) {
-    log_error("  %s shard %d: shard too small (%lu bytes)",
-              label, shard_idx, (unsigned long)w->size);
+    log_error("  %s shard %d: shard too small (%zu bytes)",
+              label, shard_idx, w->size);
     return 1;
   }
 
   const uint8_t* index_ptr = w->buf + w->size - index_data_bytes - 4;
-  uint64_t tile_offset, tile_comp_size;
-  memcpy(&tile_offset, index_ptr, sizeof(uint64_t));
-  memcpy(&tile_comp_size, index_ptr + 8, sizeof(uint64_t));
-
-  if (tile_comp_size == 0) {
-    log_error("  %s shard %d: tile has zero compressed size", label, shard_idx);
-    return 1;
-  }
 
   uint8_t* decomp = (uint8_t*)calloc(1, padded_bytes);
   if (!decomp)
     return 1;
 
-  size_t result = ZSTD_decompress(
-    decomp, padded_bytes, w->buf + tile_offset, tile_comp_size);
-  if (ZSTD_isError(result)) {
-    log_error("  %s shard %d: ZSTD_decompress failed: %s",
-              label, shard_idx, ZSTD_getErrorName(result));
-    free(decomp);
-    return 1;
-  }
-
-  const uint16_t* data = (const uint16_t*)decomp;
   int err = 0;
 
-  // Iterate within tile; element layout is C row-major (n0 slowest, nD-1
-  // fastest) within tile_stride elements.
-  int coord[8];
-  for (size_t e = 0; e < te; ++e) {
-    // Decompose element index into within-tile coords
-    size_t rem = e;
-    for (int d = 0; d < rank; ++d) {
-      size_t below = 1;
-      for (int dd = d + 1; dd < rank; ++dd)
-        below *= (size_t)tile_size[dd];
-      coord[d] = (int)(rem / below);
-      rem %= below;
+  for (size_t ti = 0; ti < tps_total; ++ti) {
+    uint64_t tile_offset, tile_comp_size;
+    memcpy(&tile_offset, index_ptr + ti * 16, sizeof(uint64_t));
+    memcpy(&tile_comp_size, index_ptr + ti * 16 + 8, sizeof(uint64_t));
+
+    if (tile_comp_size == 0) {
+      log_error("  %s shard %d tile %zu: zero compressed size",
+                label, shard_idx, ti);
+      err++;
+      continue;
     }
 
-    // Global coordinate
-    int gc[8];
-    gc[0] = shard_idx * (int)tile_size[0] + coord[0];
-    for (int d = 1; d < rank; ++d)
-      gc[d] = coord[d];
-
-    // Skip elements beyond the level's extent
-    int oob = 0;
-    for (int d = 0; d < rank; ++d)
-      if (gc[d] >= lod_sizes[d])
-        oob = 1;
-    if (oob)
-      continue;
-
-    uint16_t expected = expected_lod_value(rank, lv, gc, src_sizes, ds);
-    if (data[e] != expected) {
-      if (err < 10)
-        log_error("  %s shard %d elem %lu (%d,%d,%d,%d): "
-                  "expected %u, got %u",
-                  label, shard_idx, (unsigned long)e,
-                  gc[0], gc[1], gc[2], gc[3], expected, data[e]);
+    size_t result = ZSTD_decompress(
+      decomp, padded_bytes, w->buf + tile_offset, tile_comp_size);
+    if (ZSTD_isError(result)) {
+      log_error("  %s shard %d tile %zu: ZSTD_decompress failed: %s",
+                label, shard_idx, ti, ZSTD_getErrorName(result));
       err++;
+      continue;
+    }
+
+    int td[8];
+    unravel(rank, tps, ti, td);
+
+    const uint16_t* data = (const uint16_t*)decomp;
+    for (size_t e = 0; e < te; ++e) {
+      int ec[8];
+      unravel(rank, tile_size, e, ec);
+
+      // Global coordinate
+      int gc[8];
+      gc[0] = (shard_idx * tps[0] + td[0]) * (int)tile_size[0] + ec[0];
+      for (int d = 1; d < rank; ++d)
+        gc[d] = td[d] * (int)tile_size[d] + ec[d];
+
+      // Skip elements beyond the level's extent (tile padding)
+      int oob = 0;
+      for (int d = 0; d < rank; ++d)
+        if (gc[d] >= level_sizes[d])
+          oob = 1;
+      if (oob)
+        continue;
+
+      uint16_t expected = expected_lod_value(rank, lv, gc, src_sizes, ds);
+      if (data[e] != expected) {
+        if (err < 10)
+          log_error("  %s shard %d tile %zu elem %zu: expected %u, got %u",
+                    label, shard_idx, ti, e, expected, data[e]);
+        err++;
+      }
     }
   }
 
@@ -763,38 +779,41 @@ test_stream_lod_roundtrip(void)
 {
   log_info("=== test_stream_lod_roundtrip ===");
 
-  // Rank 4. dim 2 is NOT downsampled.
-  // dim 0: size=16, tile_size=2, tiles_per_shard=1 → tc=8, sc=8
-  //   LOD levels: tc 8→4→2→1, sc 8→4→2→1 → 3 LOD levels
-  // dim 1: size=6, tile_size=6 → tc=1  (produces odd LOD sizes)
-  // dim 2: size=2, tile_size=2, downsample=0 → tc=1 (unchanged across LODs)
-  // dim 3: size=6, tile_size=6 → tc=1  (produces odd LOD sizes)
+  // Rank 4. Dims 0 and 3 are downsampled.
+  // dim 0: size=16, tile_size=2, tiles_per_shard=1, ds=1 → tc=8
+  //   LOD: 16→8→4→2 (stop: 2<=2)
+  // dim 1: size=6, tile_size=6 → tc=1
+  // dim 2: size=2, tile_size=2 → tc=1
+  // dim 3: size=48, tile_size=6, ds=1 → tc=8
+  //   LOD: 48→24→12→6 (stop: 6<=6)
   //
-  // Volume = 16*6*2*6 = 1152 elements
-  // L0:   shape=(16,6,2,6), tc=(8,1,1,1), slot_count=1, tile_elements=144
-  //       epochs=8, 8 shards (1 tile each)
-  // LOD1: shape=(8,3,2,3),  tc=(4,1,1,1), 4 shards, needs_two_epochs=1
-  //       dims 1,3 are odd → boundary clamping exercised at deeper levels
-  // LOD2: shape=(4,2,2,2),  tc=(2,1,1,1), 2 shards
-  // LOD3: shape=(2,1,2,1),  tc=(1,1,1,1), 1 shard
+  // Volume = 16*6*2*48 = 9216 elements
+  // L0:   shape=(16,6,2,48), tc=(8,1,1,8), slot_count=8, tile_elements=144
+  //       epoch_elements=1152, epochs=8, 8 shards (8 tiles each)
+  // LOD1: shape=(8,6,2,24),  tc=(4,1,1,4), slot_count=4, needs_two_epochs=1
+  //       4 shards, 4 tiles each
+  // LOD2: shape=(4,6,2,12),  tc=(2,1,1,2), slot_count=2
+  //       2 shards, 2 tiles each
+  // LOD3: shape=(2,6,2,6),   tc=(1,1,1,1), slot_count=1
+  //       1 shard, 1 tile
 
   const struct dimension dims[] = {
     { .size = 16, .tile_size = 2, .tiles_per_shard = 1, .downsample = 1 },
-    { .size = 6, .tile_size = 6, .downsample = 1 },
-    { .size = 2, .tile_size = 2, .downsample = 0 },
-    { .size = 6, .tile_size = 6, .downsample = 1 },
+    { .size = 6, .tile_size = 6 },
+    { .size = 2, .tile_size = 2 },
+    { .size = 48, .tile_size = 6, .downsample = 1 },
   };
 
   const int rank = 4;
-  const int src_sizes[] = { 16, 6, 2, 6 };
-  const int ds[] = { 1, 1, 0, 1 };
+  const int src_sizes[] = { 16, 6, 2, 48 };
+  const int ds[] = { 1, 0, 0, 1 };
 
   // 4 resolution levels (L0 + 3 LOD), up to 8 shards per level
   struct multilevel_shard_sink mss;
-  multilevel_shard_sink_init(&mss, 4, 8, 16 * 1024);
+  multilevel_shard_sink_init(&mss, 4, 8, 128 * 1024);
 
   const struct transpose_stream_configuration config = {
-    .buffer_capacity_bytes = 1152 * sizeof(uint16_t),
+    .buffer_capacity_bytes = 9216 * sizeof(uint16_t),
     .bytes_per_element = sizeof(uint16_t),
     .rank = rank,
     .dimensions = dims,
@@ -806,19 +825,19 @@ test_stream_lod_roundtrip(void)
   struct transpose_stream s;
   CHECK(Fail0, transpose_stream_create(&config, &s) == 0);
 
-  log_info("  num_lod_levels=%d", s.num_lod_levels);
-  CHECK(Fail, s.num_lod_levels == 3);
+  log_info("  num_lod_levels=%d", s.num_levels);
+  CHECK(Fail, s.num_levels == 3);
 
   log_info("  L0: tile_elements=%lu  slot_count=%lu  epoch_elements=%lu",
            (unsigned long)s.layout.tile_elements,
            (unsigned long)s.layout.slot_count,
            (unsigned long)s.layout.epoch_elements);
   CHECK(Fail, s.layout.tile_elements == 144);
-  CHECK(Fail, s.layout.slot_count == 1);
-  CHECK(Fail, s.layout.epoch_elements == 144);
+  CHECK(Fail, s.layout.slot_count == 8);
+  CHECK(Fail, s.layout.epoch_elements == 1152);
 
   for (int lv = 0; lv < 3; ++lv) {
-    struct lod_level* lod = &s.lod_levels[lv];
+    struct level_state* lod = &s.levels[lv];
     log_info("  LOD%d: tile_elements=%lu  slot_count=%lu  "
              "needs_two_epochs=%d  tps_total=%lu",
              lv + 1,
@@ -826,104 +845,42 @@ test_stream_lod_roundtrip(void)
              (unsigned long)lod->layout.slot_count,
              lod->needs_two_epochs,
              (unsigned long)lod->shard.tiles_per_shard_total);
-    CHECK(Fail, lod->layout.slot_count == 1);
     CHECK(Fail, lod->needs_two_epochs == 1);
-    CHECK(Fail, lod->shard.tiles_per_shard_total == 1);
   }
 
   // Fill source with sequential u16
-  uint16_t src[1152];
-  for (int i = 0; i < 1152; ++i)
+  uint16_t src[9216];
+  for (int i = 0; i < 9216; ++i)
     src[i] = (uint16_t)i;
 
-  struct slice input = { .beg = src, .end = src + 1152 };
+  struct slice input = { .beg = src, .end = src + 9216 };
   struct writer_result r = writer_append(&s.writer, input);
   CHECK(Fail, r.error == 0);
   r = writer_flush(&s.writer);
   CHECK(Fail, r.error == 0);
 
-  // --- Verify level 0: 8 shards, 1 tile each ---
-  {
-    const size_t tile_bytes = s.layout.tile_stride * sizeof(uint16_t);
-
-    for (int si = 0; si < 8; ++si) {
-      const struct mem_shard_writer* w = &mss.writers[0][si];
-
-      // Each shard has 1 tile; build expected via make_expected_tiles
-      uint16_t* expected =
-        make_expected_tiles((uint64_t)si * s.layout.epoch_elements,
-                            s.layout.epoch_elements,
-                            s.layout.slot_count,
-                            s.layout.tile_elements,
-                            s.layout.lifted_rank,
-                            s.layout.lifted_shape,
-                            s.layout.lifted_strides);
-      CHECK(Fail, expected);
-
-      // Parse single-tile shard index
-      const size_t index_data_bytes = 1 * 2 * sizeof(uint64_t);
-      CHECK(Fail, w->size > index_data_bytes + 4);
-      const uint8_t* idx_ptr = w->buf + w->size - index_data_bytes - 4;
-
-      uint64_t tile_offset, tile_comp_size;
-      memcpy(&tile_offset, idx_ptr, sizeof(uint64_t));
-      memcpy(&tile_comp_size, idx_ptr + 8, sizeof(uint64_t));
-      CHECK(Fail, tile_comp_size > 0);
-
-      uint8_t* decomp = (uint8_t*)calloc(1, tile_bytes);
-      CHECK(Fail, decomp);
-
-      size_t result =
-        ZSTD_decompress(decomp, tile_bytes, w->buf + tile_offset,
-                        tile_comp_size);
-      if (ZSTD_isError(result)) {
-        log_error("  L0 shard %d: ZSTD_decompress failed: %s",
-                  si, ZSTD_getErrorName(result));
-        free(decomp);
-        free(expected);
-        goto Fail;
-      }
-
-      const uint16_t* data = (const uint16_t*)decomp;
-      int err = 0;
-      for (uint64_t e = 0; e < s.layout.tile_elements; ++e) {
-        if (data[e] != expected[e]) {
-          log_error("  L0 shard %d elem %lu: expected %u, got %u",
-                    si, (unsigned long)e, expected[e], data[e]);
-          err = 1;
-        }
-      }
-      free(decomp);
-      free(expected);
-      if (err)
-        goto Fail;
-      log_info("  L0 shard %d: OK", si);
-    }
-  }
-
-  // --- Verify LOD levels 1..3 ---
+  // --- Verify all levels (L0 + LOD1..LOD3) ---
   {
     const uint64_t tile_size[] = { 2, 6, 2, 6 };
-    int lod_sz[4];
 
-    // Track sizes per LOD level (1-indexed for expected_lod_value)
-    for (int lv = 0; lv < 3; ++lv) {
-      // Level sizes
+    for (int lv = 0; lv <= 3; ++lv) {
+      int lod_sz[4];
       for (int d = 0; d < rank; ++d) {
         lod_sz[d] = src_sizes[d];
-        for (int l = 0; l <= lv; ++l)
+        for (int l = 0; l < lv; ++l)
           if (ds[d])
             lod_sz[d] = (lod_sz[d] + 1) / 2;
       }
 
-      int shard_count = (lod_sz[0] + (int)tile_size[0] - 1) / (int)tile_size[0];
+      int shard_count =
+        (lod_sz[0] + (int)tile_size[0] - 1) / (int)tile_size[0];
       char label[16];
-      snprintf(label, sizeof(label), "LOD%d", lv + 1);
+      snprintf(label, sizeof(label), lv == 0 ? "L0" : "LOD%d", lv);
 
       for (int si = 0; si < shard_count; ++si) {
-        const struct mem_shard_writer* w = &mss.writers[lv + 1][si];
-        if (verify_lod_shard(label, rank, lv + 1, si, w,
-                             tile_size, lod_sz, src_sizes, ds))
+        const struct mem_shard_writer* w = &mss.writers[lv][si];
+        if (verify_shard(label, rank, lv, si, w,
+                         tile_size, lod_sz, src_sizes, ds, 1))
           goto Fail;
       }
     }

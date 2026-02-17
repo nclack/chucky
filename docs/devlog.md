@@ -22,6 +22,13 @@ lods/shards should be easy to compute.
 We may need an extra epoch buffer just to keep the data moving since we'll need
 to have two reserved for the downsampling.
 
+Thinking about it a little more, we only emit on the odd epochs. So we need
+to store all the lod's for the odd epoch, but the even epoch is effectively a
+spare.
+
+I may not need two epoch buffers if I'm not downsampling on the append
+dimension?
+
 Need to think about what the boundary condition for lods is. If we imagine
 visualizing the array near the boundary as we zoom out, it's nice if there's not
 a gap at the edge when we transition lods. So we want to pad a pixel.
@@ -36,15 +43,17 @@ darkening or artifact at the boundary.
 
 TODO
 - [x] cleanup
-- [x] uniform handling of tiles across lods
+- [x] uniform handling of tiles across lods for compress and aggregate
+- [ ] uniform handling of tiles for shard writer
 - [x] shard writer handles lods
   - could still improve this a bit probably
 - [x] replicate boundary condition
 - [ ] support floats
 - [ ] min, max, median, 2-max
-- [ ] extra epoch?
-- [ ] add metrics, bench
+- [x] add metrics, bench
 - [ ] verify the multiscale zarr is visualizable
+- [ ] make sure we're using the right condition to stop downsampling. all
+      dims need to be bigger than tile size
 
 
 

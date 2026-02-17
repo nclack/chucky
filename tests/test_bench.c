@@ -32,12 +32,13 @@ splitmix64_uniform(uint64_t* state)
 }
 
 static inline uint64_t
-hash_cell(int gx, int gy, int gt, uint64_t seed)
+hash_cell(int gx, int gy, int gz, int gt, uint64_t seed)
 {
   uint64_t h = seed;
   h ^= (uint64_t)(unsigned)gx * 0x9e3779b97f4a7c15ULL;
   h ^= (uint64_t)(unsigned)gy * 0xbf58476d1ce4e5b9ULL;
-  h ^= (uint64_t)(unsigned)gt * 0x94d049bb133111ebULL;
+  h ^= (uint64_t)(unsigned)gz * 0x94d049bb133111ebULL;
+  h ^= (uint64_t)(unsigned)gt * 0x517cc1b727220a95ULL;
   h = (h ^ (h >> 30)) * 0xbf58476d1ce4e5b9ULL;
   h = (h ^ (h >> 27)) * 0x94d049bb133111ebULL;
   return h ^ (h >> 31);
@@ -45,54 +46,59 @@ hash_cell(int gx, int gy, int gt, uint64_t seed)
 
 // Synthetic fluorescence microscopy: sparse bright blobs on dark background.
 // Hash-based, all integer math, one hash per pixel.
-//   Grid: 32x32 px cells, ~3% density, radius 12 px, 64-frame temporal blocks.
+//   Grid: 32^3 voxel cells, ~3% density, radius 8, 64-frame temporal blocks.
 //   RGB variation: R-dominant, G-dominant, B-dominant, or white per blob.
 static void
-fill_chunk_visual(uint16_t* buf, size_t count, size_t offset)
+fill_chunk_visual(uint16_t* buf, size_t count, size_t offset, size_t total)
 {
-  // shape: (T, 2048, 2048, 3), row-major, c fastest
-  const int W = 2048, C = 3;
-  const size_t row = (size_t)C;
-  const size_t plane = (size_t)W * row;
-  const size_t vol = (size_t)W * plane;
-  const int RADIUS_SQ = 12 * 12; // 144
+  (void)total;
+  // shape: (T, Z=256, Y=256, X=256, C=3), row-major, c fastest
+  const int Z = 256, Y = 256, X = 256, C = 3;
+  const size_t s_x = (size_t)C;
+  const size_t s_y = (size_t)X * s_x;
+  const size_t s_z = (size_t)Y * s_y;
+  const size_t s_t = (size_t)Z * s_z;
+  const int RADIUS_SQ = 8 * 8; // 64
 
   for (size_t i = 0; i < count; ++i) {
     size_t gi = offset + i;
-    int c = (int)(gi % row);
-    int x = (int)((gi / row) % W);
-    int y = (int)((gi / plane) % W);
-    int t = (int)(gi / vol);
+    int c = (int)(gi % C);
+    int x = (int)((gi / s_x) % X);
+    int y = (int)((gi / s_y) % Y);
+    int z = (int)((gi / s_z) % Z);
+    int t = (int)(gi / s_t);
 
-    int gx = x >> 5; // / 32
+    int gx = x >> 5; // grid cell 32^3
     int gy = y >> 5;
-    int gt = t >> 6; // / 64
+    int gz = z >> 5;
+    int gt = t >> 6; // 64-frame temporal blocks
 
-    uint64_t h = hash_cell(gx, gy, gt, 0xdeadbeefULL);
+    uint64_t h = hash_cell(gx, gy, gz, gt, 0xdeadbeefULL);
 
-    // ~3% density: low 5 bits == 0 → 1/32 ≈ 3.1%
+    // ~3% density: low 5 bits == 0 -> 1/32 ~ 3.1%
     if ((h & 0x1F) != 0) {
       buf[i] = 0;
       continue;
     }
 
-    // Cell center with ±4 wobble (stays within grid cell for radius 12)
+    // Cell center with +/-4 wobble (stays within grid cell for radius 8)
     int cx = (gx << 5) + 16 + (int)((h >> 5) & 7) - 4;
     int cy = (gy << 5) + 16 + (int)((h >> 8) & 7) - 4;
-    int dx = x - cx, dy = y - cy;
-    int d2 = dx * dx + dy * dy;
+    int cz = (gz << 5) + 16 + (int)((h >> 11) & 7) - 4;
+    int dx = x - cx, dy = y - cy, dz = z - cz;
+    int d2 = dx * dx + dy * dy + dz * dz;
 
     if (d2 >= RADIUS_SQ) {
       buf[i] = 0;
       continue;
     }
 
-    int falloff = RADIUS_SQ - d2;                // [1, 144]
-    int base = 8000 + (int)((h >> 11) & 0x1FFF); // 8000–16191
+    int falloff = RADIUS_SQ - d2;                // [1, 64]
+    int base = 8000 + (int)((h >> 14) & 0x1FFF); // 8000-16191
     int val = (base * falloff) / RADIUS_SQ;
 
-    // Channel color: bits 24-25 select type (0=R, 1=G, 2=B, 3=white)
-    int ctype = (int)((h >> 24) & 3);
+    // Channel color: bits 27-28 select type (0=R, 1=G, 2=B, 3=white)
+    int ctype = (int)((h >> 27) & 3);
     if (ctype < 3 && ctype != c)
       val >>= 2; // dim non-primary channels
 
@@ -128,6 +134,15 @@ fill_chunk(uint16_t* buf, size_t count, size_t offset, size_t total)
       buf[i] = (uint16_t)splitmix64(&rng);
     }
   }
+}
+
+static size_t
+dim_total_elements(const struct dimension* dims, uint8_t rank)
+{
+  size_t n = 1;
+  for (uint8_t i = 0; i < rank; ++i)
+    n *= dims[i].size;
+  return n;
 }
 
 // --- Throughput helpers ---
@@ -278,6 +293,39 @@ metered_shard_sink_init(struct metered_shard_sink* s, struct shard_sink* inner)
   };
 }
 
+typedef void (*fill_fn)(uint16_t* buf,
+                        size_t count,
+                        size_t offset,
+                        size_t total);
+
+// Fill data, pump through writer, flush. Returns 0 on success.
+static int
+pump_data(struct writer* w, size_t total_elements, fill_fn fill)
+{
+  const size_t nelements = 32 * 1024 * 1024; // 32M elements = 64 MiB
+  uint16_t* data = (uint16_t*)malloc(nelements * sizeof(uint16_t));
+  if (!data)
+    return 1;
+
+  for (size_t offset = 0; offset < total_elements; offset += nelements) {
+    size_t n = nelements;
+    if (offset + n > total_elements)
+      n = total_elements - offset;
+    fill(data, n, offset, total_elements);
+    struct slice input = { .beg = data, .end = data + n };
+    struct writer_result r = writer_append_wait(w, input);
+    if (r.error) {
+      log_error("  append failed at offset %zu", offset);
+      free(data);
+      return 1;
+    }
+  }
+
+  struct writer_result r = writer_flush(w);
+  free(data);
+  return r.error;
+}
+
 // --- Small compressed+shard smoke test ---
 
 static int
@@ -291,7 +339,7 @@ test_compressed_small(void)
     { .size = 2048, .tile_size = 512, .tiles_per_shard = 2 },
     { .size = 3, .tile_size = 1, .tiles_per_shard = 3 },
   };
-  const size_t total_elements = (size_t)40 * 2048 * 2048 * 3;
+  const size_t total_elements = dim_total_elements(dims, 4);
 
   struct transpose_stream s = { 0 };
   struct discard_shard_sink dss;
@@ -312,30 +360,7 @@ test_compressed_small(void)
     (total_elements + s.layout.epoch_elements - 1) / s.layout.epoch_elements;
   log_info("  total: %zu elements, %zu epochs", total_elements, num_epochs);
 
-  const size_t chunk_elements = 4 * 1024 * 1024;
-  uint16_t* chunk = (uint16_t*)malloc(chunk_elements * sizeof(uint16_t));
-  CHECK(Fail, chunk);
-
-  for (size_t offset = 0; offset < total_elements; offset += chunk_elements) {
-    size_t n = chunk_elements;
-    if (offset + n > total_elements)
-      n = total_elements - offset;
-    fill_chunk(chunk, n, offset, total_elements);
-    struct slice input = { .beg = chunk, .end = chunk + n };
-    struct writer_result r = writer_append_wait(&s.writer, input);
-    if (r.error) {
-      free(chunk);
-      goto Fail;
-    }
-  }
-  {
-    struct writer_result r = writer_flush(&s.writer);
-    if (r.error) {
-      free(chunk);
-      goto Fail;
-    }
-  }
-  free(chunk);
+  CHECK(Fail, pump_data(&s.writer, total_elements, fill_chunk) == 0);
 
   CHECK(Fail, s.cursor == total_elements);
   log_info("  shards finalized: %zu, total bytes: %zu",
@@ -352,7 +377,7 @@ Fail:
   return 1;
 }
 
-// --- Report helpers ---
+// --- Report + pipeline helpers ---
 
 static void
 print_metric_row(const struct stream_metric* m, double bytes_per_unit)
@@ -385,6 +410,37 @@ struct sink_stats
 };
 
 static void
+log_bench_header(const struct transpose_stream* s,
+                 size_t total_bytes,
+                 size_t total_elements)
+{
+  const size_t num_epochs =
+    (total_elements + s->layout.epoch_elements - 1) / s->layout.epoch_elements;
+
+  log_info("  total:       %.2f GiB (%zu elements, %zu epochs)",
+           (double)total_bytes / (1024.0 * 1024.0 * 1024.0),
+           total_elements,
+           num_epochs);
+  log_info(
+    "  tile:        %lu elements = %lu KiB  (stride=%lu)",
+    (unsigned long)s->layout.tile_elements,
+    (unsigned long)(s->layout.tile_stride * s->config.bytes_per_element / 1024),
+    (unsigned long)s->layout.tile_stride);
+  log_info("  epoch:       %lu slots, %lu MiB pool",
+           (unsigned long)s->layout.slot_count,
+           (unsigned long)(s->layout.tile_pool_bytes / (1024 * 1024)));
+  if (s->config.compress)
+    log_info("  compress:    max_chunk=%zu comp_pool=%zu MiB",
+             s->max_comp_chunk_bytes,
+             s->comp_pool_bytes / (1024 * 1024));
+  if (s->num_levels > 0)
+    log_info("  lod:         %d level%s, M_total=%lu",
+             s->num_levels,
+             s->num_levels > 1 ? "s" : "",
+             (unsigned long)s->M_total);
+}
+
+static void
 print_bench_report(const struct transpose_stream* s,
                    const struct sink_stats* ss,
                    size_t total_bytes,
@@ -403,7 +459,7 @@ print_bench_report(const struct transpose_stream* s,
       : 0.0;
 
   const double pool_bytes = (double)s->layout.tile_pool_bytes;
-  const double comp_pool = (double)s->comp.comp_pool_bytes;
+  const double comp_pool = (double)s->comp_pool_bytes;
 
   log_info("");
   log_info("  --- Benchmark Results ---");
@@ -435,6 +491,9 @@ print_bench_report(const struct transpose_stream* s,
     m.scatter.count > 0 ? (double)total_bytes / m.scatter.count : 0;
   print_metric_row(&m.h2d, h2d_per_dispatch);
   print_metric_row(&m.scatter, scatter_per_dispatch);
+  double downsample_per =
+    m.downsample.count > 0 ? pool_bytes / m.downsample.count : pool_bytes;
+  print_metric_row(&m.downsample, downsample_per);
   print_metric_row(&m.compress, pool_bytes);
   double agg_per = m.aggregate.count > 0
                      ? m.aggregate.total_bytes / m.aggregate.count
@@ -456,26 +515,54 @@ print_bench_report(const struct transpose_stream* s,
 }
 
 // --- Benchmark ---
+//
+// 5D: (T, Z, Y, X, C) with isotropic tiles (2, 64, 64, 64, 1)
+// LOD: downsample z, y, x
+// M0 = 4*4*4*3 = 192, pool_A = 192 MiB
+// LOD1: M1 = 2*2*2*3 = 24, M_total = 216
+// GPU memory ~1.2 GiB (well under 8 GB budget)
 
 static int
 test_bench(void)
 {
   log_info("=== test_bench ===");
 
-  // Shape: (2132, 2048, 2048, 3) with tiles (32, 128, 128, 1)
-  //   tile: 32*128*128*1 = 0.5 Mi elements = 1 MiB
-  //   slot_count: 16*16*3 = 768
-  //   epoch pool: 768 MiB
-  //   epochs: 66
-  //   total: ~50 GiB
   const struct dimension dims[] = {
-    { .size = 2132, .tile_size = 32, .tiles_per_shard = 16 },
-    { .size = 2048, .tile_size = 128, .tiles_per_shard = 4 },
-    { .size = 2048, .tile_size = 128, .tiles_per_shard = 4 },
-    { .size = 3, .tile_size = 1, .tiles_per_shard = 3 },
+    {
+      .size = 1024,
+      .tile_size = 2,
+      .tiles_per_shard = 16,
+      .name = "t",
+    },
+    {
+      .size = 256,
+      .tile_size = 64,
+      .tiles_per_shard = 2,
+      .name = "z",
+      .downsample = 1,
+    },
+    {
+      .size = 256,
+      .tile_size = 64,
+      .tiles_per_shard = 2,
+      .name = "y",
+      .downsample = 1,
+    },
+    {
+      .size = 256,
+      .tile_size = 64,
+      .tiles_per_shard = 2,
+      .name = "x",
+      .downsample = 1,
+    },
+    {
+      .size = 3,
+      .tile_size = 1,
+      .tiles_per_shard = 3,
+      .name = "c",
+    },
   };
-
-  const size_t total_elements = (size_t)2132 * 2048 * 2048 * 3;
+  const size_t total_elements = dim_total_elements(dims, 5);
   const size_t total_bytes = total_elements * sizeof(uint16_t);
 
   struct transpose_stream s = { 0 };
@@ -483,81 +570,23 @@ test_bench(void)
   discard_shard_sink_init(&dss);
 
   const struct transpose_stream_configuration config = {
-    .buffer_capacity_bytes = 128 << 20, // 128 MiB staging buffer
+    .buffer_capacity_bytes = 128 << 20,
     .bytes_per_element = sizeof(uint16_t),
-    .rank = 4,
+    .rank = 5,
     .dimensions = dims,
     .compress = 1,
     .shard_sink = &dss.base,
+    .enable_lod = 1,
   };
 
   CHECK(Fail, transpose_stream_create(&config, &s) == 0);
+  log_bench_header(&s, total_bytes, total_elements);
 
-  const size_t num_epochs =
-    (total_elements + s.layout.epoch_elements - 1) / s.layout.epoch_elements;
-
-  log_info("  shape:       (%u, %u, %u, %u)  tiles: (%u, %u, %u, %u)",
-           (unsigned)dims[0].size,
-           (unsigned)dims[1].size,
-           (unsigned)dims[2].size,
-           (unsigned)dims[3].size,
-           (unsigned)dims[0].tile_size,
-           (unsigned)dims[1].tile_size,
-           (unsigned)dims[2].tile_size,
-           (unsigned)dims[3].tile_size);
-  log_info("  total:       %.2f GiB (%zu elements, %zu epochs)",
-           (double)total_bytes / (1024.0 * 1024.0 * 1024.0),
-           total_elements,
-           num_epochs);
-  log_info("  tile:        %lu elements = %lu KiB  (stride=%lu)",
-           (unsigned long)s.layout.tile_elements,
-           (unsigned long)(s.layout.tile_stride * sizeof(uint16_t) / 1024),
-           (unsigned long)s.layout.tile_stride);
-  log_info("  epoch:       %lu slots, %lu MiB pool",
-           (unsigned long)s.layout.slot_count,
-           (unsigned long)(s.layout.tile_pool_bytes / (1024 * 1024)));
-  log_info("  compress:    max_chunk=%zu comp_pool=%zu MiB",
-           s.comp.max_comp_chunk_bytes,
-           s.comp.comp_pool_bytes / (1024 * 1024));
-
-  // Pre-generate one source chunk (reused each iteration)
-  const size_t chunk_elements = 32 * 1024 * 1024; // 32M elements = 64 MiB
-  uint16_t* chunk = (uint16_t*)malloc(chunk_elements * sizeof(uint16_t));
-  CHECK(Fail, chunk);
-  fill_chunk(chunk, chunk_elements, 0, total_elements);
-
-  // Run the pipeline
   struct platform_clock clock = { 0 };
   platform_toc(&clock);
-
-  for (size_t offset = 0; offset < total_elements; offset += chunk_elements) {
-    size_t n = chunk_elements;
-    if (offset + n > total_elements)
-      n = total_elements - offset;
-
-    struct slice input = { .beg = chunk, .end = chunk + n };
-    struct writer_result r = writer_append_wait(&s.writer, input);
-    if (r.error) {
-      log_error("  append failed at offset %zu", offset);
-      free(chunk);
-      goto Fail;
-    }
-  }
-
-  {
-    struct writer_result r = writer_flush(&s.writer);
-    if (r.error) {
-      log_error("  flush failed");
-      free(chunk);
-      goto Fail;
-    }
-  }
-
+  CHECK(Fail, pump_data(&s.writer, total_elements, fill_chunk) == 0);
   float wall_s = platform_toc(&clock);
-  free(chunk);
-  chunk = NULL;
 
-  // Check cursor integrity
   if (s.cursor != total_elements) {
     log_error("  cursor drift: expected %zu, got %zu (diff=%td)",
               total_elements,
@@ -593,105 +622,62 @@ test_bench_zarr(const char* output_path)
   test_tmpdir_remove(output_path);
 
   const struct dimension dims[] = {
-    { .size = 4264, .tile_size = 32, .tiles_per_shard = 16, .name = "t" },
-    { .size = 2048, .tile_size = 128, .tiles_per_shard = 4, .name = "y" },
-    { .size = 2048, .tile_size = 128, .tiles_per_shard = 4, .name = "x" },
+    { .size = 2048, .tile_size = 2, .tiles_per_shard = 16, .name = "t" },
+    { .size = 256,
+      .tile_size = 64,
+      .tiles_per_shard = 2,
+      .name = "z",
+      .downsample = 1 },
+    { .size = 256,
+      .tile_size = 64,
+      .tiles_per_shard = 2,
+      .name = "y",
+      .downsample = 1 },
+    { .size = 256,
+      .tile_size = 64,
+      .tiles_per_shard = 2,
+      .name = "x",
+      .downsample = 1 },
     { .size = 3, .tile_size = 1, .tiles_per_shard = 3, .name = "c" },
   };
-
-  const struct zarr_config zarr_cfg = {
-    .store_path = output_path,
-    .array_name = "0",
-    .data_type = zarr_dtype_uint16,
-    .fill_value = 0,
-    .rank = 4,
-    .dimensions = dims,
-  };
-
-  const size_t total_elements = (size_t)4264 * 2048 * 2048 * 3;
+  const size_t total_elements = dim_total_elements(dims, 5);
   const size_t total_bytes = total_elements * sizeof(uint16_t);
 
   struct transpose_stream s = { 0 };
-  struct zarr_sink* zs = zarr_sink_create(&zarr_cfg);
+  struct zarr_multiscale_sink* zs = NULL;
+
+  const struct zarr_multiscale_config ms_cfg = {
+    .store_path = output_path,
+    .data_type = zarr_dtype_uint16,
+    .fill_value = 0,
+    .rank = 5,
+    .dimensions = dims,
+    .num_levels = 2, // L0 + LOD1
+  };
+  zs = zarr_multiscale_sink_create(&ms_cfg);
   CHECK(Fail, zs);
 
   struct metered_shard_sink mss;
-  metered_shard_sink_init(&mss, zarr_sink_as_shard_sink(zs));
+  metered_shard_sink_init(&mss, zarr_multiscale_as_shard_sink(zs));
 
   const struct transpose_stream_configuration config = {
     .buffer_capacity_bytes = 128 << 20,
     .bytes_per_element = sizeof(uint16_t),
-    .rank = 4,
+    .rank = 5,
     .dimensions = dims,
     .compress = 1,
     .shard_sink = &mss.shard_writer,
+    .enable_lod = 1,
   };
 
   CHECK(Fail, transpose_stream_create(&config, &s) == 0);
-
-  const size_t num_epochs =
-    (total_elements + s.layout.epoch_elements - 1) / s.layout.epoch_elements;
-
-  log_info("  shape:       (%u, %u, %u, %u)  tiles: (%u, %u, %u, %u)",
-           (unsigned)dims[0].size,
-           (unsigned)dims[1].size,
-           (unsigned)dims[2].size,
-           (unsigned)dims[3].size,
-           (unsigned)dims[0].tile_size,
-           (unsigned)dims[1].tile_size,
-           (unsigned)dims[2].tile_size,
-           (unsigned)dims[3].tile_size);
-  log_info("  total:       %.2f GiB (%zu elements, %zu epochs)",
-           (double)total_bytes / (1024.0 * 1024.0 * 1024.0),
-           total_elements,
-           num_epochs);
-  log_info("  tile:        %lu elements = %lu KiB  (stride=%lu)",
-           (unsigned long)s.layout.tile_elements,
-           (unsigned long)(s.layout.tile_stride * sizeof(uint16_t) / 1024),
-           (unsigned long)s.layout.tile_stride);
-  log_info("  epoch:       %lu slots, %lu MiB pool",
-           (unsigned long)s.layout.slot_count,
-           (unsigned long)(s.layout.tile_pool_bytes / (1024 * 1024)));
-  log_info("  compress:    max_chunk=%zu comp_pool=%zu MiB",
-           s.comp.max_comp_chunk_bytes,
-           s.comp.comp_pool_bytes / (1024 * 1024));
-
-  const size_t chunk_elements = 32 * 1024 * 1024;
-  uint16_t* chunk = (uint16_t*)malloc(chunk_elements * sizeof(uint16_t));
-  CHECK(Fail, chunk);
-  fill_chunk(chunk, chunk_elements, 0, total_elements);
+  log_bench_header(&s, total_bytes, total_elements);
 
   struct platform_clock clock = { 0 };
   platform_toc(&clock);
-
-  for (size_t offset = 0; offset < total_elements; offset += chunk_elements) {
-    size_t n = chunk_elements;
-    if (offset + n > total_elements)
-      n = total_elements - offset;
-
-    struct slice input = { .beg = chunk, .end = chunk + n };
-    struct writer_result r = writer_append_wait(&s.writer, input);
-    if (r.error) {
-      log_error("  append failed at offset %zu", offset);
-      free(chunk);
-      goto Fail;
-    }
-  }
-
-  {
-    struct writer_result r = writer_flush(&s.writer);
-    if (r.error) {
-      log_error("  flush failed");
-      free(chunk);
-      goto Fail;
-    }
-  }
-
-  zarr_sink_flush(zs);
-
+  CHECK(Fail, pump_data(&s.writer, total_elements, fill_chunk) == 0);
+  zarr_multiscale_sink_flush(zs);
   float wall_s = platform_toc(&clock);
-  free(chunk);
-  chunk = NULL;
 
   if (s.cursor != total_elements) {
     log_error("  cursor drift: expected %zu, got %zu (diff=%td)",
@@ -708,13 +694,13 @@ test_bench_zarr(const char* output_path)
   }
 
   transpose_stream_destroy(&s);
-  zarr_sink_destroy(zs);
+  zarr_multiscale_sink_destroy(zs);
   log_info("  PASS");
   return 0;
 
 Fail:
   transpose_stream_destroy(&s);
-  zarr_sink_destroy(zs);
+  zarr_multiscale_sink_destroy(zs);
   log_error("  FAIL");
   return 1;
 }
@@ -730,106 +716,62 @@ test_visual_zarr(const char* output_path)
   test_tmpdir_remove(output_path);
 
   const struct dimension dims[] = {
-    { .size = 4264, .tile_size = 32, .tiles_per_shard = 16, .name = "t" },
-    { .size = 2048, .tile_size = 128, .tiles_per_shard = 4, .name = "y" },
-    { .size = 2048, .tile_size = 128, .tiles_per_shard = 4, .name = "x" },
+    { .size = 2048, .tile_size = 2, .tiles_per_shard = 16, .name = "t" },
+    { .size = 256,
+      .tile_size = 64,
+      .tiles_per_shard = 2,
+      .name = "z",
+      .downsample = 1 },
+    { .size = 256,
+      .tile_size = 64,
+      .tiles_per_shard = 2,
+      .name = "y",
+      .downsample = 1 },
+    { .size = 256,
+      .tile_size = 64,
+      .tiles_per_shard = 2,
+      .name = "x",
+      .downsample = 1 },
     { .size = 3, .tile_size = 1, .tiles_per_shard = 3, .name = "c" },
   };
-
-  const struct zarr_config zarr_cfg = {
-    .store_path = output_path,
-    .array_name = "0",
-    .data_type = zarr_dtype_uint16,
-    .fill_value = 0,
-    .rank = 4,
-    .dimensions = dims,
-  };
-
-  const size_t total_elements = (size_t)4264 * 2048 * 2048 * 3;
+  const size_t total_elements = dim_total_elements(dims, 5);
   const size_t total_bytes = total_elements * sizeof(uint16_t);
 
   struct transpose_stream s = { 0 };
-  struct zarr_sink* zs = zarr_sink_create(&zarr_cfg);
+  struct zarr_multiscale_sink* zs = NULL;
+
+  const struct zarr_multiscale_config ms_cfg = {
+    .store_path = output_path,
+    .data_type = zarr_dtype_uint16,
+    .fill_value = 0,
+    .rank = 5,
+    .dimensions = dims,
+    .num_levels = 2,
+  };
+  zs = zarr_multiscale_sink_create(&ms_cfg);
   CHECK(Fail, zs);
 
   struct metered_shard_sink mss;
-  metered_shard_sink_init(&mss, zarr_sink_as_shard_sink(zs));
+  metered_shard_sink_init(&mss, zarr_multiscale_as_shard_sink(zs));
 
   const struct transpose_stream_configuration config = {
     .buffer_capacity_bytes = 128 << 20,
     .bytes_per_element = sizeof(uint16_t),
-    .rank = 4,
+    .rank = 5,
     .dimensions = dims,
     .compress = 1,
     .shard_sink = &mss.shard_writer,
+    .enable_lod = 1,
   };
 
   CHECK(Fail, transpose_stream_create(&config, &s) == 0);
-
-  const size_t num_epochs =
-    (total_elements + s.layout.epoch_elements - 1) / s.layout.epoch_elements;
-
-  log_info("  shape:       (%u, %u, %u, %u)  tiles: (%u, %u, %u, %u)",
-           (unsigned)dims[0].size,
-           (unsigned)dims[1].size,
-           (unsigned)dims[2].size,
-           (unsigned)dims[3].size,
-           (unsigned)dims[0].tile_size,
-           (unsigned)dims[1].tile_size,
-           (unsigned)dims[2].tile_size,
-           (unsigned)dims[3].tile_size);
-  log_info("  total:       %.2f GiB (%zu elements, %zu epochs)",
-           (double)total_bytes / (1024.0 * 1024.0 * 1024.0),
-           total_elements,
-           num_epochs);
-  log_info("  tile:        %lu elements = %lu KiB  (stride=%lu)",
-           (unsigned long)s.layout.tile_elements,
-           (unsigned long)(s.layout.tile_stride * sizeof(uint16_t) / 1024),
-           (unsigned long)s.layout.tile_stride);
-  log_info("  epoch:       %lu slots, %lu MiB pool",
-           (unsigned long)s.layout.slot_count,
-           (unsigned long)(s.layout.tile_pool_bytes / (1024 * 1024)));
-  log_info("  compress:    max_chunk=%zu comp_pool=%zu MiB",
-           s.comp.max_comp_chunk_bytes,
-           s.comp.comp_pool_bytes / (1024 * 1024));
-
-  const size_t chunk_elements = 32 * 1024 * 1024;
-  uint16_t* chunk = (uint16_t*)malloc(chunk_elements * sizeof(uint16_t));
-  CHECK(Fail, chunk);
+  log_bench_header(&s, total_bytes, total_elements);
 
   struct platform_clock clock = { 0 };
   platform_toc(&clock);
-
-  for (size_t offset = 0; offset < total_elements; offset += chunk_elements) {
-    size_t n = chunk_elements;
-    if (offset + n > total_elements)
-      n = total_elements - offset;
-
-    fill_chunk_visual(chunk, n, offset);
-
-    struct slice input = { .beg = chunk, .end = chunk + n };
-    struct writer_result r = writer_append_wait(&s.writer, input);
-    if (r.error) {
-      log_error("  append failed at offset %zu", offset);
-      free(chunk);
-      goto Fail;
-    }
-  }
-
-  {
-    struct writer_result r = writer_flush(&s.writer);
-    if (r.error) {
-      log_error("  flush failed");
-      free(chunk);
-      goto Fail;
-    }
-  }
-
-  zarr_sink_flush(zs);
-
+  CHECK(Fail, pump_data(&s.writer, total_elements, fill_chunk_visual) == 0);
+  zarr_multiscale_sink_flush(zs);
   float wall_s = platform_toc(&clock);
-  free(chunk);
-  chunk = NULL;
 
   if (s.cursor != total_elements) {
     log_error("  cursor drift: expected %zu, got %zu (diff=%td)",
@@ -846,13 +788,13 @@ test_visual_zarr(const char* output_path)
   }
 
   transpose_stream_destroy(&s);
-  zarr_sink_destroy(zs);
+  zarr_multiscale_sink_destroy(zs);
   log_info("  PASS");
   return 0;
 
 Fail:
   transpose_stream_destroy(&s);
-  zarr_sink_destroy(zs);
+  zarr_multiscale_sink_destroy(zs);
   log_error("  FAIL");
   return 1;
 }

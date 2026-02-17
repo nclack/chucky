@@ -70,3 +70,8 @@ void zarr_multiscale_sink_flush(struct zarr_multiscale_sink* s);
 // Get the shard_sink interface for a specific level.
 struct shard_sink*
 zarr_multiscale_get_level_sink(struct zarr_multiscale_sink* s, uint8_t level);
+
+// Get a combined shard_sink that routes open(level, shard_index) to the
+// correct level's zarr_sink. Use this with transpose_stream when enable_lod=1.
+struct shard_sink*
+zarr_multiscale_as_shard_sink(struct zarr_multiscale_sink* s);

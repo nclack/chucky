@@ -2,6 +2,48 @@
 
 - [ ] interface for streaming from device, integrating with a cuda stream
 
+## 2026-02-25
+
+Considering multiscale using morton to order 2x2x..x2 regions.
+
+Given a multidimensional array of rank d and shape s, I want to compute
+level-of-detail representations by progressive reduction over 2x2x...x2 blocks
+with replicate boundary conditions. I was thinking of an algorithm that first
+scatters elements of the array according to their morton order. This way I can
+just reduce each run of 2^d elements to compute the next lod level, then repeat
+to do the next, etc.
+
+In general though, the array shape is a small volume relative to the 2^p sized
+d-dimensional box required to cover it; that box being the domain over which
+the coordinates corresponding to each morton index would range.
+
+To deal with that, I want to do the scatter but in a way that omits the
+morton indices that are out-of-bounds. This means the runs of elements that we
+need to reduce might be different sizes, that we need a way to efficiently
+compute the indices to which array elements should scatter, and we need an
+"index" array to track the range of each successive run of elements.
+
+To scatter elements appropriately, I need to compute a compacted morton order.
+
+A coordinate vector r from our array has components r_{d-1},...,r_1,r_0. A
+morton index for this coordinates would be formed by interleaving bits of the
+coordinates of r. For example, if r were 3d and r=(z,y,x) and we denote x(i) as
+i'th bit of x, then morton(r)=z(p)y(p)x(p)...z(0)y(0)x(0) - the product there
+representing bitwise concatenation, and p being some sufficiently large power
+of 2.
+
+If we iterate over morton indexes, they correspond to coordinates in a
+d-dimensional box of size 2^p on each side. We choose p to be the smallest value
+such that the box contains our array's shape. In general, many of these
+coordinate are outside that 2^p-sized box.
+
+Let's say I'm given a k such that k=morton(r). How can I efficiently compute
+the number of indices from 0..k-1 that are within the array bounds.
+
+I was thinking the algorithm would work by subtracting through the lowest d
+bits, evaluating the intersection of the bounding box at that scale, and then
+shifting off those bits and increasing the scale. That ends up being O(p*d^2).
+
 ## 2026-02-16
 
 Adding multiscale. Starting with mean.

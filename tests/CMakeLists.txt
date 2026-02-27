@@ -135,3 +135,6 @@ target_link_libraries(test_morton PRIVATE chucky_log)
 target_compile_options(test_morton PRIVATE ${C_WARN_FLAGS})
 add_test(NAME "test-test_morton" COMMAND test_morton)
 
+# LOD GPU test
+add_my_test(test_lod test_lod.c lod CUDA::cudart_static)
+

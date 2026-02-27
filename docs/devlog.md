@@ -3,6 +3,25 @@
 - [ ] interface for streaming from device, integrating with a cuda stream
 - [ ] "append dimension" semantics for dim0
 
+## 2026-02-27
+
+Cleaned up lod kernels. Benchmarking from `test_lod` on `auk`:
+
+```
+--- gpu_lod_3d_256 ---
+  ds_mask=0x7  ds_ndim=3  batch_ndim=0  batch_count=1  nlev=9
+  scatter    4.221 ms   15.90 GB/s
+  pyramid    1.884 ms   35.62 GB/s
+  total      6.105 ms   10.99 GB/s
+  PASS
+--- gpu_lod_3d_mixed_large ---
+  ds_mask=0x6  ds_ndim=2  batch_ndim=1  batch_count=64  nlev=9
+  scatter    0.838 ms   20.02 GB/s
+  pyramid    0.254 ms   65.92 GB/s
+  total      1.093 ms   15.35 GB/s
+  PASS
+```
+
 ## 2026-02-26
 
 Cleaning up the compacted morton algorithm a little bit. Making sure we're not

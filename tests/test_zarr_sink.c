@@ -1,29 +1,33 @@
+#include "prelude.cuda.h"
+#include "prelude.h"
 #include "stream.h"
 #include "test_platform.h"
 #include "zarr_sink.h"
-#include "prelude.h"
-#include "prelude.cuda.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <zstd.h>
 
-
 // --- Coordinate encoding (same as test_shard_contents) ---
 // 3D: dim0=12, dim1=8, dim2=12
 // tile: 2, 4, 3. tps: 3, 2, 2.
 
 static uint32_t
-encode_voxel(int s0, int s1, int s2,
-             int t0, int t1, int t2,
-             int v0, int v1, int v2)
+encode_voxel(int s0,
+             int s1,
+             int s2,
+             int t0,
+             int t1,
+             int t2,
+             int v0,
+             int v1,
+             int v2)
 {
   return ((uint32_t)s0 << 24) | ((uint32_t)s1 << 21) | ((uint32_t)s2 << 18) |
          ((uint32_t)t0 << 15) | ((uint32_t)t1 << 12) | ((uint32_t)t2 << 9) |
          ((uint32_t)v0 << 6) | ((uint32_t)v1 << 3) | ((uint32_t)v2);
 }
-
 
 static int
 read_file_all(const char* path, uint8_t** out, size_t* out_len)
@@ -108,7 +112,8 @@ test_metadata(const char* tmpdir)
     // chunk_shape (shard shape) = tile_size * tiles_per_shard = [6,8,6]
     CHECK(Fail2, strstr((char*)data, "\"chunk_shape\":[6,8,6]"));
     CHECK(Fail2, strstr((char*)data, "\"sharding_indexed\""));
-    CHECK(Fail2, strstr((char*)data, "\"dimension_names\":[\"z\",\"y\",\"x\"]"));
+    CHECK(Fail2,
+          strstr((char*)data, "\"dimension_names\":[\"z\",\"y\",\"x\"]"));
     free(data);
   }
 
@@ -192,8 +197,8 @@ test_pipeline(const char* tmpdir)
   struct zarr_sink* zs = zarr_sink_create(&zcfg);
   CHECK(Fail2, zs);
 
-  // Configure transpose stream
-  const struct transpose_stream_configuration config = {
+  // Configure tile stream
+  const struct tile_stream_configuration config = {
     .buffer_capacity_bytes = (size_t)total_elements * sizeof(uint32_t),
     .bytes_per_element = sizeof(uint32_t),
     .rank = 3,
@@ -202,8 +207,8 @@ test_pipeline(const char* tmpdir)
     .shard_sink = zarr_sink_as_shard_sink(zs),
   };
 
-  struct transpose_stream s;
-  CHECK(Fail3, transpose_stream_create(&config, &s) == 0);
+  struct tile_stream_gpu s;
+  CHECK(Fail3, tile_stream_gpu_create(&config, &s) == 0);
 
   // Feed data
   {
@@ -235,8 +240,8 @@ test_pipeline(const char* tmpdir)
       }
 
       char path[4096];
-      snprintf(path, sizeof(path), "%s/0/c/%d/%d/%d", tmpdir,
-               sc[0], sc[1], sc[2]);
+      snprintf(
+        path, sizeof(path), "%s/0/c/%d/%d/%d", tmpdir, sc[0], sc[1], sc[2]);
       CHECK(Fail4, test_file_exists(path));
 
       uint8_t* shard_data;
@@ -254,8 +259,8 @@ test_pipeline(const char* tmpdir)
       uint64_t tile_offsets[12], tile_nbytes[12];
       for (int i = 0; i < tiles_per_shard_total; ++i) {
         memcpy(&tile_offsets[i], index_ptr + (size_t)i * 16, sizeof(uint64_t));
-        memcpy(&tile_nbytes[i], index_ptr + (size_t)i * 16 + 8,
-               sizeof(uint64_t));
+        memcpy(
+          &tile_nbytes[i], index_ptr + (size_t)i * 16 + 8, sizeof(uint64_t));
       }
 
       // Decompress and verify each tile
@@ -266,7 +271,9 @@ test_pipeline(const char* tmpdir)
         if (tile_nbytes[i_tile] == 0 ||
             tile_nbytes[i_tile] > ZSTD_compressBound(tile_stride_bytes)) {
           log_error("shard %d tile %d: bad nbytes=%llu",
-                    i_shard, i_tile, (unsigned long long)tile_nbytes[i_tile]);
+                    i_shard,
+                    i_tile,
+                    (unsigned long long)tile_nbytes[i_tile]);
           errors++;
           continue;
         }
@@ -274,12 +281,15 @@ test_pipeline(const char* tmpdir)
         uint8_t* decomp = (uint8_t*)calloc(1, tile_stride_bytes);
         CHECK(Fail4, decomp);
 
-        size_t result = ZSTD_decompress(
-          decomp, tile_stride_bytes,
-          shard_data + tile_offsets[i_tile], (size_t)tile_nbytes[i_tile]);
+        size_t result = ZSTD_decompress(decomp,
+                                        tile_stride_bytes,
+                                        shard_data + tile_offsets[i_tile],
+                                        (size_t)tile_nbytes[i_tile]);
         if (ZSTD_isError(result)) {
           log_error("shard %d tile %d: ZSTD error: %s",
-                    i_shard, i_tile, ZSTD_getErrorName(result));
+                    i_shard,
+                    i_tile,
+                    ZSTD_getErrorName(result));
           free(decomp);
           errors++;
           continue;
@@ -296,15 +306,24 @@ test_pipeline(const char* tmpdir)
           int exp_v1 = (e / tile_size[2]) % tile_size[1];
           int exp_v2 = e % tile_size[2];
 
-          uint32_t expected = encode_voxel(
-            sc[0], sc[1], sc[2],
-            exp_t0, exp_t1, exp_t2,
-            exp_v0, exp_v1, exp_v2);
+          uint32_t expected = encode_voxel(sc[0],
+                                           sc[1],
+                                           sc[2],
+                                           exp_t0,
+                                           exp_t1,
+                                           exp_t2,
+                                           exp_v0,
+                                           exp_v1,
+                                           exp_v2);
 
           if (voxels[e] != expected) {
             if (errors < 10) {
               log_error("shard %d tile %d elem %d: got 0x%08x expected 0x%08x",
-                        i_shard, i_tile, e, voxels[e], expected);
+                        i_shard,
+                        i_tile,
+                        e,
+                        voxels[e],
+                        expected);
             }
             errors++;
           }
@@ -320,18 +339,107 @@ test_pipeline(const char* tmpdir)
     }
   }
 
-  transpose_stream_destroy(&s);
+  tile_stream_gpu_destroy(&s);
   zarr_sink_destroy(zs);
   free(src);
   log_info("  PASS");
   return 0;
 
 Fail4:
-  transpose_stream_destroy(&s);
+  tile_stream_gpu_destroy(&s);
 Fail3:
   zarr_sink_destroy(zs);
 Fail2:
   free(src);
+Fail:
+  log_error("  FAIL");
+  return 1;
+}
+
+// --- Test: multiscale metadata ---
+
+static int
+test_multiscale_metadata(const char* tmpdir)
+{
+  log_info("=== test_multiscale_metadata ===");
+
+  struct dimension dims[] = {
+    { .size = 64, .tile_size = 8, .tiles_per_shard = 4, .name = "z" },
+    { .size = 32, .tile_size = 8, .tiles_per_shard = 2, .name = "y" },
+    { .size = 64, .tile_size = 8, .tiles_per_shard = 4, .name = "x" },
+  };
+
+  struct zarr_multiscale_config cfg = {
+    .store_path = tmpdir,
+    .data_type = zarr_dtype_uint16,
+    .fill_value = 0,
+    .rank = 3,
+    .dimensions = dims,
+    .lod_mask = 0x5, // dims 0 and 2 (z and x)
+    .nlev = 0,       // auto
+  };
+
+  struct zarr_multiscale_sink* ms = zarr_multiscale_sink_create(&cfg);
+  CHECK(Fail, ms);
+
+  // Check root zarr.json has multiscales attribute
+  {
+    char path[4096];
+    snprintf(path, sizeof(path), "%s/zarr.json", tmpdir);
+    CHECK(Fail2, test_file_exists(path));
+
+    uint8_t* data;
+    size_t len;
+    CHECK(Fail2, read_file_all(path, &data, &len) == 0);
+    data[len < 8191 ? len : 8191] = '\0';
+
+    CHECK(Fail2, strstr((char*)data, "\"zarr_format\":3"));
+    CHECK(Fail2, strstr((char*)data, "\"node_type\":\"group\""));
+    CHECK(Fail2, strstr((char*)data, "\"multiscales\""));
+    CHECK(Fail2, strstr((char*)data, "\"version\":\"0.4\""));
+    CHECK(Fail2, strstr((char*)data, "\"path\":\"0\""));
+    CHECK(Fail2, strstr((char*)data, "\"path\":\"1\""));
+    CHECK(Fail2, strstr((char*)data, "\"coordinateTransformations\""));
+    free(data);
+  }
+
+  // Check L0 array zarr.json
+  {
+    char path[4096];
+    snprintf(path, sizeof(path), "%s/0/zarr.json", tmpdir);
+    CHECK(Fail2, test_file_exists(path));
+
+    uint8_t* data;
+    size_t len;
+    CHECK(Fail2, read_file_all(path, &data, &len) == 0);
+    data[len < 4095 ? len : 4095] = '\0';
+
+    CHECK(Fail2, strstr((char*)data, "\"shape\":[64,32,64]"));
+    CHECK(Fail2, strstr((char*)data, "\"data_type\":\"uint16\""));
+    free(data);
+  }
+
+  // Check L1 array zarr.json (dims 0 and 2 halved)
+  {
+    char path[4096];
+    snprintf(path, sizeof(path), "%s/1/zarr.json", tmpdir);
+    CHECK(Fail2, test_file_exists(path));
+
+    uint8_t* data;
+    size_t len;
+    CHECK(Fail2, read_file_all(path, &data, &len) == 0);
+    data[len < 4095 ? len : 4095] = '\0';
+
+    CHECK(Fail2, strstr((char*)data, "\"shape\":[32,32,32]"));
+    free(data);
+  }
+
+  zarr_multiscale_sink_destroy(ms);
+  log_info("  PASS");
+  return 0;
+
+Fail2:
+  zarr_multiscale_sink_destroy(ms);
 Fail:
   log_error("  FAIL");
   return 1;
@@ -356,6 +464,14 @@ main(int ac, char* av[])
     snprintf(sub, sizeof(sub), "%s/meta", tmpdir);
     test_mkdir(sub);
     ecode |= test_metadata(sub);
+  }
+
+  // Multiscale metadata test (no CUDA needed)
+  {
+    char sub[4200];
+    snprintf(sub, sizeof(sub), "%s/msmeta", tmpdir);
+    test_mkdir(sub);
+    ecode |= test_multiscale_metadata(sub);
   }
 
   // Pipeline tests (need CUDA)

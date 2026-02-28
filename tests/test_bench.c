@@ -256,11 +256,11 @@ test_compressed_small(void)
   };
   const size_t total_elements = dim_total_elements(dims, 4);
 
-  struct transpose_stream s = { 0 };
+  struct tile_stream_gpu s = { 0 };
   struct discard_shard_sink dss;
   discard_shard_sink_init(&dss);
 
-  const struct transpose_stream_configuration config = {
+  const struct tile_stream_configuration config = {
     .buffer_capacity_bytes = 8 << 20,
     .bytes_per_element = sizeof(uint16_t),
     .rank = 4,
@@ -269,7 +269,7 @@ test_compressed_small(void)
     .shard_sink = &dss.base,
   };
 
-  CHECK(Fail, transpose_stream_create(&config, &s) == 0);
+  CHECK(Fail, tile_stream_gpu_create(&config, &s) == 0);
 
   const size_t num_epochs =
     (total_elements + s.layout.epoch_elements - 1) / s.layout.epoch_elements;
@@ -282,12 +282,12 @@ test_compressed_small(void)
            dss.shards_finalized,
            dss.total_bytes);
 
-  transpose_stream_destroy(&s);
+  tile_stream_gpu_destroy(&s);
   log_info("  PASS");
   return 0;
 
 Fail:
-  transpose_stream_destroy(&s);
+  tile_stream_gpu_destroy(&s);
   log_error("  FAIL");
   return 1;
 }
@@ -325,7 +325,7 @@ struct sink_stats
 };
 
 static void
-log_bench_header(const struct transpose_stream* s,
+log_bench_header(const struct tile_stream_gpu* s,
                  size_t total_bytes,
                  size_t total_elements)
 {
@@ -351,13 +351,13 @@ log_bench_header(const struct transpose_stream* s,
 }
 
 static void
-print_bench_report(const struct transpose_stream* s,
+print_bench_report(const struct tile_stream_gpu* s,
                    const struct sink_stats* ss,
                    size_t total_bytes,
                    size_t total_elements,
                    float wall_s)
 {
-  struct stream_metrics m = transpose_stream_get_metrics(s);
+  struct stream_metrics m = tile_stream_gpu_get_metrics(s);
   const size_t tile_bytes = s->layout.tile_stride * s->config.bytes_per_element;
   const size_t num_epochs =
     (total_elements + s->layout.epoch_elements - 1) / s->layout.epoch_elements;
@@ -401,6 +401,9 @@ print_bench_report(const struct transpose_stream* s,
     m.scatter.count > 0 ? (double)total_bytes / m.scatter.count : 0;
   print_metric_row(&m.h2d, h2d_per_dispatch);
   print_metric_row(&m.scatter, scatter_per_dispatch);
+  print_metric_row(&m.lod_scatter, pool_bytes);
+  print_metric_row(&m.lod_reduce, pool_bytes);
+  print_metric_row(&m.lod_m2t, pool_bytes);
   print_metric_row(&m.compress, pool_bytes);
   double agg_per = m.aggregate.count > 0
                      ? m.aggregate.total_bytes / m.aggregate.count
@@ -465,11 +468,11 @@ test_bench(void)
   const size_t total_elements = dim_total_elements(dims, 5);
   const size_t total_bytes = total_elements * sizeof(uint16_t);
 
-  struct transpose_stream s = { 0 };
+  struct tile_stream_gpu s = { 0 };
   struct discard_shard_sink dss;
   discard_shard_sink_init(&dss);
 
-  const struct transpose_stream_configuration config = {
+  const struct tile_stream_configuration config = {
     .buffer_capacity_bytes = 128 << 20,
     .bytes_per_element = sizeof(uint16_t),
     .rank = 5,
@@ -478,7 +481,7 @@ test_bench(void)
     .shard_sink = &dss.base,
   };
 
-  CHECK(Fail, transpose_stream_create(&config, &s) == 0);
+  CHECK(Fail, tile_stream_gpu_create(&config, &s) == 0);
   log_bench_header(&s, total_bytes, total_elements);
 
   xor_pattern_init(dims, 5, 2);
@@ -502,13 +505,109 @@ test_bench(void)
     print_bench_report(&s, &ss, total_bytes, total_elements, wall_s);
   }
 
-  transpose_stream_destroy(&s);
+  tile_stream_gpu_destroy(&s);
   xor_pattern_free();
   log_info("  PASS");
   return 0;
 
 Fail:
-  transpose_stream_destroy(&s);
+  tile_stream_gpu_destroy(&s);
+  xor_pattern_free();
+  log_error("  FAIL");
+  return 1;
+}
+
+// --- Multiscale benchmark ---
+//
+// 5D with enable_multiscale on z,y,x (mask=0xE).
+// Smaller spatial dims to fit LOD buffers in GPU memory.
+
+static int
+test_bench_multiscale(void)
+{
+  log_info("=== test_bench_multiscale ===");
+
+  const struct dimension dims[] = {
+    {
+      .size = 100,
+      .tile_size = 2,
+      .tiles_per_shard = 16,
+      .name = "t",
+    },
+    {
+      .size = 128,
+      .tile_size = 64,
+      .tiles_per_shard = 2,
+      .name = "z",
+    },
+    {
+      .size = 128,
+      .tile_size = 64,
+      .tiles_per_shard = 2,
+      .name = "y",
+    },
+    {
+      .size = 128,
+      .tile_size = 64,
+      .tiles_per_shard = 2,
+      .name = "x",
+    },
+    {
+      .size = 3,
+      .tile_size = 1,
+      .tiles_per_shard = 3,
+      .name = "c",
+    },
+  };
+  const size_t total_elements = dim_total_elements(dims, 5);
+  const size_t total_bytes = total_elements * sizeof(uint16_t);
+
+  struct tile_stream_gpu s = { 0 };
+  struct discard_shard_sink dss;
+  discard_shard_sink_init(&dss);
+
+  const struct tile_stream_configuration config = {
+    .buffer_capacity_bytes = 128 << 20,
+    .bytes_per_element = sizeof(uint16_t),
+    .rank = 5,
+    .dimensions = dims,
+    .compress = 1,
+    .shard_sink = &dss.base,
+    .enable_multiscale = 1,
+    .lod_mask = 0xE, // dims 1,2,3 (z,y,x)
+  };
+
+  CHECK(Fail, tile_stream_gpu_create(&config, &s) == 0);
+  log_bench_header(&s, total_bytes, total_elements);
+  log_info("  LOD levels:  %d", s.lod.nlev);
+
+  xor_pattern_init(dims, 5, 2);
+
+  struct platform_clock clock = { 0 };
+  platform_toc(&clock);
+  CHECK(Fail, pump_data(&s.writer, total_elements, fill_xor) == 0);
+  float wall_s = platform_toc(&clock);
+
+  if (s.cursor != total_elements) {
+    log_error("  cursor drift: expected %zu, got %zu",
+              total_elements,
+              (size_t)s.cursor);
+    goto Fail;
+  }
+
+  {
+    struct sink_stats ss = { .total_bytes = dss.total_bytes,
+                             .sink = &dss.sink };
+    print_bench_report(&s, &ss, total_bytes, total_elements, wall_s);
+  }
+
+  tile_stream_gpu_destroy(&s);
+  xor_pattern_free();
+  log_info("  PASS");
+  return 0;
+
+Fail:
+  tile_stream_gpu_destroy(&s);
   xor_pattern_free();
   log_error("  FAIL");
   return 1;
@@ -531,6 +630,8 @@ main(int ac, char* av[])
   ecode |= test_compressed_small();
   if (!ecode)
     ecode |= test_bench();
+  if (!ecode)
+    ecode |= test_bench_multiscale();
 
   cuCtxDestroy(ctx);
   return ecode;

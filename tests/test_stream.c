@@ -83,7 +83,7 @@ test_stream_single_append(void)
   struct mem_writer mw = mem_writer_new(2 * pool_bytes);
   CHECK(Fail0, mw.buf);
 
-  const struct transpose_stream_configuration config = {
+  const struct tile_stream_configuration config = {
     .buffer_capacity_bytes = 96 * sizeof(uint16_t),
     .bytes_per_element = sizeof(uint16_t),
     .rank = 3,
@@ -91,8 +91,8 @@ test_stream_single_append(void)
     .sink = &mw.base,
   };
 
-  struct transpose_stream s;
-  CHECK(Fail0, transpose_stream_create(&config, &s) == 0);
+  struct tile_stream_gpu s;
+  CHECK(Fail0, tile_stream_gpu_create(&config, &s) == 0);
 
   // Verify computed layout
   log_info("  tile_elements=%lu  slot_count=%lu  epoch_elements=%lu",
@@ -172,13 +172,13 @@ test_stream_single_append(void)
     log_info("  epoch 1: OK");
   }
 
-  transpose_stream_destroy(&s);
+  tile_stream_gpu_destroy(&s);
   mem_writer_free(&mw);
   log_info("  PASS");
   return 0;
 
 Fail:
-  transpose_stream_destroy(&s);
+  tile_stream_gpu_destroy(&s);
 Fail0:
   mem_writer_free(&mw);
   log_error("  FAIL");
@@ -203,7 +203,7 @@ test_stream_chunked_append(void)
   CHECK(Fail0, mw.buf);
 
   // Small buffer: 10 elements worth (rounded up to 4KB internally)
-  const struct transpose_stream_configuration config = {
+  const struct tile_stream_configuration config = {
     .buffer_capacity_bytes = 10 * sizeof(uint16_t),
     .bytes_per_element = sizeof(uint16_t),
     .rank = 3,
@@ -211,8 +211,8 @@ test_stream_chunked_append(void)
     .sink = &mw.base,
   };
 
-  struct transpose_stream s;
-  CHECK(Fail0, transpose_stream_create(&config, &s) == 0);
+  struct tile_stream_gpu s;
+  CHECK(Fail0, tile_stream_gpu_create(&config, &s) == 0);
 
   const int total = 96;
   uint16_t src[96];
@@ -285,13 +285,13 @@ test_stream_chunked_append(void)
     log_info("  epoch 1: OK");
   }
 
-  transpose_stream_destroy(&s);
+  tile_stream_gpu_destroy(&s);
   mem_writer_free(&mw);
   log_info("  PASS");
   return 0;
 
 Fail:
-  transpose_stream_destroy(&s);
+  tile_stream_gpu_destroy(&s);
 Fail0:
   mem_writer_free(&mw);
   log_error("  FAIL");
@@ -391,7 +391,7 @@ test_stream_compressed_roundtrip(void)
   mem_shard_sink_init(&mss, 256 * 1024);
   CHECK(Fail0, mss.writer.buf);
 
-  const struct transpose_stream_configuration config = {
+  const struct tile_stream_configuration config = {
     .buffer_capacity_bytes = 96 * sizeof(uint16_t),
     .bytes_per_element = sizeof(uint16_t),
     .rank = 3,
@@ -400,8 +400,8 @@ test_stream_compressed_roundtrip(void)
     .shard_sink = &mss.base,
   };
 
-  struct transpose_stream s;
-  CHECK(Fail0, transpose_stream_create(&config, &s) == 0);
+  struct tile_stream_gpu s;
+  CHECK(Fail0, tile_stream_gpu_create(&config, &s) == 0);
 
   log_info("  tile_elements=%lu  tile_stride=%lu  slot_count=%lu  "
            "epoch_elements=%lu",
@@ -511,13 +511,13 @@ test_stream_compressed_roundtrip(void)
     log_info("  epoch %d: OK", epoch);
   }
 
-  transpose_stream_destroy(&s);
+  tile_stream_gpu_destroy(&s);
   mem_shard_sink_free(&mss);
   log_info("  PASS");
   return 0;
 
 Fail:
-  transpose_stream_destroy(&s);
+  tile_stream_gpu_destroy(&s);
 Fail0:
   mem_shard_sink_free(&mss);
   log_error("  FAIL");

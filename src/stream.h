@@ -1,6 +1,7 @@
 #pragma once
 
 #include "aggregate.h"
+#include "lod_plan.h"
 #include "metric.h"
 #include "transpose.h"
 #include <cuda.h>
@@ -46,6 +47,9 @@ struct stream_metrics
 {
   struct stream_metric memcpy;
   struct stream_metric h2d;
+  struct stream_metric lod_scatter;
+  struct stream_metric lod_reduce;
+  struct stream_metric lod_m2t;
   struct stream_metric scatter;
   struct stream_metric compress;
   struct stream_metric aggregate;
@@ -73,7 +77,7 @@ struct dimension
   const char* name;         // optional label (e.g. "x"), may be NULL
 };
 
-struct transpose_stream_configuration
+struct tile_stream_configuration
 {
   size_t buffer_capacity_bytes;
   size_t bytes_per_element;
@@ -82,6 +86,8 @@ struct transpose_stream_configuration
   struct writer* sink;           // downstream writer (uncompressed), not owned
   struct shard_sink* shard_sink; // downstream shard writer factory, not owned
   int compress;                  // enable nvcomp zstd compression
+  int enable_multiscale;         // enable LOD pyramid generation
+  uint32_t lod_mask;             // bitmask of dims to downsample (0 = dim0)
 };
 
 struct staging_slot
@@ -119,7 +125,7 @@ struct stream_layout
 struct active_shard
 {
   size_t data_cursor;
-  uint64_t* index;           // 2 * tiles_per_shard_total entries
+  uint64_t* index;             // 2 * tiles_per_shard_total entries
   struct shard_writer* writer; // from sink->open, NULL until first use
 };
 
@@ -136,23 +142,29 @@ struct shard_state
 
 // Per flush-slot: holds compressed output + pre-built pointer arrays.
 // flush[0] is used for A-pool epochs, flush[1] for B-pool epochs.
-struct flush_slot
+struct flush_slot_gpu
 {
   struct buffer d_compressed; // device: M0 * max_comp_chunk_bytes
-  void** d_uncomp_ptrs;      // device [M0], pre-built at init
-  void** d_comp_ptrs;        // device [M0], pre-built at init
+  void** d_uncomp_ptrs;       // device [M0], pre-built at init
+  void** d_comp_ptrs;         // device [M0], pre-built at init
   CUevent t_compress_start;
   CUevent t_d2h_start;
-  CUevent ready;             // signals all D2H for this slot is done
+  CUevent ready; // signals all D2H for this slot is done
 };
 
-struct transpose_stream
+struct tile_stream_gpu;
+
+// Dispatch function: H2D + scatter (+ optional d_linear copy).
+typedef int (*dispatch_scatter_fn)(struct tile_stream_gpu*);
+
+struct tile_stream_gpu
 {
   struct writer writer;
+  dispatch_scatter_fn dispatch;
   CUstream h2d, compute, compress, d2h;
   struct staging_state stage;
   struct stream_layout layout; // L0 layout
-  struct transpose_stream_configuration config;
+  struct tile_stream_configuration config;
   struct stream_metrics metrics;
   uint64_t cursor;
 
@@ -166,8 +178,8 @@ struct transpose_stream
   int pool_current;          // 0=A, 1=B — which pool scatter writes to
 
   // Flush pipeline
-  struct flush_slot flush[2]; // [0]=A epochs, [1]=B epochs
-  int flush_current;          // 0 or 1
+  struct flush_slot_gpu flush[2]; // [0]=A epochs, [1]=B epochs
+  int flush_current;              // 0 or 1
   int flush_pending;
 
   // Compress (shared across flushes)
@@ -182,16 +194,58 @@ struct transpose_stream
   struct aggregate_layout agg_layout;
   struct aggregate_slot agg[2]; // indexed by flush_current
   struct shard_state shard;
+
+  // LOD (multiscale) state
+  struct lod_plan lod;
+  struct buffer d_linear;       // linear epoch buffer (device)
+  struct buffer d_morton;       // morton-ordered LOD output (all levels packed)
+  CUdeviceptr d_lod_full_shape; // device copy of shapes[0]
+  CUdeviceptr d_lod_shape;      // device copy of lod_shapes[0]
+  CUdeviceptr d_lod_ends;       // device copy of lod_plan.ends
+  CUdeviceptr d_lod_child_shapes[LOD_MAX_LEVELS];  // per-level child shapes
+  CUdeviceptr d_lod_parent_shapes[LOD_MAX_LEVELS]; // per-level parent shapes
+  CUdeviceptr d_lod_level_ends[LOD_MAX_LEVELS];    // per-level ends
+  CUevent t_lod_start;
+  CUevent t_lod_scatter_end;
+  CUevent t_lod_reduce_end;
+  CUevent t_lod_end;
+
+  // Per-level tile layout for morton-to-tile scatter
+  struct stream_layout
+    lod_layouts[LOD_MAX_LEVELS]; // [1..nlev-1], index 0 unused
+  CUdeviceptr
+    d_lod_lv_full_shapes[LOD_MAX_LEVELS]; // per-level device full shapes
+  CUdeviceptr
+    d_lod_lv_lod_shapes[LOD_MAX_LEVELS]; // per-level device lod shapes
+  struct buffer d_lod_tiles; // unified tile buffer for all LOD levels
+  uint64_t lod_tile_ends[LOD_MAX_LEVELS]; // exclusive end offsets in elements
+
+  // Per-level compress + aggregate + shard delivery
+  struct
+  {
+    struct buffer d_compressed; // compressed tiles for this level
+    void** d_uncomp_ptrs;       // device [M_level]
+    void** d_comp_ptrs;         // device [M_level]
+    size_t* d_comp_sizes;       // device [M_level]
+    size_t* d_uncomp_sizes;     // device [M_level]
+    void* d_comp_temp;
+    size_t comp_temp_bytes;
+    size_t max_comp_chunk_bytes;
+    size_t comp_pool_bytes;
+    struct aggregate_layout agg_layout;
+    struct aggregate_slot agg_slot;
+    struct shard_state shard;
+  } lod_levels[LOD_MAX_LEVELS]; // [1..nlev-1]
 };
 
-// Initialize a transpose_stream. Returns 0 on success, non-zero on error.
-// On failure, *out is zeroed and safe to pass to transpose_stream_destroy.
+// Initialize a tile_stream_gpu. Returns 0 on success, non-zero on error.
+// On failure, *out is zeroed and safe to pass to tile_stream_gpu_destroy.
 int
-transpose_stream_create(const struct transpose_stream_configuration* config,
-                        struct transpose_stream* out);
+tile_stream_gpu_create(const struct tile_stream_configuration* config,
+                       struct tile_stream_gpu* out);
 
 void
-transpose_stream_destroy(struct transpose_stream* stream);
+tile_stream_gpu_destroy(struct tile_stream_gpu* stream);
 
 // Dispatch to the writer's append method.
 struct writer_result
@@ -207,4 +261,4 @@ writer_append_wait(struct writer* w, struct slice data);
 
 // Return accumulated timing metrics.
 struct stream_metrics
-transpose_stream_get_metrics(const struct transpose_stream* s);
+tile_stream_gpu_get_metrics(const struct tile_stream_gpu* s);

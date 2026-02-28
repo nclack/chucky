@@ -1,6 +1,7 @@
 // morton.util.c — shared CPU reference for LOD via compacted Morton codes.
 // Intended to be #include'd (no main).
 
+#include "lod_plan.h"
 #include "prelude.h"
 
 #include <math.h>
@@ -8,8 +9,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define MAX_NDIM 64
-#define MAX_LOD 32
+#define MAX_NDIM LOD_MAX_NDIM
+#define MAX_LOD  LOD_MAX_LEVELS
 
 static uint64_t
 max_shape(int ndim, const uint64_t* shape)
@@ -37,15 +38,6 @@ clamped_extent(uint64_t shape_d, uint64_t lo, uint64_t scale)
     return 0;
   uint64_t e = shape_d - lo;
   return (e < scale) ? e : scale;
-}
-
-static int
-is_all_ones(int n, const uint64_t* v)
-{
-  for (int d = 0; d < n; ++d)
-    if (v[d] > 1)
-      return 0;
-  return 1;
 }
 
 static void
@@ -163,89 +155,7 @@ morton_rank_ref(int ndim, const uint64_t* shape, uint64_t k)
   return count;
 }
 
-// --- LOD plan ---
-
-struct slice
-{
-  uint64_t beg, end;
-};
-
-static uint64_t
-slice_len(struct slice s)
-{
-  return s.end - s.beg;
-}
-
-struct spans
-{
-  uint64_t* ends;
-  uint64_t n;
-};
-
-static struct slice
-spans_at(const struct spans* s, uint64_t i)
-{
-  return (struct slice){
-    .beg = i > 0 ? s->ends[i - 1] : 0,
-    .end = s->ends[i],
-  };
-}
-
-struct lod_plan
-{
-  int ndim;
-  int nlev;
-  uint64_t shapes[MAX_LOD][MAX_NDIM];
-
-  uint8_t ds_mask;
-  int ds_ndim;
-  int ds_map[MAX_NDIM];
-  int batch_ndim;
-  int batch_map[MAX_NDIM];
-  uint64_t batch_shape[MAX_NDIM];
-  uint64_t batch_count;
-
-  uint64_t ds_shapes[MAX_LOD][MAX_NDIM];
-  uint64_t ds_counts[MAX_LOD];
-
-  struct spans levels;
-  struct spans ds_levels;
-  uint64_t* ends;
-};
-
-static struct slice
-lod_segment(const struct lod_plan* p, int level)
-{
-  struct slice next = spans_at(&p->ds_levels, level + 1);
-  uint64_t base = p->ds_levels.ends[0];
-  return (struct slice){ .beg = next.beg - base, .end = next.end - base };
-}
-
-static void
-lod_plan_free(struct lod_plan* p);
-
-static void
-lod_fill_ends(int ndim,
-              const uint64_t* child_shape,
-              const uint64_t* parent_shape,
-              uint64_t n_parents,
-              uint64_t* ends)
-{
-  int p = ceil_log2(max_shape(ndim, parent_shape));
-
-  uint64_t coords[MAX_NDIM];
-  uint64_t next[MAX_NDIM];
-  for (uint64_t j = 0; j < n_parents; ++j) {
-    linear_to_coords(ndim, parent_shape, j, coords);
-    uint64_t pos = morton_rank(ndim, parent_shape, coords, 0);
-
-    memcpy(next, coords, (size_t)ndim * sizeof(uint64_t));
-    coords_morton_next(ndim, p, next);
-    uint64_t val = morton_rank(ndim, child_shape, next, 1);
-
-    ends[pos] = val;
-  }
-}
+// --- CPU reference functions using lod_plan ---
 
 static uint64_t
 plan_batch_index(const struct lod_plan* p, const uint64_t* full_coords)
@@ -259,136 +169,40 @@ plan_batch_index(const struct lod_plan* p, const uint64_t* full_coords)
 }
 
 static void
-plan_extract_ds(const struct lod_plan* p,
-                const uint64_t* full_coords,
-                uint64_t* ds_coords)
+plan_extract_lod(const struct lod_plan* p,
+                 const uint64_t* full_coords,
+                 uint64_t* lod_coords)
 {
-  for (int k = 0; k < p->ds_ndim; ++k)
-    ds_coords[k] = full_coords[p->ds_map[k]];
-}
-
-static int
-lod_plan_init(struct lod_plan* p,
-              int ndim,
-              const uint64_t* shape,
-              uint8_t ds_mask,
-              int max_levels)
-{
-  memset(p, 0, sizeof(*p));
-  p->ndim = ndim;
-  p->ds_mask = ds_mask;
-
-  for (int d = 0; d < ndim; ++d) {
-    if (ds_mask & (1 << d)) {
-      p->ds_map[p->ds_ndim++] = d;
-    } else {
-      p->batch_map[p->batch_ndim] = d;
-      p->batch_shape[p->batch_ndim] = shape[d];
-      p->batch_ndim++;
-    }
-  }
-  p->batch_count = 1;
-  for (int k = 0; k < p->batch_ndim; ++k)
-    p->batch_count *= p->batch_shape[k];
-
-  memcpy(p->shapes[0], shape, (size_t)ndim * sizeof(uint64_t));
-  for (int k = 0; k < p->ds_ndim; ++k)
-    p->ds_shapes[0][k] = shape[p->ds_map[k]];
-
-  p->nlev = 1;
-  while (p->nlev < max_levels &&
-         !is_all_ones(p->ds_ndim, p->ds_shapes[p->nlev - 1])) {
-    for (int k = 0; k < p->ds_ndim; ++k)
-      p->ds_shapes[p->nlev][k] = (p->ds_shapes[p->nlev - 1][k] + 1) / 2;
-    memcpy(p->shapes[p->nlev], p->shapes[p->nlev - 1],
-           (size_t)ndim * sizeof(uint64_t));
-    for (int k = 0; k < p->ds_ndim; ++k)
-      p->shapes[p->nlev][p->ds_map[k]] = p->ds_shapes[p->nlev][k];
-    ++p->nlev;
-  }
-
-  for (int k = 0; k < p->nlev; ++k) {
-    p->ds_counts[k] = 1;
-    for (int d = 0; d < p->ds_ndim; ++d)
-      p->ds_counts[k] *= p->ds_shapes[k][d];
-  }
-
-  p->ds_levels.n = (uint64_t)p->nlev;
-  p->ds_levels.ends = (uint64_t*)malloc(p->nlev * sizeof(uint64_t));
-  if (!p->ds_levels.ends)
-    goto Fail;
-  p->ds_levels.ends[0] = p->ds_counts[0];
-  for (int k = 1; k < p->nlev; ++k)
-    p->ds_levels.ends[k] = p->ds_levels.ends[k - 1] + p->ds_counts[k];
-
-  p->levels.n = (uint64_t)p->nlev;
-  p->levels.ends = (uint64_t*)malloc(p->nlev * sizeof(uint64_t));
-  if (!p->levels.ends)
-    goto Fail;
-  for (int k = 0; k < p->nlev; ++k)
-    p->levels.ends[k] = p->batch_count * p->ds_levels.ends[k];
-
-  {
-    uint64_t total_ends =
-      p->ds_levels.ends[p->nlev - 1] - p->ds_levels.ends[0];
-    if (total_ends > 0) {
-      p->ends = (uint64_t*)malloc(total_ends * sizeof(uint64_t));
-      if (!p->ends)
-        goto Fail;
-      for (int l = 0; l < p->nlev - 1; ++l) {
-        struct slice seg = lod_segment(p, l);
-        lod_fill_ends(p->ds_ndim,
-                      p->ds_shapes[l],
-                      p->ds_shapes[l + 1],
-                      slice_len(seg),
-                      p->ends + seg.beg);
-      }
-    }
-  }
-
-  return 1;
-Fail:
-  lod_plan_free(p);
-  return 0;
+  for (int k = 0; k < p->lod_ndim; ++k)
+    lod_coords[k] = full_coords[p->lod_map[k]];
 }
 
 static void
-lod_plan_free(struct lod_plan* p)
-{
-  if (!p)
-    return;
-  free(p->levels.ends);
-  free(p->ds_levels.ends);
-  free(p->ends);
-  memset(p, 0, sizeof(*p));
-}
-
-static void
-lod_scatter(const struct lod_plan* p, const float* src, float* dst)
+lod_scatter_cpu(const struct lod_plan* p, const float* src, float* dst)
 {
   const uint64_t* full_shape = p->shapes[0];
-  uint64_t n = slice_len(spans_at(&p->levels, 0));
+  uint64_t n = lod_span_len(lod_spans_at(&p->levels, 0));
 
   uint64_t full_coords[MAX_NDIM];
-  uint64_t ds_coords[MAX_NDIM];
+  uint64_t lod_coords[MAX_NDIM];
   for (uint64_t i = 0; i < n; ++i) {
     linear_to_coords(p->ndim, full_shape, i, full_coords);
     uint64_t b = plan_batch_index(p, full_coords);
-    plan_extract_ds(p, full_coords, ds_coords);
-    uint64_t pos = morton_rank(p->ds_ndim, p->ds_shapes[0], ds_coords, 0);
-    dst[b * p->ds_counts[0] + pos] = src[i];
+    plan_extract_lod(p, full_coords, lod_coords);
+    uint64_t pos = morton_rank(p->lod_ndim, p->lod_shapes[0], lod_coords, 0);
+    dst[b * p->lod_counts[0] + pos] = src[i];
   }
 }
 
 static void
-lod_reduce(const struct lod_plan* p, float* values)
+lod_reduce_cpu(const struct lod_plan* p, float* values)
 {
   for (int l = 0; l < p->nlev - 1; ++l) {
-    struct slice seg = lod_segment(p, l);
-    uint64_t src_ds = p->ds_counts[l];
-    uint64_t dst_ds = p->ds_counts[l + 1];
-    struct slice src_level = spans_at(&p->levels, l);
-    struct slice dst_level = spans_at(&p->levels, l + 1);
+    struct lod_span seg = lod_segment(p, l);
+    uint64_t src_ds = p->lod_counts[l];
+    uint64_t dst_ds = p->lod_counts[l + 1];
+    struct lod_span src_level = lod_spans_at(&p->levels, l);
+    struct lod_span dst_level = lod_spans_at(&p->levels, l + 1);
 
     for (uint64_t b = 0; b < p->batch_count; ++b) {
       uint64_t src_base = src_level.beg + b * src_ds;
@@ -418,8 +232,8 @@ lod_compute(const struct lod_plan* p, const float* src, float** out_values)
   CHECK(Error, values);
   *out_values = values;
 
-  lod_scatter(p, src, values);
-  lod_reduce(p, values);
+  lod_scatter_cpu(p, src, values);
+  lod_reduce_cpu(p, values);
 
   ok = 1;
 Error:
@@ -496,13 +310,13 @@ morton_unshuffle(const struct lod_plan* p,
     n *= full_shape[d];
 
   uint64_t full_coords[MAX_NDIM];
-  uint64_t ds_coords[MAX_NDIM];
+  uint64_t lod_coords[MAX_NDIM];
   for (uint64_t i = 0; i < n; ++i) {
     linear_to_coords(p->ndim, full_shape, i, full_coords);
     uint64_t b = plan_batch_index(p, full_coords);
-    plan_extract_ds(p, full_coords, ds_coords);
+    plan_extract_lod(p, full_coords, lod_coords);
     uint64_t pos =
-      morton_rank(p->ds_ndim, p->ds_shapes[level], ds_coords, 0);
-    rowmajor[i] = morton_buf[b * p->ds_counts[level] + pos];
+      morton_rank(p->lod_ndim, p->lod_shapes[level], lod_coords, 0);
+    rowmajor[i] = morton_buf[b * p->lod_counts[level] + pos];
   }
 }

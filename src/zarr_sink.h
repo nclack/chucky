@@ -39,5 +39,34 @@ void zarr_sink_destroy(struct zarr_sink* s);
 // Block until all queued I/O has completed.
 void zarr_sink_flush(struct zarr_sink* s);
 
-// Get the shard_sink interface for use with transpose_stream.
+// Get the shard_sink interface for use with tile_stream_gpu.
 struct shard_sink* zarr_sink_as_shard_sink(struct zarr_sink* s);
+
+// --- Multiscale (OME-NGFF) ---
+
+struct zarr_multiscale_config
+{
+  const char* store_path; // root directory
+  enum zarr_dtype data_type;
+  double fill_value;
+  uint8_t rank;
+  const struct dimension* dimensions; // L0 dimensions
+  uint32_t lod_mask;                  // bitmask of dims to downsample
+  int nlev;                           // number of levels (0 = auto)
+};
+
+struct zarr_multiscale_sink;
+
+// Create a zarr v3 multiscale store. Creates one array per level ("0", "1", ...)
+// with correct downsampled shapes, plus OME-NGFF multiscales group metadata.
+// Returns NULL on error.
+struct zarr_multiscale_sink*
+zarr_multiscale_sink_create(const struct zarr_multiscale_config* cfg);
+
+void zarr_multiscale_sink_destroy(struct zarr_multiscale_sink* s);
+
+void zarr_multiscale_sink_flush(struct zarr_multiscale_sink* s);
+
+// Get the shard_sink interface (dispatches open to correct level).
+struct shard_sink*
+zarr_multiscale_sink_as_shard_sink(struct zarr_multiscale_sink* s);

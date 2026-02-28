@@ -1,5 +1,5 @@
-#include "prelude.h"
 #include "prelude.cuda.h"
+#include "prelude.h"
 #include "stream.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -224,7 +224,7 @@ test_shard_contents(void)
     { .size = 12, .tile_size = 3, .tiles_per_shard = 2 },
   };
 
-  const struct transpose_stream_configuration config = {
+  const struct tile_stream_configuration config = {
     .buffer_capacity_bytes = total_elements * sizeof(uint32_t),
     .bytes_per_element = sizeof(uint32_t),
     .rank = 3,
@@ -233,8 +233,8 @@ test_shard_contents(void)
     .shard_sink = &css.base,
   };
 
-  struct transpose_stream s;
-  CHECK(Fail1, transpose_stream_create(&config, &s) == 0);
+  struct tile_stream_gpu s;
+  CHECK(Fail1, tile_stream_gpu_create(&config, &s) == 0);
 
   log_info("  tile_elements=%lu  tile_stride=%lu  slot_count=%lu  "
            "epoch_elements=%lu",
@@ -424,14 +424,14 @@ test_shard_contents(void)
     }
   }
 
-  transpose_stream_destroy(&s);
+  tile_stream_gpu_destroy(&s);
   collecting_sink_free(&css);
   free(src);
   log_info("  PASS");
   return 0;
 
 Fail2:
-  transpose_stream_destroy(&s);
+  tile_stream_gpu_destroy(&s);
 Fail1:
   collecting_sink_free(&css);
 Fail0:

@@ -141,6 +141,25 @@ target_compile_options(aggregate
         $<$<COMPILE_LANGUAGE:CUDA>:${CUDA_HOST_WARN_FLAGS}>
 )
 
+add_library(lod_plan STATIC
+    lod_plan.c
+    lod_plan.h
+)
+
+target_include_directories(lod_plan
+    PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}
+)
+
+set_target_properties(lod_plan PROPERTIES
+    POSITION_INDEPENDENT_CODE ON
+)
+
+target_compile_options(lod_plan
+    PRIVATE
+        $<$<COMPILE_LANGUAGE:C>:${C_WARN_FLAGS}>
+)
+
 add_library(lod STATIC
     lod.cu
     lod.h
@@ -190,6 +209,8 @@ target_link_libraries(stream
         transpose
         compress
         aggregate
+        lod
+        lod_plan
         chucky_log
         CUDA::cuda_driver
 )
@@ -299,6 +320,7 @@ target_link_libraries(zarr_sink
         json_writer
         io_queue
         platform_io
+        lod_plan
         chucky_log
 )
 

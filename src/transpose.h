@@ -11,44 +11,15 @@ extern "C"
 
 #define MAX_RANK (64)
 
-  void transpose_u8_v0(CUdeviceptr d_dst_beg,
-                       CUdeviceptr d_dst_end,
-                       CUdeviceptr d_src_beg,
-                       CUdeviceptr d_src_end,
-                       uint64_t i_offset,
-                       uint8_t rank,
-                       const uint64_t* d_shape,
-                       const int64_t* d_strides,
-                       CUstream stream);
-
-  void transpose_u16_v0(CUdeviceptr d_dst_beg,
-                        CUdeviceptr d_dst_end,
-                        CUdeviceptr d_src_beg,
-                        CUdeviceptr d_src_end,
-                        uint64_t i_offset,
-                        uint8_t rank,
-                        const uint64_t* d_shape,
-                        const int64_t* d_strides,
-                        CUstream stream);
-
-  void transpose_u32_v0(CUdeviceptr d_dst_beg,
-                        CUdeviceptr d_dst_end,
-                        CUdeviceptr d_src_beg,
-                        CUdeviceptr d_src_end,
-                        uint64_t i_offset,
-                        uint8_t rank,
-                        const uint64_t* d_shape,
-                        const int64_t* d_strides,
-                        CUstream stream);
-  void transpose_u64_v0(CUdeviceptr d_dst_beg,
-                        CUdeviceptr d_dst_end,
-                        CUdeviceptr d_src_beg,
-                        CUdeviceptr d_src_end,
-                        uint64_t i_offset,
-                        uint8_t rank,
-                        const uint64_t* d_shape,
-                        const int64_t* d_strides,
-                        CUstream stream);
+  void transpose(CUdeviceptr d_dst_beg,
+                 CUdeviceptr d_src_beg,
+                 uint64_t src_bytes,
+                 uint8_t bpe,
+                 uint64_t i_offset,
+                 uint8_t rank,
+                 const uint64_t* d_shape,
+                 const int64_t* d_strides,
+                 CUstream stream);
 #ifdef __cplusplus
 }
 #endif

@@ -204,15 +204,15 @@ test_transpose_u16_basic(void)
   CU(Fail, cuMemcpyHtoD(d_strides, strides64, rank * sizeof(int64_t)));
 
   // Call the CUDA transpose kernel
-  transpose_u16_v0(d_dst,
-                   d_dst + n * sizeof(uint16_t),
-                   d_src,
-                   d_src + n * sizeof(uint16_t),
-                   0, // i_offset (start at input index 0)
-                   rank,
-                   (const uint64_t*)d_shape,
-                   (const int64_t*)d_strides,
-                   stream);
+  transpose(d_dst,
+            d_src,
+            n * sizeof(uint16_t),
+            sizeof(uint16_t),
+            0, // i_offset (start at input index 0)
+            rank,
+            (const uint64_t*)d_shape,
+            (const int64_t*)d_strides,
+            stream);
 
   // Copy results back to host
   CU(Fail, cuMemcpyDtoHAsync(actual, d_dst, n * sizeof(uint16_t), stream));
@@ -345,15 +345,15 @@ test_transpose_u16_with_offset(void)
   CU(Fail, cuMemcpyHtoD(d_strides, strides64, rank * sizeof(int64_t)));
 
   // Call the CUDA transpose kernel with offset
-  transpose_u16_v0(d_dst,
-                   d_dst + n * sizeof(uint16_t),
-                   d_src,
-                   d_src + count * sizeof(uint16_t),
-                   i_offset,
-                   rank,
-                   (const uint64_t*)d_shape,
-                   (const int64_t*)d_strides,
-                   stream);
+  transpose(d_dst,
+            d_src,
+            count * sizeof(uint16_t),
+            sizeof(uint16_t),
+            i_offset,
+            rank,
+            (const uint64_t*)d_shape,
+            (const int64_t*)d_strides,
+            stream);
 
   // Copy results back to host
   CU(Fail, cuMemcpyDtoHAsync(actual, d_dst, n * sizeof(uint16_t), stream));

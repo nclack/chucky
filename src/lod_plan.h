@@ -1,0 +1,60 @@
+#pragma once
+
+#include <stdint.h>
+
+#define LOD_MAX_NDIM 64
+#define LOD_MAX_LEVELS 32
+
+struct lod_span
+{
+  uint64_t beg, end;
+};
+
+struct lod_spans
+{
+  uint64_t* ends;
+  uint64_t n;
+};
+
+struct lod_plan
+{
+  int ndim;
+  int nlev;
+  uint64_t shapes[LOD_MAX_LEVELS][LOD_MAX_NDIM];
+
+  uint8_t lod_mask;
+  int lod_ndim;
+  int lod_map[LOD_MAX_NDIM];
+  int batch_ndim;
+  int batch_map[LOD_MAX_NDIM];
+  uint64_t batch_shape[LOD_MAX_NDIM];
+  uint64_t batch_count;
+
+  uint64_t lod_shapes[LOD_MAX_LEVELS][LOD_MAX_NDIM];
+  uint64_t lod_counts[LOD_MAX_LEVELS];
+
+  struct lod_spans levels;
+  struct lod_spans lod_levels;
+  uint64_t* ends;
+};
+
+uint64_t
+lod_span_len(struct lod_span s);
+
+struct lod_span
+lod_spans_at(const struct lod_spans* s, uint64_t i);
+
+// Return the segment within the ends array for the given level.
+struct lod_span
+lod_segment(const struct lod_plan* p, int level);
+
+// Initialize a plan. Returns 1 on success, 0 on failure.
+int
+lod_plan_init(struct lod_plan* p,
+              int ndim,
+              const uint64_t* shape,
+              uint8_t lod_mask,
+              int max_levels);
+
+void
+lod_plan_free(struct lod_plan* p);

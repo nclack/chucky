@@ -40,7 +40,6 @@
             nixd
             perf
             pkg-config
-            spdlog
             zstd
           ];
         };

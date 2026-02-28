@@ -56,7 +56,7 @@ static int
 test_lod(const char* label,
          int ndim,
          const uint64_t* shape,
-         uint8_t ds_mask)
+         uint8_t lod_mask)
 {
   printf("--- %s ---\n", label);
   int ok = 0;
@@ -76,9 +76,9 @@ test_lod(const char* label,
   for (uint64_t i = 0; i < n; ++i)
     src[i] = (float)(i + 1);
 
-  CHECK(Fail, lod_plan_init(&plan, ndim, shape, ds_mask, MAX_LOD));
-  printf("  ds_mask=0x%x  ds_ndim=%d  batch_ndim=%d  batch_count=%llu\n",
-         ds_mask, plan.ds_ndim, plan.batch_ndim,
+  CHECK(Fail, lod_plan_init(&plan, ndim, shape, lod_mask, MAX_LOD));
+  printf("  lod_mask=0x%x  lod_ndim=%d  batch_ndim=%d  batch_count=%llu\n",
+         lod_mask, plan.lod_ndim, plan.batch_ndim,
          (unsigned long long)plan.batch_count);
 
   CHECK(Fail, lod_compute(&plan, src, &values));
@@ -118,12 +118,12 @@ test_lod(const char* label,
   for (int l = 1; l < plan.nlev; ++l) {
     const uint64_t* prev_shape = plan.shapes[l - 1];
     const uint64_t* cur_shape = plan.shapes[l];
-    struct slice lev = spans_at(&plan.levels, l);
-    uint64_t cur_n = slice_len(lev);
+    struct lod_span lev = lod_spans_at(&plan.levels, l);
+    uint64_t cur_n = lod_span_len(lev);
 
     ref = (float*)malloc(cur_n * sizeof(float));
     CHECK(Fail, ref);
-    downsample_ref(ndim, ds_mask, prev_shape, cur_shape, prev_rm, ref);
+    downsample_ref(ndim, lod_mask, prev_shape, cur_shape, prev_rm, ref);
 
     cur_rm = (float*)malloc(cur_n * sizeof(float));
     CHECK(Fail, cur_rm);

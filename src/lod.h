@@ -14,7 +14,7 @@ extern "C"
     lod_dtype_f32,
   };
 
-  struct m2t_layout
+  struct morton_tile_layout
   {
     enum lod_dtype dtype;
     int ndim;
@@ -61,14 +61,14 @@ extern "C"
                   uint64_t batch_count,
                   CUstream stream);
 
-  // Pre-compute lod_nlod (= ceil_log2(max(lod_shape))) for m2t_layout.
-  int lod_m2t_lod_nlod(int lod_ndim, const uint64_t* lod_shape_host);
+  // Pre-compute lod_nlod (= ceil_log2(max(lod_shape))) for morton_tile_layout.
+  int lod_morton_tile_nlod(int lod_ndim, const uint64_t* lod_shape_host);
 
   // Morton-to-tile scatter: reads morton-ordered LOD data and writes into
-  // tile-pool layout using lifted strides. See struct m2t_layout.
+  // tile-pool layout using lifted strides. See struct morton_tile_layout.
   void lod_morton_to_tiles(CUdeviceptr d_tiles,
                            CUdeviceptr d_morton,
-                           const struct m2t_layout* layout,
+                           const struct morton_tile_layout* layout,
                            CUstream stream);
 
 #ifdef __cplusplus

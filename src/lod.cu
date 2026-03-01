@@ -501,7 +501,7 @@ lod_fill_ends_gpu(CUdeviceptr d_ends,
 }
 
 extern "C" int
-lod_m2t_lod_nlod(int lod_ndim, const uint64_t* lod_shape_host)
+lod_morton_tile_nlod(int lod_ndim, const uint64_t* lod_shape_host)
 {
   return ceil_log2_h(max_shape_h(lod_ndim, lod_shape_host));
 }
@@ -509,7 +509,7 @@ lod_m2t_lod_nlod(int lod_ndim, const uint64_t* lod_shape_host)
 extern "C" void
 lod_morton_to_tiles(CUdeviceptr d_tiles,
                     CUdeviceptr d_morton,
-                    const struct m2t_layout* layout,
+                    const struct morton_tile_layout* layout,
                     CUstream stream)
 {
   int ndim = layout->ndim;

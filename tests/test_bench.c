@@ -403,7 +403,7 @@ print_bench_report(const struct tile_stream_gpu* s,
   print_metric_row(&m.scatter, scatter_per_dispatch);
   print_metric_row(&m.lod_scatter, pool_bytes);
   print_metric_row(&m.lod_reduce, pool_bytes);
-  print_metric_row(&m.lod_m2t, pool_bytes);
+  print_metric_row(&m.lod_morton_tile, pool_bytes);
   print_metric_row(&m.compress, pool_bytes);
   double agg_per = m.aggregate.count > 0
                      ? m.aggregate.total_bytes / m.aggregate.count
@@ -579,7 +579,7 @@ test_bench_multiscale(void)
 
   CHECK(Fail, tile_stream_gpu_create(&config, &s) == 0);
   log_bench_header(&s, total_bytes, total_elements);
-  log_info("  LOD levels:  %d", s.lod.nlev);
+  log_info("  LOD levels:  %d", s.lod.plan.nlev);
 
   xor_pattern_init(dims, 5, 2);
 

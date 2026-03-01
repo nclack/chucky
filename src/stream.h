@@ -50,7 +50,7 @@ struct stream_metrics
   struct stream_metric h2d;
   struct stream_metric lod_scatter;
   struct stream_metric lod_reduce;
-  struct stream_metric lod_m2t;
+  struct stream_metric lod_morton_tile;
   struct stream_metric scatter;
   struct stream_metric compress;
   struct stream_metric aggregate;
@@ -156,9 +156,9 @@ struct shard_state
 // flush[0] is used for A-pool epochs, flush[1] for B-pool epochs.
 struct flush_slot_gpu
 {
-  struct buffer d_compressed; // device: M0 * max_comp_chunk_bytes
-  void** d_uncomp_ptrs;       // device [M0], pre-built at init
-  void** d_comp_ptrs;         // device [M0], pre-built at init
+  struct buffer d_compressed; // device: total_tiles * max_chunk_bytes
+  void** d_uncomp_ptrs;       // device [total_tiles], pre-built at init
+  void** d_comp_ptrs;         // device [total_tiles], pre-built at init
   CUevent t_compress_start;
   CUevent t_d2h_start;
   CUevent ready; // signals all D2H for this slot is done
@@ -181,13 +181,38 @@ struct codec_state
 
 struct lod_level_state
 {
-  struct buffer d_compressed; // compressed tiles for this level
-  void** d_uncomp_ptrs;       // device [M_level]
-  void** d_comp_ptrs;         // device [M_level]
-  struct codec_state codec;
   struct aggregate_layout agg_layout;
-  struct aggregate_slot agg_slot;
+  struct aggregate_slot agg[2]; // double-buffered, indexed by flush_current
   struct shard_state shard;
+};
+
+struct lod_state
+{
+  struct lod_plan plan;
+
+  struct buffer d_linear;  // linear epoch buffer (device)
+  struct buffer d_morton;  // morton-ordered LOD output (all levels packed)
+
+  CUdeviceptr d_full_shape;  // device copy of shapes[0]
+  CUdeviceptr d_lod_shape;   // device copy of lod_shapes[0]
+  CUdeviceptr d_ends;        // device copy of ends
+
+  CUdeviceptr d_child_shapes[LOD_MAX_LEVELS];
+  CUdeviceptr d_parent_shapes[LOD_MAX_LEVELS];
+  CUdeviceptr d_level_ends[LOD_MAX_LEVELS];
+
+  // Per-level tile layouts [1..nlev-1], index 0 unused
+  struct stream_layout layouts[LOD_MAX_LEVELS];
+  CUdeviceptr d_lv_full_shapes[LOD_MAX_LEVELS];
+  CUdeviceptr d_lv_lod_shapes[LOD_MAX_LEVELS];
+
+  // Morton-to-tile layout structs: [0] = L0, [1..nlev-1] = LOD levels
+  struct morton_tile_layout morton_tile[LOD_MAX_LEVELS];
+
+  CUevent t_start;
+  CUevent t_scatter_end;
+  CUevent t_reduce_end;
+  CUevent t_end;
 };
 
 struct tile_stream_gpu
@@ -201,53 +226,28 @@ struct tile_stream_gpu
   struct stream_metrics metrics;
   uint64_t cursor;
 
-  // Tile pools
-  struct double_buffer pools; // M0 * tile_stride * bpe each
+  // Tile pools — unified across all levels
+  struct double_buffer pools; // total_tiles * tile_stride * bpe each
 
   // Flush pipeline
   struct flush_slot_gpu flush[2]; // [0]=A epochs, [1]=B epochs
   int flush_current;              // 0 or 1
   int flush_pending;
 
-  // Compress (shared across flushes)
-  struct codec_state codec; // L0 shared compress state
+  // Unified compression state (sized for total_tiles)
+  struct codec_state codec;
+  uint64_t total_tiles;                        // sum of all level tile counts
+  uint64_t level_tile_offset[LOD_MAX_LEVELS];  // first tile index per level
+  uint64_t level_tile_count[LOD_MAX_LEVELS];   // tiles_per_epoch per level
 
-  // Aggregate + shard
-  struct aggregate_layout agg_layout;
-  struct aggregate_slot agg[2]; // indexed by flush_current
-  struct shard_state shard;
+  int nlev; // 1 when multiscale off, lod.nlev when on
 
   // LOD (multiscale) state
-  struct lod_plan lod;
-  struct buffer d_linear;       // linear epoch buffer (device)
-  struct buffer d_morton;       // morton-ordered LOD output (all levels packed)
-  CUdeviceptr d_lod_full_shape; // device copy of shapes[0]
-  CUdeviceptr d_lod_shape;      // device copy of lod_shapes[0]
-  CUdeviceptr d_lod_ends;       // device copy of lod_plan.ends
-  CUdeviceptr d_lod_child_shapes[LOD_MAX_LEVELS];  // per-level child shapes
-  CUdeviceptr d_lod_parent_shapes[LOD_MAX_LEVELS]; // per-level parent shapes
-  CUdeviceptr d_lod_level_ends[LOD_MAX_LEVELS];    // per-level ends
-  CUevent t_lod_start;
-  CUevent t_lod_scatter_end;
-  CUevent t_lod_reduce_end;
-  CUevent t_lod_end;
-
-  // Morton-to-tile layout structs (pre-computed at init)
-  struct m2t_layout m2t_l0;                     // L0 morton-to-tile layout
-  struct m2t_layout m2t_levels[LOD_MAX_LEVELS]; // [1..nlev-1]
-
-  // Per-level tile layout for morton-to-tile scatter
-  struct stream_layout
-    lod_layouts[LOD_MAX_LEVELS]; // [1..nlev-1], index 0 unused
-  CUdeviceptr
-    d_lod_lv_full_shapes[LOD_MAX_LEVELS]; // per-level device full shapes
-  CUdeviceptr
-    d_lod_lv_lod_shapes[LOD_MAX_LEVELS]; // per-level device lod shapes
-  struct buffer d_lod_tiles; // unified tile buffer for all LOD levels
-  uint64_t lod_tile_ends[LOD_MAX_LEVELS]; // exclusive end offsets in elements
-
-  // Per-level compress + aggregate + shard delivery
-  struct lod_level_state lod_levels[LOD_MAX_LEVELS]; // [1..nlev-1]
+  struct lod_state lod;
+  // Per-level aggregate + shard delivery
+  // lod_levels[0] = L0 state (agg_layout, agg[2], shard)
+  // lod_levels[1..nlev-1] = LOD levels
+  struct lod_level_state lod_levels[LOD_MAX_LEVELS];
 };
 
 // Initialize a tile_stream_gpu. Returns 0 on success, non-zero on error.

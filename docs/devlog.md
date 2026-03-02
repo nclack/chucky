@@ -1,7 +1,29 @@
 # dev log
 
+## TODO
+
 - [ ] interface for streaming from device, integrating with a cuda stream
 - [ ] "append dimension" semantics for dim0
+- [ ] lod for dim0 
+- [x] uniform handling of tiles across lods for compress and aggregate
+- [x] uniform handling of tiles for shard writer
+- [x] shard writer handles lods
+- [x] replicate boundary condition
+- [x] min, max, median, 2-max
+- [x] verify the multiscale zarr is visualizable
+- [x] make sure we're using the right condition to stop downsampling. all
+      dims need to be bigger than tile size
+- [x] add metrics, bench
+- [ ] optimize buffering for compression stage - may need more than one epoch
+- [ ] optimize lod scatter, lod gather kernels.
+- [ ] short-circuit copy before lod scatter
+
+## 2026-03-02
+
+Adding more reduce methods - min, max, median, min suppressed, max suppressed.
+
+Re-valuating some of the past todo's
+
 
 ## 2026-03-01
 
@@ -42,7 +64,8 @@ Current benchmark on oreb (5090)
   Throughput:    2.74 GiB/s
 ```
 
-I confirmed I could write ngff zarr's compatible with neuroglancer.
+I confirmed I could write ngff zarr's compatible with neuroglancer. Needed
+to fix transforms
 
 Added Lz4 compression.
 

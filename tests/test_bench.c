@@ -6,6 +6,7 @@
 #include "test_data.h"
 #include "zarr_sink.h"
 
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -456,11 +457,10 @@ run_bench(const char* label,
 
   {
     struct sink_stats ss =
-      output_path
-        ? (struct sink_stats){ .total_bytes = meter.total_bytes,
-                               .sink = &meter.metric }
-        : (struct sink_stats){ .total_bytes = dss.total_bytes,
-                               .sink = &dss.sink };
+      output_path ? (struct sink_stats){ .total_bytes = meter.total_bytes,
+                                         .sink = &meter.metric }
+                  : (struct sink_stats){ .total_bytes = dss.total_bytes,
+                                         .sink = &dss.sink };
     print_bench_report(&s, &ss, total_bytes, total_elements, wall_s);
   }
 
@@ -500,41 +500,45 @@ main(int ac, char* av[])
   CU(Fail, cuCtxCreate(&ctx, 0, dev));
 
   ecode |= test_compressed_small();
-  
-  #if 0
-      const int downsample[] = {1,2,3};
-      struct dimension dims[] = {
-        { .size = 1000, .tile_size = 2,  .tiles_per_shard = 32, .name = "t" },
-        { .size = 256,  .tile_size = 16, .tiles_per_shard = 8, .name = "z" },
-        { .size = 256,  .tile_size = 16, .tiles_per_shard = 8, .name = "y" },
-        { .size = 256,  .tile_size = 16, .tiles_per_shard = 8, .name = "x" },
-        { .size = 3,    .tile_size = 1,  .tiles_per_shard = 3, .name = "c" },
-      };
 
-      xor_pattern_init(dims, 5, 16);
-  #else
-      // Orca Quest 2, splitting the fov into two color channels along y
-      const int downsample[] = { 2, 3 };
-      struct dimension dims[] = {
-        { .size = 10000,  .tile_size = 16,   .tiles_per_shard = 128,.name = "t" },
-        { .size = 2,     .tile_size = 1,    .tiles_per_shard = 2, .name = "c" },
-        { .size = 2048,  .tile_size = 128,  .tiles_per_shard = 9, .name = "y" },
-        { .size = 2304,  .tile_size = 128,  .tiles_per_shard = 9, .name = "x" },
-      };
+#if 1
+  const int downsample[] = { 1, 2, 3 };
+  struct dimension dims[] = {
+    { .size = 1000, .tile_size = 2, .tiles_per_shard = 32, .name = "t" },
+    { .size = 256, .tile_size = 16, .tiles_per_shard = 8, .name = "z" },
+    { .size = 256, .tile_size = 16, .tiles_per_shard = 8, .name = "y" },
+    { .size = 256, .tile_size = 16, .tiles_per_shard = 8, .name = "x" },
+    { .size = 3, .tile_size = 1, .tiles_per_shard = 3, .name = "c" },
+  };
 
-      xor_pattern_init(dims, countof(dims), 16);
-  #endif
-  
+  xor_pattern_init(dims, 5, 16);
+#else
+  // Orca Quest 2, splitting the fov into two color channels along y
+  const int downsample[] = { 2, 3 };
+  struct dimension dims[] = {
+    { .size = 1000, .tile_size = 16, .tiles_per_shard = 128, .name = "t" },
+    { .size = 2, .tile_size = 1, .tiles_per_shard = 2, .name = "c" },
+    { .size = 2048, .tile_size = 128, .tiles_per_shard = 9, .name = "y" },
+    { .size = 2304, .tile_size = 128, .tiles_per_shard = 9, .name = "x" },
+  };
+
+  xor_pattern_init(dims, countof(dims), 16);
+#endif
+
   if (!ecode)
-        ecode |=
+    ecode |=
       run_bench("bench", dims, countof(dims), fill_xor, output_path, "single");
 
-  for (int i = 0; i < countof(downsample); ++i)
+  for (uint32_t i = 0; i < countof(downsample); ++i)
     dims[downsample[i]].downsample = 1;
 
   if (!ecode)
-    ecode |= run_bench(
-      "bench_multiscale", dims, countof(dims), fill_xor, output_path, "multiscale");
+    ecode |= run_bench("bench_multiscale",
+                       dims,
+                       countof(dims),
+                       fill_xor,
+                       output_path,
+                       "multiscale");
 
   xor_pattern_free();
   cuCtxDestroy(ctx);

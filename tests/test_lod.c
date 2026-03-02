@@ -66,7 +66,8 @@ test_lod_metrics_report(const struct test_lod_metrics* m)
 static float*
 lod_compute_gpu(const struct lod_plan* p,
                 const float* src,
-                struct test_lod_metrics* metrics)
+                struct test_lod_metrics* metrics,
+                enum lod_reduce_method method)
 {
   float* result = NULL;
   CUstream stream = NULL;
@@ -131,7 +132,7 @@ lod_compute_gpu(const struct lod_plan* p,
     struct lod_span src_level = lod_spans_at(&p->levels, l);
     struct lod_span dst_level = lod_spans_at(&p->levels, l + 1);
 
-    lod_reduce(d_values, d_ends, lod_dtype_f32,
+    lod_reduce(d_values, d_ends, lod_dtype_f32, method,
                src_level.beg, dst_level.beg,
                p->lod_counts[l], p->lod_counts[l + 1],
                p->batch_count, stream);
@@ -167,11 +168,12 @@ Fail:
 }
 
 static int
-test_lod_gpu(const char* label,
-             int ndim,
-             const uint64_t* shape,
-             uint8_t lod_mask,
-             int niter)
+test_lod_gpu_method(const char* label,
+                    int ndim,
+                    const uint64_t* shape,
+                    uint8_t lod_mask,
+                    int niter,
+                    enum lod_reduce_method method)
 {
   printf("--- %s ---\n", label);
   int ok = 0;
@@ -194,13 +196,13 @@ test_lod_gpu(const char* label,
          lod_mask, plan.lod_ndim, plan.batch_ndim,
          (unsigned long long)plan.batch_count, plan.nlod);
 
-  CHECK(Fail, lod_compute(&plan, src, &cpu_values));
+  CHECK(Fail, lod_compute(&plan, src, &cpu_values, method));
 
   struct test_lod_metrics metrics;
   test_lod_metrics_init(&metrics);
   for (int iter = 0; iter < niter; ++iter) {
     free(gpu_values);
-    gpu_values = lod_compute_gpu(&plan, src, &metrics);
+    gpu_values = lod_compute_gpu(&plan, src, &metrics, method);
     CHECK(Fail, gpu_values);
   }
   test_lod_metrics_report(&metrics);
@@ -224,6 +226,17 @@ Fail:
   free(gpu_values);
   lod_plan_free(&plan);
   return ok;
+}
+
+static int
+test_lod_gpu(const char* label,
+             int ndim,
+             const uint64_t* shape,
+             uint8_t lod_mask,
+             int niter)
+{
+  return test_lod_gpu_method(label, ndim, shape, lod_mask, niter,
+                             lod_reduce_mean);
 }
 
 // --- u16 CPU reference ---
@@ -255,8 +268,86 @@ lod_scatter_cpu_u16(const struct lod_plan* p,
   }
 }
 
+static uint16_t
+reduce_window_u16(const uint16_t* src,
+                  uint64_t start,
+                  uint64_t end,
+                  enum lod_reduce_method method)
+{
+  uint64_t len = end - start;
+  switch (method) {
+    case lod_reduce_mean: {
+      uint32_t sum = 0;
+      for (uint64_t j = start; j < end; ++j)
+        sum += src[j];
+      return (uint16_t)(sum / (uint32_t)len);
+    }
+    case lod_reduce_min: {
+      uint16_t best = src[start];
+      for (uint64_t j = start + 1; j < end; ++j)
+        if (src[j] < best)
+          best = src[j];
+      return best;
+    }
+    case lod_reduce_max: {
+      uint16_t best = src[start];
+      for (uint64_t j = start + 1; j < end; ++j)
+        if (src[j] > best)
+          best = src[j];
+      return best;
+    }
+    case lod_reduce_median: {
+      uint16_t buf[16];
+      uint64_t n = (len <= 16) ? len : 16;
+      for (uint64_t j = 0; j < n; ++j)
+        buf[j] = src[start + j];
+      for (uint64_t i = 1; i < n; ++i) {
+        uint16_t key = buf[i];
+        uint64_t k = i;
+        while (k > 0 && buf[k - 1] > key) {
+          buf[k] = buf[k - 1];
+          --k;
+        }
+        buf[k] = key;
+      }
+      return buf[n / 2];
+    }
+    case lod_reduce_max_suppressed: {
+      uint16_t top1 = src[start], top2 = src[start];
+      if (len > 1) {
+        uint16_t v = src[start + 1];
+        if (v >= top1) { top2 = top1; top1 = v; }
+        else           { top2 = v; }
+        for (uint64_t j = start + 2; j < end; ++j) {
+          v = src[j];
+          if (v >= top1)      { top2 = top1; top1 = v; }
+          else if (v > top2)  { top2 = v; }
+        }
+      }
+      return top2;
+    }
+    case lod_reduce_min_suppressed: {
+      uint16_t bot1 = src[start], bot2 = src[start];
+      if (len > 1) {
+        uint16_t v = src[start + 1];
+        if (v <= bot1) { bot2 = bot1; bot1 = v; }
+        else           { bot2 = v; }
+        for (uint64_t j = start + 2; j < end; ++j) {
+          v = src[j];
+          if (v <= bot1)      { bot2 = bot1; bot1 = v; }
+          else if (v < bot2)  { bot2 = v; }
+        }
+      }
+      return bot2;
+    }
+  }
+  return 0;
+}
+
 static void
-lod_reduce_cpu_u16(const struct lod_plan* p, uint16_t* values)
+lod_reduce_cpu_u16(const struct lod_plan* p,
+                   uint16_t* values,
+                   enum lod_reduce_method method)
 {
   for (int l = 0; l < p->nlod - 1; ++l) {
     struct lod_span seg = lod_segment(p, l);
@@ -272,11 +363,8 @@ lod_reduce_cpu_u16(const struct lod_plan* p, uint16_t* values)
       for (uint64_t i = 0; i < dst_lod; ++i) {
         uint64_t start = (i > 0) ? p->ends[seg.beg + i - 1] : 0;
         uint64_t end = p->ends[seg.beg + i];
-        uint64_t len = end - start;
-        uint32_t sum = 0;
-        for (uint64_t j = start; j < end; ++j)
-          sum += values[src_base + j];
-        values[dst_base + i] = (uint16_t)(sum / (uint32_t)len);
+        values[dst_base + i] =
+          reduce_window_u16(values + src_base, start, end, method);
       }
     }
   }
@@ -285,7 +373,8 @@ lod_reduce_cpu_u16(const struct lod_plan* p, uint16_t* values)
 static int
 lod_compute_u16(const struct lod_plan* p,
                 const uint16_t* src,
-                uint16_t** out_values)
+                uint16_t** out_values,
+                enum lod_reduce_method method)
 {
   int ok = 0;
   *out_values = NULL;
@@ -296,7 +385,7 @@ lod_compute_u16(const struct lod_plan* p,
   *out_values = values;
 
   lod_scatter_cpu_u16(p, src, values);
-  lod_reduce_cpu_u16(p, values);
+  lod_reduce_cpu_u16(p, values, method);
 
   ok = 1;
 Error:
@@ -311,7 +400,8 @@ Error:
 static uint16_t*
 lod_compute_gpu_u16(const struct lod_plan* p,
                     const uint16_t* src,
-                    struct test_lod_metrics* metrics)
+                    struct test_lod_metrics* metrics,
+                    enum lod_reduce_method method)
 {
   uint16_t* result = NULL;
   CUstream stream = NULL;
@@ -376,7 +466,7 @@ lod_compute_gpu_u16(const struct lod_plan* p,
     struct lod_span src_level = lod_spans_at(&p->levels, l);
     struct lod_span dst_level = lod_spans_at(&p->levels, l + 1);
 
-    lod_reduce(d_values, d_ends, lod_dtype_u16,
+    lod_reduce(d_values, d_ends, lod_dtype_u16, method,
                src_level.beg, dst_level.beg,
                p->lod_counts[l], p->lod_counts[l + 1],
                p->batch_count, stream);
@@ -412,11 +502,12 @@ Fail:
 }
 
 static int
-test_lod_gpu_u16(const char* label,
-                 int ndim,
-                 const uint64_t* shape,
-                 uint8_t lod_mask,
-                 int niter)
+test_lod_gpu_u16_method(const char* label,
+                        int ndim,
+                        const uint64_t* shape,
+                        uint8_t lod_mask,
+                        int niter,
+                        enum lod_reduce_method method)
 {
   printf("--- %s ---\n", label);
   int ok = 0;
@@ -439,13 +530,13 @@ test_lod_gpu_u16(const char* label,
          lod_mask, plan.lod_ndim, plan.batch_ndim,
          (unsigned long long)plan.batch_count, plan.nlod);
 
-  CHECK(Fail, lod_compute_u16(&plan, src, &cpu_values));
+  CHECK(Fail, lod_compute_u16(&plan, src, &cpu_values, method));
 
   struct test_lod_metrics metrics;
   test_lod_metrics_init(&metrics);
   for (int iter = 0; iter < niter; ++iter) {
     free(gpu_values);
-    gpu_values = lod_compute_gpu_u16(&plan, src, &metrics);
+    gpu_values = lod_compute_gpu_u16(&plan, src, &metrics, method);
     CHECK(Fail, gpu_values);
   }
   test_lod_metrics_report(&metrics);
@@ -470,6 +561,17 @@ Fail:
   free(gpu_values);
   lod_plan_free(&plan);
   return ok;
+}
+
+static int
+test_lod_gpu_u16(const char* label,
+                 int ndim,
+                 const uint64_t* shape,
+                 uint8_t lod_mask,
+                 int niter)
+{
+  return test_lod_gpu_u16_method(label, ndim, shape, lod_mask, niter,
+                                 lod_reduce_mean);
 }
 
 int
@@ -536,6 +638,52 @@ main(void)
   nfail +=
     !test_lod_gpu_u16("gpu_lod_u16_4d_d13", 4,
                       (uint64_t[]){ 3, 8, 2, 6 }, 0xA, 1);
+
+  // --- Reduce method tests (f32) ---
+  {
+    const uint64_t shape[] = { 3, 5 };
+    const uint8_t mask = 0x3;
+    nfail += !test_lod_gpu_method("reduce_min_f32", 2, shape, mask, 1,
+                                  lod_reduce_min);
+    nfail += !test_lod_gpu_method("reduce_max_f32", 2, shape, mask, 1,
+                                  lod_reduce_max);
+    nfail += !test_lod_gpu_method("reduce_median_f32", 2, shape, mask, 1,
+                                  lod_reduce_median);
+    nfail += !test_lod_gpu_method("reduce_max_sup_f32", 2, shape, mask, 1,
+                                  lod_reduce_max_suppressed);
+    nfail += !test_lod_gpu_method("reduce_min_sup_f32", 2, shape, mask, 1,
+                                  lod_reduce_min_suppressed);
+  }
+
+  // --- Reduce method tests (u16) ---
+  {
+    const uint64_t shape[] = { 3, 5 };
+    const uint8_t mask = 0x3;
+    nfail += !test_lod_gpu_u16_method("reduce_min_u16", 2, shape, mask, 1,
+                                      lod_reduce_min);
+    nfail += !test_lod_gpu_u16_method("reduce_max_u16", 2, shape, mask, 1,
+                                      lod_reduce_max);
+    nfail += !test_lod_gpu_u16_method("reduce_median_u16", 2, shape, mask, 1,
+                                      lod_reduce_median);
+    nfail += !test_lod_gpu_u16_method("reduce_max_sup_u16", 2, shape, mask, 1,
+                                      lod_reduce_max_suppressed);
+    nfail += !test_lod_gpu_u16_method("reduce_min_sup_u16", 2, shape, mask, 1,
+                                      lod_reduce_min_suppressed);
+  }
+
+  // --- Reduce method tests with mixed dims (3D, partial mask) ---
+  {
+    const uint64_t shape[] = { 6, 3, 5 };
+    const uint8_t mask = 0x5;
+    nfail += !test_lod_gpu_method("reduce_min_3d_d02", 3, shape, mask, 1,
+                                  lod_reduce_min);
+    nfail += !test_lod_gpu_method("reduce_max_3d_d02", 3, shape, mask, 1,
+                                  lod_reduce_max);
+    nfail += !test_lod_gpu_u16_method("reduce_min_u16_3d_d02", 3, shape, mask, 1,
+                                      lod_reduce_min);
+    nfail += !test_lod_gpu_u16_method("reduce_max_u16_3d_d02", 3, shape, mask, 1,
+                                      lod_reduce_max);
+  }
 
   printf("\n%s (%d failures)\n", nfail ? "FAIL" : "ALL PASSED", nfail);
 

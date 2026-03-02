@@ -577,6 +577,7 @@ run_lod(struct tile_stream_gpu* s)
     lod_reduce((CUdeviceptr)s->lod.d_morton.data,
                s->lod.d_level_ends[l],
                dtype,
+               s->config.reduce_method,
                src_level.beg,
                dst_level.beg,
                p->lod_counts[l],

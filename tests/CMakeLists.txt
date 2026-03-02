@@ -53,6 +53,9 @@ target_link_libraries(index_ops_util PUBLIC index_ops)
 add_my_test(index.ops index.ops.c)
 target_compile_options(index.ops PRIVATE ${OPENMP_FLAGS})
 target_link_libraries(index.ops PRIVATE index_ops_util stream)
+if(NOT MSVC)
+    target_link_libraries(index.ops PRIVATE OpenMP::OpenMP_C)
+endif()
 
 # AVX2 helper library
 add_library(div_avx2 STATIC div.avx2.c)
@@ -63,6 +66,9 @@ target_include_directories(div_avx2 PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 add_my_test(index.ops.avx2 index.ops.avx2.c)
 target_compile_options(index.ops.avx2 PRIVATE ${OPENMP_FLAGS} ${AVX2_FLAG})
 target_link_libraries(index.ops.avx2 PRIVATE div_avx2 index_ops_util stream)
+if(NOT MSVC)
+    target_link_libraries(index.ops.avx2 PRIVATE OpenMP::OpenMP_C)
+endif()
 
 # Magic division test
 add_executable(test_magic_div test_magic_div.c)

@@ -14,6 +14,16 @@ extern "C"
     lod_dtype_f32,
   };
 
+  enum lod_reduce_method
+  {
+    lod_reduce_mean,
+    lod_reduce_min,
+    lod_reduce_max,
+    lod_reduce_median,
+    lod_reduce_max_suppressed, // 2nd highest value
+    lod_reduce_min_suppressed, // 2nd lowest value
+  };
+
   struct morton_tile_layout
   {
     enum lod_dtype dtype;
@@ -54,6 +64,7 @@ extern "C"
   void lod_reduce(CUdeviceptr d_values,
                   CUdeviceptr d_ends,
                   enum lod_dtype dtype,
+                  enum lod_reduce_method method,
                   uint64_t src_offset,
                   uint64_t dst_offset,
                   uint64_t src_lod_count,

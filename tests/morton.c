@@ -222,7 +222,7 @@ test_lod(const char* label, int ndim, const uint64_t* shape, uint8_t lod_mask)
          plan.batch_ndim,
          (unsigned long long)plan.batch_count);
 
-  CHECK(Fail, lod_compute(&plan, src, &values));
+  CHECK(Fail, lod_compute(&plan, src, &values, lod_reduce_mean));
   printf("  levels: %d\n", plan.nlod);
 
   if (plan.nlod < 2) {

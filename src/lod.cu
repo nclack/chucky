@@ -246,10 +246,10 @@ lod_fill_ends_k(uint64_t* __restrict__ ends,
   ends[pos] = val;
 }
 
-// --- Reduce kernel (templated) ---
+// --- Reduce kernel (templated on data type and reduce method) ---
 // Accumulator type: uint32 for u16, float for f32.
 
-template<typename T, typename Acc>
+template<typename T, typename Acc, enum lod_reduce_method Method>
 __global__ void
 lod_reduce_k(T* __restrict__ values,
              const uint64_t* __restrict__ ends,
@@ -274,11 +274,94 @@ lod_reduce_k(T* __restrict__ values,
   uint64_t end = ends[element];
   uint64_t len = end - start;
 
-  Acc sum = (Acc)0;
-  for (uint64_t j = start; j < end; ++j)
-    sum += (Acc)values[src_base + j];
+  T result;
 
-  values[dst_base + element] = (T)(sum / (Acc)len);
+  if constexpr (Method == lod_reduce_mean) {
+    Acc sum = (Acc)0;
+    for (uint64_t j = start; j < end; ++j)
+      sum += (Acc)values[src_base + j];
+    result = (T)(sum / (Acc)len);
+  } else if constexpr (Method == lod_reduce_min) {
+    T best = values[src_base + start];
+    for (uint64_t j = start + 1; j < end; ++j) {
+      T v = values[src_base + j];
+      if (v < best)
+        best = v;
+    }
+    result = best;
+  } else if constexpr (Method == lod_reduce_max) {
+    T best = values[src_base + start];
+    for (uint64_t j = start + 1; j < end; ++j) {
+      T v = values[src_base + j];
+      if (v > best)
+        best = v;
+    }
+    result = best;
+  } else if constexpr (Method == lod_reduce_median) {
+    // Window sizes are small (typically 2-8), insertion sort is fine.
+    T buf[16];
+    uint64_t n = (len <= 16) ? len : 16;
+    for (uint64_t j = 0; j < n; ++j)
+      buf[j] = values[src_base + start + j];
+    for (uint64_t i = 1; i < n; ++i) {
+      T key = buf[i];
+      uint64_t k = i;
+      while (k > 0 && buf[k - 1] > key) {
+        buf[k] = buf[k - 1];
+        --k;
+      }
+      buf[k] = key;
+    }
+    result = buf[n / 2];
+  } else if constexpr (Method == lod_reduce_max_suppressed) {
+    // 2nd highest value
+    T top1 = values[src_base + start];
+    T top2 = values[src_base + start];
+    if (len > 1) {
+      T v = values[src_base + start + 1];
+      if (v >= top1) {
+        top2 = top1;
+        top1 = v;
+      } else {
+        top2 = v;
+      }
+      for (uint64_t j = start + 2; j < end; ++j) {
+        v = values[src_base + j];
+        if (v >= top1) {
+          top2 = top1;
+          top1 = v;
+        } else if (v > top2) {
+          top2 = v;
+        }
+      }
+    }
+    result = top2;
+  } else if constexpr (Method == lod_reduce_min_suppressed) {
+    // 2nd lowest value
+    T bot1 = values[src_base + start];
+    T bot2 = values[src_base + start];
+    if (len > 1) {
+      T v = values[src_base + start + 1];
+      if (v <= bot1) {
+        bot2 = bot1;
+        bot1 = v;
+      } else {
+        bot2 = v;
+      }
+      for (uint64_t j = start + 2; j < end; ++j) {
+        v = values[src_base + j];
+        if (v <= bot1) {
+          bot2 = bot1;
+          bot1 = v;
+        } else if (v < bot2) {
+          bot2 = v;
+        }
+      }
+    }
+    result = bot2;
+  }
+
+  values[dst_base + element] = result;
 }
 
 // --- Morton-to-tile scatter kernel ---
@@ -562,10 +645,35 @@ lod_morton_to_tiles(CUdeviceptr d_tiles,
   }
 }
 
+// Helper macro: launch the reduce kernel for a given (Type, Acc, Method) combo.
+#define LAUNCH_REDUCE(Type, Acc, Method)                                       \
+  lod_reduce_k<Type, Acc, Method>                                              \
+    <<<grid_size, block_size, 0, stream>>>(                                    \
+      (Type*)d_values, (const uint64_t*)d_ends,                                \
+      src_offset, dst_offset, src_lod_count, dst_lod_count, batch_count)
+
+// Helper macro: dispatch over all methods for a given (Type, Acc) pair.
+#define DISPATCH_METHOD(Type, Acc)                                             \
+  switch (method) {                                                            \
+    case lod_reduce_mean:                                                      \
+      LAUNCH_REDUCE(Type, Acc, lod_reduce_mean); break;                        \
+    case lod_reduce_min:                                                       \
+      LAUNCH_REDUCE(Type, Acc, lod_reduce_min); break;                         \
+    case lod_reduce_max:                                                       \
+      LAUNCH_REDUCE(Type, Acc, lod_reduce_max); break;                         \
+    case lod_reduce_median:                                                    \
+      LAUNCH_REDUCE(Type, Acc, lod_reduce_median); break;                      \
+    case lod_reduce_max_suppressed:                                            \
+      LAUNCH_REDUCE(Type, Acc, lod_reduce_max_suppressed); break;              \
+    case lod_reduce_min_suppressed:                                            \
+      LAUNCH_REDUCE(Type, Acc, lod_reduce_min_suppressed); break;              \
+  }
+
 extern "C" void
 lod_reduce(CUdeviceptr d_values,
            CUdeviceptr d_ends,
            enum lod_dtype dtype,
+           enum lod_reduce_method method,
            uint64_t src_offset,
            uint64_t dst_offset,
            uint64_t src_lod_count,
@@ -579,25 +687,14 @@ lod_reduce(CUdeviceptr d_values,
 
   switch (dtype) {
     case lod_dtype_u16:
-      lod_reduce_k<uint16_t, uint32_t>
-        <<<grid_size, block_size, 0, stream>>>((uint16_t*)d_values,
-                                               (const uint64_t*)d_ends,
-                                               src_offset,
-                                               dst_offset,
-                                               src_lod_count,
-                                               dst_lod_count,
-                                               batch_count);
+      DISPATCH_METHOD(uint16_t, uint32_t);
       break;
     case lod_dtype_f32:
-      lod_reduce_k<float, float>
-        <<<grid_size, block_size, 0, stream>>>((float*)d_values,
-                                               (const uint64_t*)d_ends,
-                                               src_offset,
-                                               dst_offset,
-                                               src_lod_count,
-                                               dst_lod_count,
-                                               batch_count);
+      DISPATCH_METHOD(float, float);
       break;
   }
 }
+
+#undef LAUNCH_REDUCE
+#undef DISPATCH_METHOD
 

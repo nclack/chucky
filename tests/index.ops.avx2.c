@@ -347,26 +347,26 @@ vadd_avx2_agrees_with_add(void)
 
         const uint64_t* actual =
           vadd_avx2(rank, shape, transposed_strides, beg, n);
-      if (!actual) {
-        free((void*)expected);
-        state.ecode = 1;
-        continue;
-      }
-
-      const size_t count = n - beg;
-      {
-        char buf[64] = { 0 };
-        snprintf(buf, sizeof(buf), "beg=%llu", (unsigned long long)beg);
-        int err = expect_arrays_equal(expected, actual, count, buf);
-        if (err) {
-          state.ecode |= err;
+        if (!actual) {
+          free((void*)expected);
+          state.ecode = 1;
+          continue;
         }
-      }
 
-      free((void*)expected);
-      aligned_free((void*)actual);
+        const size_t count = n - beg;
+        {
+          char buf[64] = { 0 };
+          snprintf(buf, sizeof(buf), "beg=%llu", (unsigned long long)beg);
+          int err = expect_arrays_equal(expected, actual, count, buf);
+          if (err) {
+            state.ecode |= err;
+          }
+        }
 
-      atomic_fetch_add_explicit(&state.completed, 1, memory_order_relaxed);
+        free((void*)expected);
+        aligned_free((void*)actual);
+
+        atomic_fetch_add_explicit(&state.completed, 1, memory_order_relaxed);
       }
     }
   }
@@ -446,40 +446,44 @@ vadd2_avx2_agrees_with_add(void)
 #pragma omp for schedule(guided) collapse(2)
       for (step_idx = 0; step_idx < num_steps; ++step_idx) {
         for (i = 0; i < num_tests; ++i) {
-        if (state.ecode)
-          continue;
+          if (state.ecode)
+            continue;
 
-        const uint64_t step = steps[step_idx];
-        const uint64_t beg = (uint64_t)rand() % n;
-        const uint64_t* expected =
-          make_expected_step(rank, shape, transposed_strides, beg, n, step);
-        if (!expected) {
-          state.ecode = 1;
-          continue;
-        }
-
-        const uint64_t* actual =
-          vadd2_avx2(rank, shape, transposed_strides, beg, n, step);
-        if (!actual) {
-          free((void*)expected);
-          state.ecode = 1;
-          continue;
-        }
-
-        const size_t count = (n - beg + step - 1) / step;
-        {
-          char buf[64] = { 0 };
-          snprintf(buf, sizeof(buf), "beg=%llu, step=%llu", (unsigned long long)beg, (unsigned long long)step);
-          int err = expect_arrays_equal(expected, actual, count, buf);
-          if (err) {
-            state.ecode |= err;
+          const uint64_t step = steps[step_idx];
+          const uint64_t beg = (uint64_t)rand() % n;
+          const uint64_t* expected =
+            make_expected_step(rank, shape, transposed_strides, beg, n, step);
+          if (!expected) {
+            state.ecode = 1;
+            continue;
           }
-        }
 
-        free((void*)expected);
-        aligned_free((void*)actual);
+          const uint64_t* actual =
+            vadd2_avx2(rank, shape, transposed_strides, beg, n, step);
+          if (!actual) {
+            free((void*)expected);
+            state.ecode = 1;
+            continue;
+          }
 
-        atomic_fetch_add_explicit(&state.completed, 1, memory_order_relaxed);
+          const size_t count = (n - beg + step - 1) / step;
+          {
+            char buf[64] = { 0 };
+            snprintf(buf,
+                     sizeof(buf),
+                     "beg=%llu, step=%llu",
+                     (unsigned long long)beg,
+                     (unsigned long long)step);
+            int err = expect_arrays_equal(expected, actual, count, buf);
+            if (err) {
+              state.ecode |= err;
+            }
+          }
+
+          free((void*)expected);
+          aligned_free((void*)actual);
+
+          atomic_fetch_add_explicit(&state.completed, 1, memory_order_relaxed);
         }
       }
     }

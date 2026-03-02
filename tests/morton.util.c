@@ -2,6 +2,7 @@
 // Intended to be #include'd (no main).
 
 #include "index.ops.h"
+#include "lod.h"
 #include "lod_plan.h"
 #include "prelude.h"
 
@@ -60,8 +61,86 @@ lod_scatter_cpu(const struct lod_plan* p, const float* src, float* dst)
   }
 }
 
+static float
+reduce_window_f32(const float* src,
+                  uint64_t start,
+                  uint64_t end,
+                  enum lod_reduce_method method)
+{
+  uint64_t len = end - start;
+  switch (method) {
+    case lod_reduce_mean: {
+      float sum = 0;
+      for (uint64_t j = start; j < end; ++j)
+        sum += src[j];
+      return sum / (float)len;
+    }
+    case lod_reduce_min: {
+      float best = src[start];
+      for (uint64_t j = start + 1; j < end; ++j)
+        if (src[j] < best)
+          best = src[j];
+      return best;
+    }
+    case lod_reduce_max: {
+      float best = src[start];
+      for (uint64_t j = start + 1; j < end; ++j)
+        if (src[j] > best)
+          best = src[j];
+      return best;
+    }
+    case lod_reduce_median: {
+      float buf[16];
+      uint64_t n = (len <= 16) ? len : 16;
+      for (uint64_t j = 0; j < n; ++j)
+        buf[j] = src[start + j];
+      for (uint64_t i = 1; i < n; ++i) {
+        float key = buf[i];
+        uint64_t k = i;
+        while (k > 0 && buf[k - 1] > key) {
+          buf[k] = buf[k - 1];
+          --k;
+        }
+        buf[k] = key;
+      }
+      return buf[n / 2];
+    }
+    case lod_reduce_max_suppressed: {
+      float top1 = src[start], top2 = src[start];
+      if (len > 1) {
+        float v = src[start + 1];
+        if (v >= top1) { top2 = top1; top1 = v; }
+        else           { top2 = v; }
+        for (uint64_t j = start + 2; j < end; ++j) {
+          v = src[j];
+          if (v >= top1)      { top2 = top1; top1 = v; }
+          else if (v > top2)  { top2 = v; }
+        }
+      }
+      return top2;
+    }
+    case lod_reduce_min_suppressed: {
+      float bot1 = src[start], bot2 = src[start];
+      if (len > 1) {
+        float v = src[start + 1];
+        if (v <= bot1) { bot2 = bot1; bot1 = v; }
+        else           { bot2 = v; }
+        for (uint64_t j = start + 2; j < end; ++j) {
+          v = src[j];
+          if (v <= bot1)      { bot2 = bot1; bot1 = v; }
+          else if (v < bot2)  { bot2 = v; }
+        }
+      }
+      return bot2;
+    }
+  }
+  return 0;
+}
+
 static void
-lod_reduce_cpu(const struct lod_plan* p, float* values)
+lod_reduce_cpu(const struct lod_plan* p,
+               float* values,
+               enum lod_reduce_method method)
 {
   for (int l = 0; l < p->nlod - 1; ++l) {
     struct lod_span seg = lod_segment(p, l);
@@ -77,18 +156,18 @@ lod_reduce_cpu(const struct lod_plan* p, float* values)
       for (uint64_t i = 0; i < dst_ds; ++i) {
         uint64_t start = (i > 0) ? p->ends[seg.beg + i - 1] : 0;
         uint64_t end = p->ends[seg.beg + i];
-        uint64_t len = end - start;
-        float sum = 0;
-        for (uint64_t j = start; j < end; ++j)
-          sum += values[src_base + j];
-        values[dst_base + i] = sum / (float)len;
+        values[dst_base + i] =
+          reduce_window_f32(values + src_base, start, end, method);
       }
     }
   }
 }
 
 static int
-lod_compute(const struct lod_plan* p, const float* src, float** out_values)
+lod_compute(const struct lod_plan* p,
+            const float* src,
+            float** out_values,
+            enum lod_reduce_method method)
 {
   int ok = 0;
   *out_values = NULL;
@@ -99,7 +178,7 @@ lod_compute(const struct lod_plan* p, const float* src, float** out_values)
   *out_values = values;
 
   lod_scatter_cpu(p, src, values);
-  lod_reduce_cpu(p, values);
+  lod_reduce_cpu(p, values, method);
 
   ok = 1;
 Error:

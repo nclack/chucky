@@ -93,7 +93,8 @@ struct tile_stream_configuration
   uint8_t rank;
   const struct dimension* dimensions;
   struct shard_sink* shard_sink; // downstream shard writer factory, not owned
-  enum compression_codec codec; // compression codec for tiles
+  enum compression_codec codec;           // compression codec for tiles
+  enum lod_reduce_method reduce_method;   // LOD downsample reduction method
 };
 
 struct staging_slot

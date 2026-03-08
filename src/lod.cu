@@ -3,7 +3,6 @@
 #include <assert.h>
 #include <stdint.h>
 
-#define MAX_LOD_NDIM 16
 #define LOD_BLOCK 256
 
 static int
@@ -43,12 +42,6 @@ clamped_tile_extent_d(uint64_t dimension_size,
   return (remaining < tile_size) ? remaining : tile_size;
 }
 
-__device__ static int
-imad(int a, int b, int c)
-{
-  return a * b + c;
-}
-
 // Index of the low child node for dimension d at the given tree level,
 // derived from the coordinate without maintaining a prefix array.
 //   level < nlod:  top bits of coord with LSB cleared
@@ -63,39 +56,39 @@ tree_child_low(uint64_t coord, int level, int nlod)
   return coord << (level - nlod + 1);
 }
 
+// Advance coordinates to the next Morton position using register arrays.
+template<int NdimMax>
 __device__ static void
-morton_next_d(int ndim, int nlod, uint64_t* s_coords, int stride, int tid)
+morton_next_d(int ndim, int nlod, uint64_t* coords)
 {
   for (int bit = 0; bit < nlod; ++bit) {
     for (int d = 0; d < ndim; ++d) {
       uint64_t mask = 1ull << bit;
-      s_coords[imad(d, stride, tid)] ^= mask;
-      if (s_coords[imad(d, stride, tid)] & mask)
+      coords[d] ^= mask;
+      if (coords[d] & mask)
         return;
     }
   }
   for (int d = 0; d < ndim; ++d)
-    s_coords[imad(d, stride, tid)] = 0;
-  s_coords[imad(0, stride, tid)] = 1ull << nlod;
+    coords[d] = 0;
+  coords[0] = 1ull << nlod;
 }
 
-// Morton rank from coordinates in shared memory.
+// Morton rank from coordinates in register arrays.
 //
-// s_shape:     [ndim]             shape (shared across block)
-// s_coords:    [ndim][stride]     per-thread coordinates
-// s_products:  [(ndim+1)][stride] per-thread subtree-width products
+// shape:   [ndim]  shape (read from registers / L1 cache)
+// coords:  [ndim]  per-thread coordinates (registers)
+// products: allocated on stack as [NdimMax+1] (registers)
+template<int NdimMax>
 __device__ static uint64_t
 morton_rank_d(int ndim,
-              const uint64_t* s_shape,
+              const uint64_t* shape,
               int nlod,
-              const uint64_t* s_coords,
-              uint64_t* s_products,
-              int stride,
-              int tid,
+              const uint64_t* coords,
               int depth)
 {
   for (int d = 0; d < ndim; ++d) {
-    uint64_t coord = s_coords[imad(d, stride, tid)];
+    uint64_t coord = coords[d];
     int coord_bits = coord > 0 ? (64 - __clzll(coord)) : 0;
     if (coord_bits > nlod)
       nlod = coord_bits;
@@ -103,6 +96,7 @@ morton_rank_d(int ndim,
 
   int total_levels = nlod + depth;
   uint64_t rank = 0;
+  uint64_t products[NdimMax + 1];
 
   for (int level = 0; level < total_levels; ++level) {
     uint64_t tile_size = 1ull << (total_levels - 1 - level);
@@ -110,32 +104,31 @@ morton_rank_d(int ndim,
     int digit = 0;
 
     // Compute subtree-width products and extract the Morton digit.
-    s_products[imad(0, stride, tid)] = 1;
+    products[0] = 1;
     for (int d = 0; d < ndim; ++d) {
-      uint64_t coord = s_coords[imad(d, stride, tid)];
+      uint64_t coord = coords[d];
       uint64_t node_low = tree_child_low(coord, level, nlod);
       if (level < nlod)
         digit |= (int)((coord >> (nlod - 1 - level)) & 1) << d;
       uint64_t extent_low =
-        clamped_tile_extent_d(s_shape[d], node_low * tile_size, tile_size);
-      uint64_t extent_high = clamped_tile_extent_d(
-        s_shape[d], (node_low + 1) * tile_size, tile_size);
-      s_products[imad(d + 1, stride, tid)] =
-        s_products[imad(d, stride, tid)] * (extent_low + extent_high);
+        clamped_tile_extent_d(shape[d], node_low * tile_size, tile_size);
+      uint64_t extent_high =
+        clamped_tile_extent_d(shape[d], (node_low + 1) * tile_size, tile_size);
+      products[d + 1] = products[d] * (extent_low + extent_high);
     }
 
     // For each set bit in digit, count elements in the low subtree.
     uint64_t suffix = 1;
     for (int d = ndim - 1; d >= 0; --d) {
-      uint64_t coord = s_coords[imad(d, stride, tid)];
+      uint64_t coord = coords[d];
       uint64_t node_low = tree_child_low(coord, level, nlod);
       int bit = (digit >> d) & 1;
       uint64_t extent_low =
-        clamped_tile_extent_d(s_shape[d], node_low * tile_size, tile_size);
+        clamped_tile_extent_d(shape[d], node_low * tile_size, tile_size);
       if (bit == 1)
-        rank += suffix * extent_low * s_products[imad(d, stride, tid)];
+        rank += suffix * extent_low * products[d];
       uint64_t extent_chosen = clamped_tile_extent_d(
-        s_shape[d], (node_low + (uint64_t)bit) * tile_size, tile_size);
+        shape[d], (node_low + (uint64_t)bit) * tile_size, tile_size);
       suffix *= extent_chosen;
     }
   }
@@ -143,9 +136,9 @@ morton_rank_d(int ndim,
   return rank;
 }
 
-// --- Scatter kernel (templated) ---
+// --- Scatter kernel (templated on dtype and NdimMax) ---
 
-template<typename T>
+template<typename T, int NdimMax>
 __global__ void
 lod_scatter_k(T* __restrict__ dst,
               const T* __restrict__ src,
@@ -158,20 +151,7 @@ lod_scatter_k(T* __restrict__ dst,
               uint32_t lod_mask,
               uint64_t lod_count)
 {
-  extern __shared__ uint64_t smem[];
-  uint64_t* s_full_shape = smem;
-  uint64_t* s_lod_shape = s_full_shape + ndim;
-  uint64_t* s_coords = s_lod_shape + lod_ndim;
-  uint64_t* s_products = s_coords + lod_ndim * LOD_BLOCK;
-
   const int tid = threadIdx.x;
-
-  for (int i = tid; i < ndim; i += LOD_BLOCK)
-    s_full_shape[i] = full_shape[i];
-  for (int i = tid; i < lod_ndim; i += LOD_BLOCK)
-    s_lod_shape[i] = lod_shape[i];
-  __syncthreads();
-
   const uint64_t gid = (uint64_t)blockIdx.x * LOD_BLOCK + tid;
   if (gid >= n_elements)
     return;
@@ -179,27 +159,202 @@ lod_scatter_k(T* __restrict__ dst,
   // Decompose gid in C-order (dim ndim-1 fastest) to match row-major data
   // layout. Assign LOD coords in reverse so lod_coords[k] pairs with
   // lod_shape[k].
+  uint64_t lod_coords[NdimMax];
   uint64_t remainder = gid;
   uint64_t batch_index = 0, batch_stride = 1;
   int lod_dim = lod_ndim - 1;
   for (int d = ndim - 1; d >= 0; --d) {
-    uint64_t coord = remainder % s_full_shape[d];
-    remainder /= s_full_shape[d];
+    uint64_t coord = remainder % full_shape[d];
+    remainder /= full_shape[d];
     if ((lod_mask >> d) & 1) {
-      s_coords[imad(lod_dim, LOD_BLOCK, tid)] = coord;
+      lod_coords[lod_dim] = coord;
       lod_dim--;
     } else {
       batch_index += coord * batch_stride;
-      batch_stride *= s_full_shape[d];
+      batch_stride *= full_shape[d];
     }
   }
 
-  uint64_t pos = morton_rank_d(
-    lod_ndim, s_lod_shape, lod_nlod, s_coords, s_products, LOD_BLOCK, tid, 0);
+  uint64_t pos =
+    morton_rank_d<NdimMax>(lod_ndim, lod_shape, lod_nlod, lod_coords, 0);
 
   dst[batch_index * lod_count + pos] = src[gid];
 }
 
+// --- Build scatter LUT kernel ---
+// Maps lod_linear_index (row-major within lod_shape) to morton_rank.
+
+template<int NdimMax>
+__global__ void
+lod_build_scatter_lut_k(uint32_t* __restrict__ lut,
+                        int ndim,
+                        const uint64_t* __restrict__ lod_shape,
+                        int lod_nlod,
+                        uint64_t lod_count)
+{
+  const uint64_t gid = (uint64_t)blockIdx.x * LOD_BLOCK + threadIdx.x;
+  if (gid >= lod_count)
+    return;
+
+  uint64_t coords[NdimMax];
+  uint64_t remainder = gid;
+  for (int d = ndim - 1; d >= 0; --d) {
+    coords[d] = remainder % lod_shape[d];
+    remainder /= lod_shape[d];
+  }
+
+  lut[gid] =
+    (uint32_t)morton_rank_d<NdimMax>(ndim, lod_shape, lod_nlod, coords, 0);
+}
+
+// --- Scatter kernel using precomputed LUT ---
+
+template<typename T, int NdimMax>
+__global__ void
+lod_scatter_lut_k(T* __restrict__ dst,
+                  const T* __restrict__ src,
+                  const uint32_t* __restrict__ lut,
+                  int ndim,
+                  uint64_t n_elements,
+                  const uint64_t* __restrict__ full_shape,
+                  const uint64_t* __restrict__ lod_shape,
+                  int lod_ndim,
+                  uint32_t lod_mask,
+                  uint64_t lod_count)
+{
+  const uint64_t gid = (uint64_t)blockIdx.x * LOD_BLOCK + threadIdx.x;
+  if (gid >= n_elements)
+    return;
+
+  uint64_t lod_coords[NdimMax];
+  uint64_t remainder = gid;
+  uint64_t batch_index = 0, batch_stride = 1;
+  int lod_dim = lod_ndim - 1;
+
+  for (int d = ndim - 1; d >= 0; --d) {
+    uint64_t coord = remainder % full_shape[d];
+    remainder /= full_shape[d];
+    if ((lod_mask >> d) & 1) {
+      lod_coords[lod_dim] = coord;
+      lod_dim--;
+    } else {
+      batch_index += coord * batch_stride;
+      batch_stride *= full_shape[d];
+    }
+  }
+
+  // Ravel lod_coords to row-major index within lod_shape
+  uint64_t lod_linear = lod_coords[0];
+  for (int d = 1; d < lod_ndim; ++d)
+    lod_linear = lod_linear * lod_shape[d] + lod_coords[d];
+
+  uint32_t pos = lut[lod_linear];
+  dst[batch_index * lod_count + pos] = src[gid];
+}
+
+// --- Build gather LUT kernel ---
+// Builds inv_lut: src_lut[morton_pos] = src_lod_offset, where
+// src_lod_offset is the C-order contribution from LOD dimensions.
+
+template<int NdimMax>
+__global__ void
+lod_build_gather_lut_k(uint64_t* __restrict__ src_lut,
+                       const uint32_t* __restrict__ fwd_lut,
+                       int lod_ndim,
+                       const uint64_t* __restrict__ lod_shape,
+                       const uint64_t* __restrict__ lod_strides,
+                       uint64_t lod_count)
+{
+  const uint64_t gid = (uint64_t)blockIdx.x * LOD_BLOCK + threadIdx.x;
+  if (gid >= lod_count)
+    return;
+
+  // Decompose gid (= lod_linear) into lod_coords, compute src offset
+  uint64_t remainder = gid;
+  uint64_t src_offset = 0;
+  for (int d = lod_ndim - 1; d >= 0; --d) {
+    uint64_t coord = remainder % lod_shape[d];
+    remainder /= lod_shape[d];
+    src_offset += coord * lod_strides[d];
+  }
+
+  src_lut[fwd_lut[gid]] = src_offset;
+}
+
+// --- Gather kernel: shared-memory tiled, u32-aliased, coalesced stores ---
+// Caller must ensure dst is 4-byte aligned.
+
+template<typename T>
+__global__ void __launch_bounds__(256, 4)
+lod_gather_lut_k(T* __restrict__ dst,
+                 const T* __restrict__ src,
+                 const uint64_t* __restrict__ src_lut,
+                 const uint64_t* __restrict__ batch_offsets,
+                 uint64_t lod_count,
+                 uint64_t total)
+{
+  constexpr int T_PER_U32 = sizeof(uint32_t) / sizeof(T);
+  constexpr int TILE_U32 = (1 << 12) / sizeof(uint32_t); // 1024 u32 slots = 4KB
+  constexpr int TILE_ELEMENTS = TILE_U32 * T_PER_U32;
+
+  __shared__ uint32_t tile[TILE_U32];
+
+  const int tid = threadIdx.x;
+  const uint64_t block_base = (uint64_t)blockIdx.x * TILE_ELEMENTS;
+
+  // Phase 1: Gather scattered reads, pack into u32, write to shared memory
+  {
+    uint64_t gid0 = block_base + (uint64_t)tid * T_PER_U32;
+    uint64_t batch = gid0 / lod_count;
+    uint64_t morton_pos = gid0 % lod_count;
+
+    for (int i = tid; i < TILE_U32; i += blockDim.x) {
+      uint64_t gid = block_base + (uint64_t)i * T_PER_U32;
+      uint32_t packed = 0;
+
+      for (int k = 0; k < T_PER_U32; ++k) {
+        if (gid + k < total) {
+          T val = src[batch_offsets[batch] + src_lut[morton_pos]];
+          if constexpr (sizeof(T) == 4)
+            packed = __float_as_uint(val);
+          else
+            packed |= ((uint32_t)val) << (k * sizeof(T) * 8);
+        }
+        morton_pos++;
+        if (morton_pos >= lod_count) { morton_pos = 0; batch++; }
+      }
+      tile[i] = packed;
+
+      // Advance to next iteration: skip (blockDim.x - 1) * T_PER_U32 elements
+      morton_pos += (uint64_t)(blockDim.x - 1) * T_PER_U32;
+      while (morton_pos >= lod_count) { morton_pos -= lod_count; batch++; }
+    }
+  }
+
+  __syncthreads();
+
+  // Phase 2: Coalesced u32 stores
+  {
+    uint32_t* dst_u32 = (uint32_t*)dst;
+    uint64_t base_u32 = block_base / T_PER_U32;
+
+    for (int i = tid; i < TILE_U32; i += blockDim.x) {
+      uint64_t elem_idx = block_base + (uint64_t)i * T_PER_U32;
+      if (elem_idx + T_PER_U32 <= total) {
+        dst_u32[base_u32 + i] = tile[i];
+      } else if (elem_idx < total) {
+        T* tile_T = (T*)tile;
+        for (int k = 0; k < T_PER_U32; ++k)
+          if (elem_idx + k < total)
+            dst[elem_idx + k] = tile_T[i * T_PER_U32 + k];
+      }
+    }
+  }
+}
+
+// --- Fill ends kernel (templated on NdimMax) ---
+
+template<int NdimMax>
 __global__ void
 lod_fill_ends_k(uint64_t* __restrict__ ends,
                 int ndim,
@@ -209,39 +364,34 @@ lod_fill_ends_k(uint64_t* __restrict__ ends,
                 int child_nlod,
                 uint64_t n_parents)
 {
-  extern __shared__ uint64_t smem[];
-  uint64_t* s_parent_shape = smem;
-  uint64_t* s_child_shape = s_parent_shape + ndim;
-  uint64_t* s_coords = s_child_shape + ndim;
-  uint64_t* s_products = s_coords + ndim * LOD_BLOCK;
-
-  const int tid = threadIdx.x;
-
-  for (int i = tid; i < ndim; i += LOD_BLOCK)
-    s_parent_shape[i] = parent_shape[i];
-  for (int i = tid; i < ndim; i += LOD_BLOCK)
-    s_child_shape[i] = child_shape[i];
-  __syncthreads();
-
-  const uint64_t gid = (uint64_t)blockIdx.x * LOD_BLOCK + tid;
+  const uint64_t gid = (uint64_t)blockIdx.x * LOD_BLOCK + threadIdx.x;
   if (gid >= n_parents)
     return;
 
+  // Load shapes into registers
+  uint64_t r_parent_shape[NdimMax];
+  uint64_t r_child_shape[NdimMax];
+  for (int d = 0; d < ndim; ++d) {
+    r_parent_shape[d] = parent_shape[d];
+    r_child_shape[d] = child_shape[d];
+  }
+
+  uint64_t coords[NdimMax];
   {
     uint64_t remainder = gid;
     for (int d = 0; d < ndim; ++d) {
-      s_coords[imad(d, LOD_BLOCK, tid)] = remainder % s_parent_shape[d];
-      remainder /= s_parent_shape[d];
+      coords[d] = remainder % r_parent_shape[d];
+      remainder /= r_parent_shape[d];
     }
   }
 
-  uint64_t pos = morton_rank_d(
-    ndim, s_parent_shape, parent_nlod, s_coords, s_products, LOD_BLOCK, tid, 0);
+  uint64_t pos =
+    morton_rank_d<NdimMax>(ndim, r_parent_shape, parent_nlod, coords, 0);
 
-  morton_next_d(ndim, parent_nlod, s_coords, LOD_BLOCK, tid);
+  morton_next_d<NdimMax>(ndim, parent_nlod, coords);
 
-  uint64_t val = morton_rank_d(
-    ndim, s_child_shape, child_nlod, s_coords, s_products, LOD_BLOCK, tid, 1);
+  uint64_t val =
+    morton_rank_d<NdimMax>(ndim, r_child_shape, child_nlod, coords, 1);
 
   ends[pos] = val;
 }
@@ -369,10 +519,7 @@ lod_reduce_k(T* __restrict__ values,
 // It computes the morton position (to read from morton buffer)
 // and the tile-pool position (to write using lifted strides).
 
-#define M2T_BLOCK 256
-#define M2T_MAX_RANK 32
-
-template<typename T>
+template<typename T, int NdimMax>
 __global__ void
 lod_morton_to_tiles_k(T* __restrict__ tiles,
                       const T* __restrict__ morton,
@@ -388,56 +535,51 @@ lod_morton_to_tiles_k(T* __restrict__ tiles,
                       const uint64_t* __restrict__ lifted_shape,
                       const int64_t* __restrict__ lifted_strides)
 {
-  extern __shared__ uint64_t smem[];
-  uint64_t* s_full_shape = smem;
-  uint64_t* s_lod_shape = s_full_shape + ndim;
-  uint64_t* s_lifted_shape = s_lod_shape + lod_ndim;
-  int64_t* s_lifted_strides = (int64_t*)(s_lifted_shape + lifted_rank);
-  uint64_t* s_coords = (uint64_t*)((int64_t*)s_lifted_strides + lifted_rank);
-  uint64_t* s_products = s_coords + lod_ndim * M2T_BLOCK;
-
-  const int tid = threadIdx.x;
-
-  for (int i = tid; i < ndim; i += M2T_BLOCK)
-    s_full_shape[i] = full_shape[i];
-  for (int i = tid; i < lod_ndim; i += M2T_BLOCK)
-    s_lod_shape[i] = lod_shape[i];
-  for (int i = tid; i < lifted_rank; i += M2T_BLOCK) {
-    s_lifted_shape[i] = lifted_shape[i];
-    s_lifted_strides[i] = lifted_strides[i];
-  }
-  __syncthreads();
-
-  const uint64_t gid = (uint64_t)blockIdx.x * M2T_BLOCK + tid;
+  const uint64_t gid = (uint64_t)blockIdx.x * LOD_BLOCK + threadIdx.x;
   if (gid >= n_elements)
     return;
+
+  // Load shapes and strides into registers
+  uint64_t r_full_shape[NdimMax];
+  uint64_t r_lod_shape[NdimMax];
+  uint64_t r_lifted_shape[2 * NdimMax];
+  int64_t r_lifted_strides[2 * NdimMax];
+  for (int d = 0; d < ndim; ++d)
+    r_full_shape[d] = full_shape[d];
+  for (int d = 0; d < lod_ndim; ++d)
+    r_lod_shape[d] = lod_shape[d];
+  for (int d = 0; d < lifted_rank; ++d) {
+    r_lifted_shape[d] = lifted_shape[d];
+    r_lifted_strides[d] = lifted_strides[d];
+  }
 
   // Decompose gid in C-order (dim ndim-1 fastest) to match row-major data
   // layout.
   uint64_t remainder = gid;
-  uint64_t coords[M2T_MAX_RANK]; // register, not shared — ndim is small
+  uint64_t coords[NdimMax];
   for (int d = ndim - 1; d >= 0; --d) {
-    coords[d] = remainder % s_full_shape[d];
-    remainder /= s_full_shape[d];
+    coords[d] = remainder % r_full_shape[d];
+    remainder /= r_full_shape[d];
   }
 
   // Separate batch and LOD coords, compute batch index.
   // Assign LOD coords in reverse so lod_coords[k] pairs with lod_shape[k].
+  uint64_t lod_coords[NdimMax];
   uint64_t batch_index = 0, batch_stride = 1;
   int lod_dim = lod_ndim - 1;
   for (int d = ndim - 1; d >= 0; --d) {
     if ((lod_mask >> d) & 1) {
-      s_coords[imad(lod_dim, M2T_BLOCK, tid)] = coords[d];
+      lod_coords[lod_dim] = coords[d];
       lod_dim--;
     } else {
       batch_index += coords[d] * batch_stride;
-      batch_stride *= s_full_shape[d];
+      batch_stride *= r_full_shape[d];
     }
   }
 
   // Morton rank → read position
-  uint64_t mpos = morton_rank_d(
-    lod_ndim, s_lod_shape, lod_nlod, s_coords, s_products, M2T_BLOCK, tid, 0);
+  uint64_t mpos =
+    morton_rank_d<NdimMax>(lod_ndim, r_lod_shape, lod_nlod, lod_coords, 0);
   T val = morton[batch_index * lod_count + mpos];
 
   // Tile-pool position via lifted strides
@@ -449,45 +591,20 @@ lod_morton_to_tiles_k(T* __restrict__ tiles,
   // lifted_strides[2*i+1] = stride for within_tile of dim i (reversed)
   int64_t tile_pos = 0;
   for (int i = 0; i < ndim; ++i) {
-    // In lifted layout, dim i maps to lifted indices (2*i, 2*i+1)
-    // lifted_shape[2*i] = tile_count[i], lifted_shape[2*i+1] = tile_size[i]
-    uint64_t tile_idx = coords[i] / s_lifted_shape[2 * i + 1];
-    uint64_t within = coords[i] % s_lifted_shape[2 * i + 1];
-    tile_pos += (int64_t)tile_idx * s_lifted_strides[2 * i];
-    tile_pos += (int64_t)within * s_lifted_strides[2 * i + 1];
+    uint64_t tile_idx = coords[i] / r_lifted_shape[2 * i + 1];
+    uint64_t within = coords[i] % r_lifted_shape[2 * i + 1];
+    tile_pos += (int64_t)tile_idx * r_lifted_strides[2 * i];
+    tile_pos += (int64_t)within * r_lifted_strides[2 * i + 1];
   }
 
   tiles[tile_pos] = val;
 }
 
-static constexpr size_t
-m2t_smem_bytes(int ndim, int lod_ndim, int lifted_rank)
-{
-  // s_full_shape[ndim] + s_lod_shape[lod_ndim] + s_lifted_shape[lifted_rank]
-  // + s_lifted_strides[lifted_rank] (as int64)
-  // + s_coords[lod_ndim * M2T_BLOCK] + s_products[(lod_ndim+1) * M2T_BLOCK]
-  return ((size_t)ndim + lod_ndim + lifted_rank) * sizeof(uint64_t) +
-         (size_t)lifted_rank * sizeof(int64_t) +
-         ((size_t)2 * lod_ndim + 1) * M2T_BLOCK * sizeof(uint64_t);
-}
-
-static constexpr size_t
-scatter_smem_bytes(int ndim, int lod_ndim)
-{
-  return ((size_t)ndim + lod_ndim + ((size_t)2 * lod_ndim + 1) * LOD_BLOCK) *
-         sizeof(uint64_t);
-}
-
-static constexpr size_t
-fill_ends_smem_bytes(int ndim)
-{
-  return (2 * (size_t)ndim + ((size_t)2 * ndim + 1) * LOD_BLOCK) *
-         sizeof(uint64_t);
-}
+// --- Shared memory size helpers ---
 
 // --- Dispatch helpers ---
 
-template<typename T>
+template<typename T, int NdimMax>
 static void
 lod_scatter_launch(CUdeviceptr d_dst,
                    CUdeviceptr d_src,
@@ -502,22 +619,22 @@ lod_scatter_launch(CUdeviceptr d_dst,
                    CUstream stream)
 {
   const int grid_size = (int)((n_elements + LOD_BLOCK - 1) / LOD_BLOCK);
-  size_t smem = scatter_smem_bytes(ndim, lod_ndim);
 
-  lod_scatter_k<T>
-    <<<grid_size, LOD_BLOCK, smem, stream>>>((T*)d_dst,
-                                             (const T*)d_src,
-                                             ndim,
-                                             n_elements,
-                                             (const uint64_t*)d_full_shape,
-                                             (const uint64_t*)d_lod_shape,
-                                             lod_ndim,
-                                             lod_nlod,
-                                             lod_mask,
-                                             lod_count);
+  lod_scatter_k<T, NdimMax>
+    <<<grid_size, LOD_BLOCK, 0, stream>>>((T*)d_dst,
+                                          (const T*)d_src,
+                                          ndim,
+                                          n_elements,
+                                          (const uint64_t*)d_full_shape,
+                                          (const uint64_t*)d_lod_shape,
+                                          lod_ndim,
+                                          lod_nlod,
+                                          lod_mask,
+                                          lod_count);
 }
 
-extern "C" void
+// FIXME: this should return 0 on error, otherwise 1.
+extern "C" int
 lod_scatter(CUdeviceptr d_dst,
             CUdeviceptr d_src,
             enum lod_dtype dtype,
@@ -533,34 +650,256 @@ lod_scatter(CUdeviceptr d_dst,
 {
   int lod_nlod = ceil_log2_h(max_shape_h(lod_ndim, lod_shape_host));
 
-  switch (dtype) {
-    case lod_dtype_u16:
-      lod_scatter_launch<uint16_t>(d_dst,
-                                   d_src,
-                                   ndim,
-                                   n_elements,
-                                   d_full_shape,
-                                   d_lod_shape,
-                                   lod_ndim,
-                                   lod_nlod,
-                                   lod_mask,
-                                   lod_count,
-                                   stream);
-      break;
-    case lod_dtype_f32:
-      lod_scatter_launch<float>(d_dst,
-                                d_src,
-                                ndim,
-                                n_elements,
-                                d_full_shape,
-                                d_lod_shape,
-                                lod_ndim,
-                                lod_nlod,
-                                lod_mask,
-                                lod_count,
-                                stream);
-      break;
+#define XXX(target_dtype, T, maxdim)                                           \
+  if (dtype == target_dtype && ndim <= maxdim) {                               \
+    lod_scatter_launch<T, maxdim>(d_dst,                                       \
+                                  d_src,                                       \
+                                  ndim,                                        \
+                                  n_elements,                                  \
+                                  d_full_shape,                                \
+                                  d_lod_shape,                                 \
+                                  lod_ndim,                                    \
+                                  lod_nlod,                                    \
+                                  lod_mask,                                    \
+                                  lod_count,                                   \
+                                  stream);                                     \
+    return 1;                                                                  \
   }
+
+  XXX(lod_dtype_u16, uint16_t, 4);
+  XXX(lod_dtype_f32, float, 4);
+  XXX(lod_dtype_u16, uint16_t, 8);
+  XXX(lod_dtype_f32, float, 8);
+#undef XXX
+  return 0; // failure
+}
+
+template<int NdimMax>
+static void
+lod_build_scatter_lut_launch(CUdeviceptr d_lut,
+                             CUdeviceptr d_lod_shape,
+                             int lod_ndim,
+                             int lod_nlod,
+                             uint64_t lod_count,
+                             CUstream stream)
+{
+  const int grid_size = (int)((lod_count + LOD_BLOCK - 1) / LOD_BLOCK);
+
+  lod_build_scatter_lut_k<NdimMax>
+    <<<grid_size, LOD_BLOCK, 0, stream>>>((uint32_t*)d_lut,
+                                          lod_ndim,
+                                          (const uint64_t*)d_lod_shape,
+                                          lod_nlod,
+                                          lod_count);
+}
+
+extern "C" void
+lod_build_scatter_lut(CUdeviceptr d_lut,
+                      CUdeviceptr d_lod_shape,
+                      int lod_ndim,
+                      const uint64_t* lod_shape_host,
+                      uint64_t lod_count,
+                      CUstream stream)
+{
+  int lod_nlod = ceil_log2_h(max_shape_h(lod_ndim, lod_shape_host));
+
+#define XXX(maxdim)                                                            \
+  if (lod_ndim <= maxdim) {                                                    \
+    lod_build_scatter_lut_launch<maxdim>(                                      \
+      d_lut, d_lod_shape, lod_ndim, lod_nlod, lod_count, stream);              \
+    return;                                                                    \
+  }
+
+  XXX(4);
+  XXX(8);
+#undef XXX
+}
+
+template<typename T, int NdimMax>
+static void
+lod_scatter_lut_launch(CUdeviceptr d_dst,
+                       CUdeviceptr d_src,
+                       CUdeviceptr d_lut,
+                       int ndim,
+                       uint64_t n_elements,
+                       CUdeviceptr d_full_shape,
+                       CUdeviceptr d_lod_shape,
+                       int lod_ndim,
+                       uint32_t lod_mask,
+                       uint64_t lod_count,
+                       CUstream stream)
+{
+  const int grid_size = (int)((n_elements + LOD_BLOCK - 1) / LOD_BLOCK);
+
+  lod_scatter_lut_k<T, NdimMax>
+    <<<grid_size, LOD_BLOCK, 0, stream>>>((T*)d_dst,
+                                          (const T*)d_src,
+                                          (const uint32_t*)d_lut,
+                                          ndim,
+                                          n_elements,
+                                          (const uint64_t*)d_full_shape,
+                                          (const uint64_t*)d_lod_shape,
+                                          lod_ndim,
+                                          lod_mask,
+                                          lod_count);
+}
+
+extern "C" void
+lod_scatter_lut(CUdeviceptr d_dst,
+                CUdeviceptr d_src,
+                CUdeviceptr d_lut,
+                enum lod_dtype dtype,
+                int ndim,
+                uint64_t n_elements,
+                CUdeviceptr d_full_shape,
+                CUdeviceptr d_lod_shape,
+                int lod_ndim,
+                uint32_t lod_mask,
+                uint64_t lod_count,
+                CUstream stream)
+{
+#define XXX(target_dtype, T, maxdim)                                           \
+  if (dtype == target_dtype && ndim <= maxdim) {                               \
+    lod_scatter_lut_launch<T, maxdim>(d_dst,                                   \
+                                      d_src,                                   \
+                                      d_lut,                                   \
+                                      ndim,                                    \
+                                      n_elements,                              \
+                                      d_full_shape,                            \
+                                      d_lod_shape,                             \
+                                      lod_ndim,                                \
+                                      lod_mask,                                \
+                                      lod_count,                               \
+                                      stream);                                 \
+    return;                                                                    \
+  }
+
+  XXX(lod_dtype_u16, uint16_t, 4);
+  XXX(lod_dtype_f32, float, 4);
+  XXX(lod_dtype_u16, uint16_t, 8);
+  XXX(lod_dtype_f32, float, 8);
+#undef XXX
+}
+
+template<int NdimMax>
+static void
+lod_build_gather_lut_launch(CUdeviceptr d_src_lut,
+                            CUdeviceptr d_fwd_lut,
+                            CUdeviceptr d_lod_shape,
+                            CUdeviceptr d_lod_strides,
+                            int lod_ndim,
+                            uint64_t lod_count,
+                            CUstream stream)
+{
+  const int grid_size = (int)((lod_count + LOD_BLOCK - 1) / LOD_BLOCK);
+
+  lod_build_gather_lut_k<NdimMax>
+    <<<grid_size, LOD_BLOCK, 0, stream>>>((uint64_t*)d_src_lut,
+                                          (const uint32_t*)d_fwd_lut,
+                                          lod_ndim,
+                                          (const uint64_t*)d_lod_shape,
+                                          (const uint64_t*)d_lod_strides,
+                                          lod_count);
+}
+
+extern "C" void
+lod_build_gather_lut(CUdeviceptr d_src_lut,
+                     CUdeviceptr d_fwd_lut,
+                     CUdeviceptr d_lod_shape,
+                     CUdeviceptr d_lod_strides,
+                     int lod_ndim,
+                     uint64_t lod_count,
+                     CUstream stream)
+{
+#define XXX(maxdim)                                                            \
+  if (lod_ndim <= maxdim) {                                                    \
+    lod_build_gather_lut_launch<maxdim>(d_src_lut,                             \
+                                        d_fwd_lut,                             \
+                                        d_lod_shape,                           \
+                                        d_lod_strides,                         \
+                                        lod_ndim,                              \
+                                        lod_count,                             \
+                                        stream);                               \
+    return;                                                                    \
+  }
+
+  XXX(4);
+  XXX(8);
+#undef XXX
+}
+
+template<typename T>
+static void
+lod_gather_lut_launch(CUdeviceptr d_dst,
+                      CUdeviceptr d_src,
+                      CUdeviceptr d_src_lut,
+                      CUdeviceptr d_batch_offsets,
+                      uint64_t lod_count,
+                      uint64_t batch_count,
+                      CUstream stream)
+{
+  const uint64_t total = batch_count * lod_count;
+  constexpr int T_PER_U32 = sizeof(uint32_t) / sizeof(T);
+  constexpr int TILE_ELEMENTS = ((1 << 12) / (int)sizeof(uint32_t)) * T_PER_U32;
+  const int grid_size = (int)((total + TILE_ELEMENTS - 1) / TILE_ELEMENTS);
+
+  lod_gather_lut_k<T>
+    <<<grid_size, LOD_BLOCK, 0, stream>>>((T*)d_dst,
+                                          (const T*)d_src,
+                                          (const uint64_t*)d_src_lut,
+                                          (const uint64_t*)d_batch_offsets,
+                                          lod_count,
+                                          total);
+}
+
+extern "C" void
+lod_gather_lut(CUdeviceptr d_dst,
+               CUdeviceptr d_src,
+               CUdeviceptr d_src_lut,
+               CUdeviceptr d_batch_offsets,
+               enum lod_dtype dtype,
+               uint64_t lod_count,
+               uint64_t batch_count,
+               CUstream stream)
+{
+#define XXX(target_dtype, T)                                                   \
+  if (dtype == target_dtype) {                                                 \
+    lod_gather_lut_launch<T>(d_dst,                                            \
+                             d_src,                                            \
+                             d_src_lut,                                        \
+                             d_batch_offsets,                                  \
+                             lod_count,                                        \
+                             batch_count,                                      \
+                             stream);                                          \
+    return;                                                                    \
+  }
+
+  XXX(lod_dtype_u16, uint16_t);
+  XXX(lod_dtype_f32, float);
+#undef XXX
+}
+
+template<int NdimMax>
+static void
+lod_fill_ends_launch(CUdeviceptr d_ends,
+                     int ndim,
+                     CUdeviceptr d_child_shape,
+                     CUdeviceptr d_parent_shape,
+                     int parent_nlod,
+                     int child_nlod,
+                     uint64_t n_parents,
+                     CUstream stream)
+{
+  const int grid_size = (int)((n_parents + LOD_BLOCK - 1) / LOD_BLOCK);
+
+  lod_fill_ends_k<NdimMax>
+    <<<grid_size, LOD_BLOCK, 0, stream>>>((uint64_t*)d_ends,
+                                          ndim,
+                                          (const uint64_t*)d_child_shape,
+                                          (const uint64_t*)d_parent_shape,
+                                          parent_nlod,
+                                          child_nlod,
+                                          n_parents);
 }
 
 extern "C" void
@@ -576,17 +915,22 @@ lod_fill_ends_gpu(CUdeviceptr d_ends,
   int parent_nlod = ceil_log2_h(max_shape_h(ndim, parent_shape_host));
   int child_nlod = ceil_log2_h(max_shape_h(ndim, child_shape_host));
 
-  const int grid_size = (int)((n_parents + LOD_BLOCK - 1) / LOD_BLOCK);
-  size_t smem = fill_ends_smem_bytes(ndim);
+#define XXX(maxdim)                                                            \
+  if (ndim <= maxdim) {                                                        \
+    lod_fill_ends_launch<maxdim>(d_ends,                                       \
+                                 ndim,                                         \
+                                 d_child_shape,                                \
+                                 d_parent_shape,                               \
+                                 parent_nlod,                                  \
+                                 child_nlod,                                   \
+                                 n_parents,                                    \
+                                 stream);                                      \
+    return;                                                                    \
+  }
 
-  lod_fill_ends_k<<<grid_size, LOD_BLOCK, smem, stream>>>(
-    (uint64_t*)d_ends,
-    ndim,
-    (const uint64_t*)d_child_shape,
-    (const uint64_t*)d_parent_shape,
-    parent_nlod,
-    child_nlod,
-    n_parents);
+  XXX(4);
+  XXX(8);
+#undef XXX
 }
 
 extern "C" int
@@ -595,81 +939,78 @@ lod_morton_tile_nlod(int lod_ndim, const uint64_t* lod_shape_host)
   return ceil_log2_h(max_shape_h(lod_ndim, lod_shape_host));
 }
 
+template<typename T, int NdimMax>
+static void
+lod_morton_to_tiles_launch(CUdeviceptr d_tiles,
+                           CUdeviceptr d_morton,
+                           const struct morton_tile_layout* layout,
+                           CUstream stream)
+{
+  int ndim = layout->ndim;
+  int lod_ndim = layout->lod_ndim;
+  int lifted_rank = 2 * ndim;
+  uint64_t n_elements = layout->n_elements;
+  const int grid_size = (int)((n_elements + LOD_BLOCK - 1) / LOD_BLOCK);
+
+  lod_morton_to_tiles_k<T, NdimMax><<<grid_size, LOD_BLOCK, 0, stream>>>(
+    (T*)d_tiles,
+    (const T*)d_morton,
+    ndim,
+    (const uint64_t*)layout->d_full_shape,
+    lod_ndim,
+    layout->lod_mask,
+    (const uint64_t*)layout->d_lod_shape,
+    layout->lod_nlod,
+    layout->lod_count,
+    n_elements,
+    lifted_rank,
+    (const uint64_t*)layout->d_lifted_shape,
+    (const int64_t*)layout->d_lifted_strides);
+}
+
 extern "C" void
 lod_morton_to_tiles(CUdeviceptr d_tiles,
                     CUdeviceptr d_morton,
                     const struct morton_tile_layout* layout,
                     CUstream stream)
 {
-  int ndim = layout->ndim;
-  int lod_ndim = layout->lod_ndim;
-  int lifted_rank = 2 * ndim;
-  uint64_t n_elements = layout->n_elements;
-
-  const int grid_size = (int)((n_elements + M2T_BLOCK - 1) / M2T_BLOCK);
-  size_t smem = m2t_smem_bytes(ndim, lod_ndim, lifted_rank);
-
-  switch (layout->dtype) {
-    case lod_dtype_u16:
-      lod_morton_to_tiles_k<uint16_t><<<grid_size, M2T_BLOCK, smem, stream>>>(
-        (uint16_t*)d_tiles,
-        (const uint16_t*)d_morton,
-        ndim,
-        (const uint64_t*)layout->d_full_shape,
-        lod_ndim,
-        layout->lod_mask,
-        (const uint64_t*)layout->d_lod_shape,
-        layout->lod_nlod,
-        layout->lod_count,
-        n_elements,
-        lifted_rank,
-        (const uint64_t*)layout->d_lifted_shape,
-        (const int64_t*)layout->d_lifted_strides);
-      break;
-    case lod_dtype_f32:
-      lod_morton_to_tiles_k<float><<<grid_size, M2T_BLOCK, smem, stream>>>(
-        (float*)d_tiles,
-        (const float*)d_morton,
-        ndim,
-        (const uint64_t*)layout->d_full_shape,
-        lod_ndim,
-        layout->lod_mask,
-        (const uint64_t*)layout->d_lod_shape,
-        layout->lod_nlod,
-        layout->lod_count,
-        n_elements,
-        lifted_rank,
-        (const uint64_t*)layout->d_lifted_shape,
-        (const int64_t*)layout->d_lifted_strides);
-      break;
+#define XXX(target_dtype, T, maxdim)                                           \
+  if (layout->dtype == target_dtype && layout->ndim <= maxdim) {               \
+    lod_morton_to_tiles_launch<T, maxdim>(d_tiles, d_morton, layout, stream);  \
+    return;                                                                    \
   }
-}
 
-// Helper macro: launch the reduce kernel for a given (Type, Acc, Method) combo.
-#define LAUNCH_REDUCE(Type, Acc, Method)                                       \
-  lod_reduce_k<Type, Acc, Method>                                              \
-    <<<grid_size, block_size, 0, stream>>>(                                    \
-      (Type*)d_values, (const uint64_t*)d_ends,                                \
-      src_offset, dst_offset, src_lod_count, dst_lod_count, batch_count)
+  XXX(lod_dtype_u16, uint16_t, 4);
+  XXX(lod_dtype_f32, float, 4);
+  XXX(lod_dtype_u16, uint16_t, 8);
+  XXX(lod_dtype_f32, float, 8);
+#undef XXX
+}
 
 // Helper macro: dispatch over all methods for a given (Type, Acc) pair.
 #define DISPATCH_METHOD(Type, Acc)                                             \
   switch (method) {                                                            \
     case lod_reduce_mean:                                                      \
-      LAUNCH_REDUCE(Type, Acc, lod_reduce_mean); break;                        \
+      LAUNCH_REDUCE(Type, Acc, lod_reduce_mean);                               \
+      break;                                                                   \
     case lod_reduce_min:                                                       \
-      LAUNCH_REDUCE(Type, Acc, lod_reduce_min); break;                         \
+      LAUNCH_REDUCE(Type, Acc, lod_reduce_min);                                \
+      break;                                                                   \
     case lod_reduce_max:                                                       \
-      LAUNCH_REDUCE(Type, Acc, lod_reduce_max); break;                         \
+      LAUNCH_REDUCE(Type, Acc, lod_reduce_max);                                \
+      break;                                                                   \
     case lod_reduce_median:                                                    \
-      LAUNCH_REDUCE(Type, Acc, lod_reduce_median); break;                      \
+      LAUNCH_REDUCE(Type, Acc, lod_reduce_median);                             \
+      break;                                                                   \
     case lod_reduce_max_suppressed:                                            \
-      LAUNCH_REDUCE(Type, Acc, lod_reduce_max_suppressed); break;              \
+      LAUNCH_REDUCE(Type, Acc, lod_reduce_max_suppressed);                     \
+      break;                                                                   \
     case lod_reduce_min_suppressed:                                            \
-      LAUNCH_REDUCE(Type, Acc, lod_reduce_min_suppressed); break;              \
+      LAUNCH_REDUCE(Type, Acc, lod_reduce_min_suppressed);                     \
+      break;                                                                   \
   }
 
-extern "C" void
+extern "C" int
 lod_reduce(CUdeviceptr d_values,
            CUdeviceptr d_ends,
            enum lod_dtype dtype,
@@ -685,16 +1026,40 @@ lod_reduce(CUdeviceptr d_values,
   const int block_size = 256;
   const int grid_size = (int)((total + block_size - 1) / block_size);
 
-  switch (dtype) {
-    case lod_dtype_u16:
-      DISPATCH_METHOD(uint16_t, uint32_t);
-      break;
-    case lod_dtype_f32:
-      DISPATCH_METHOD(float, float);
-      break;
+#define CASE(Type, Acc, Method)                                                \
+  case Method:                                                                 \
+    lod_reduce_k<Type, Acc, Method>                                            \
+      <<<grid_size, block_size, 0, stream>>>((Type*)d_values,                  \
+                                             (const uint64_t*)d_ends,          \
+                                             src_offset,                       \
+                                             dst_offset,                       \
+                                             src_lod_count,                    \
+                                             dst_lod_count,                    \
+                                             batch_count);                     \
+    return 0;
+
+#define CASE2(Dtype, Type, Acc)                                                \
+  case Dtype:                                                                  \
+    XXX(Type, Acc);                                                            \
+    break;
+
+#define XXX(Type, Acc)                                                         \
+  switch (method) {                                                            \
+    CASE(Type, Acc, lod_reduce_mean);                                          \
+    CASE(Type, Acc, lod_reduce_min);                                           \
+    CASE(Type, Acc, lod_reduce_max);                                           \
+    CASE(Type, Acc, lod_reduce_median);                                        \
+    CASE(Type, Acc, lod_reduce_max_suppressed);                                \
+    CASE(Type, Acc, lod_reduce_min_suppressed);                                \
   }
+
+  switch (dtype) {
+    CASE2(lod_dtype_u16, uint16_t, uint32_t);
+    CASE2(lod_dtype_f32, float, float);
+  }
+
+#undef CASE
+#undef CASE2
+#undef XXX
+  return 1; // error - invalid parameter
 }
-
-#undef LAUNCH_REDUCE
-#undef DISPATCH_METHOD
-

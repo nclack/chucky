@@ -67,3 +67,4 @@ lod_plan_init(struct lod_plan* p,
 
 void
 lod_plan_free(struct lod_plan* p);
+

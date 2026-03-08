@@ -39,18 +39,19 @@ extern "C"
     CUdeviceptr d_lifted_strides;
   };
 
-  void lod_scatter(CUdeviceptr d_dst,
-                   CUdeviceptr d_src,
-                   enum lod_dtype dtype,
-                   int ndim,
-                   uint64_t n_elements,
-                   CUdeviceptr d_full_shape,
-                   CUdeviceptr d_lod_shape,
-                   int lod_ndim,
-                   const uint64_t* lod_shape_host,
-                   uint32_t lod_mask,
-                   uint64_t lod_count,
-                   CUstream stream);
+  // returns 1 on succes, 0 on failure
+  int lod_scatter(CUdeviceptr d_dst,
+                  CUdeviceptr d_src,
+                  enum lod_dtype dtype,
+                  int ndim,
+                  uint64_t n_elements,
+                  CUdeviceptr d_full_shape,
+                  CUdeviceptr d_lod_shape,
+                  int lod_ndim,
+                  const uint64_t* lod_shape_host,
+                  uint32_t lod_mask,
+                  uint64_t lod_count,
+                  CUstream stream);
 
   void lod_fill_ends_gpu(CUdeviceptr d_ends,
                          int ndim,
@@ -61,16 +62,17 @@ extern "C"
                          uint64_t n_parents,
                          CUstream stream);
 
-  void lod_reduce(CUdeviceptr d_values,
-                  CUdeviceptr d_ends,
-                  enum lod_dtype dtype,
-                  enum lod_reduce_method method,
-                  uint64_t src_offset,
-                  uint64_t dst_offset,
-                  uint64_t src_lod_count,
-                  uint64_t dst_lod_count,
-                  uint64_t batch_count,
-                  CUstream stream);
+  // returns 1 on succes, 0 on failure
+  int lod_reduce(CUdeviceptr d_values,
+                 CUdeviceptr d_ends,
+                 enum lod_dtype dtype,
+                 enum lod_reduce_method method,
+                 uint64_t src_offset,
+                 uint64_t dst_offset,
+                 uint64_t src_lod_count,
+                 uint64_t dst_lod_count,
+                 uint64_t batch_count,
+                 CUstream stream);
 
   // Pre-compute lod_nlod (= ceil_log2(max(lod_shape))) for morton_tile_layout.
   int lod_morton_tile_nlod(int lod_ndim, const uint64_t* lod_shape_host);
@@ -81,6 +83,56 @@ extern "C"
                            CUdeviceptr d_morton,
                            const struct morton_tile_layout* layout,
                            CUstream stream);
+
+  // Build a LUT mapping lod_linear_index -> morton_rank.
+  // d_lut: device buffer of lod_count uint32_t entries.
+  void lod_build_scatter_lut(CUdeviceptr d_lut,
+                             CUdeviceptr d_lod_shape,
+                             int lod_ndim,
+                             const uint64_t* lod_shape_host,
+                             uint64_t lod_count,
+                             CUstream stream);
+
+  // Scatter using a precomputed morton rank LUT.
+  void lod_scatter_lut(CUdeviceptr d_dst,
+                       CUdeviceptr d_src,
+                       CUdeviceptr d_lut,
+                       enum lod_dtype dtype,
+                       int ndim,
+                       uint64_t n_elements,
+                       CUdeviceptr d_full_shape,
+                       CUdeviceptr d_lod_shape,
+                       int lod_ndim,
+                       uint32_t lod_mask,
+                       uint64_t lod_count,
+                       CUstream stream);
+
+  // Build an inverse LUT for gather: src_lut[morton_pos] = src_lod_offset.
+  // The source offset is the C-order position contribution from LOD dims.
+  // d_fwd_lut: forward LUT (lod_linear -> morton_pos), lod_count entries.
+  // d_lod_strides: lod_ndim uint64_t entries, C-order strides of LOD dims
+  //                in the full array.
+  void lod_build_gather_lut(CUdeviceptr d_src_lut,
+                            CUdeviceptr d_fwd_lut,
+                            CUdeviceptr d_lod_shape,
+                            CUdeviceptr d_lod_strides,
+                            int lod_ndim,
+                            uint64_t lod_count,
+                            CUstream stream);
+
+  // Gather using precomputed inverse LUT: iterate in Morton output order
+  // for coalesced writes, scattered reads.
+  // d_src_lut: lod_count uint64_t entries (morton_pos -> src_lod_offset).
+  // d_batch_offsets: batch_count uint64_t entries mapping batch_index to
+  //                  the C-order source offset from batch dims.
+  void lod_gather_lut(CUdeviceptr d_dst,
+                      CUdeviceptr d_src,
+                      CUdeviceptr d_src_lut,
+                      CUdeviceptr d_batch_offsets,
+                      enum lod_dtype dtype,
+                      uint64_t lod_count,
+                      uint64_t batch_count,
+                      CUstream stream);
 
 #ifdef __cplusplus
 }

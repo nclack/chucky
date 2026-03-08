@@ -1041,6 +1041,16 @@ init_lod_layouts(struct tile_stream_gpu* s)
                       (uint8_t)s->lod_mask,
                       LOD_MAX_LEVELS));
 
+  // Validate LOD counts fit in uint32_t (scatter LUT uses uint32_t offsets)
+  for (int k = 0; k < s->lod.plan.nlod; ++k) {
+    if (s->lod.plan.lod_counts[k] > UINT32_MAX) {
+      log_error("LOD level %d count %llu exceeds uint32_t limit",
+                k,
+                (unsigned long long)s->lod.plan.lod_counts[k]);
+      goto Fail;
+    }
+  }
+
   // Upload shapes to device
   CU(Fail, cuMemAlloc(&s->lod.d_full_shape, rank * sizeof(uint64_t)));
   CU(Fail,

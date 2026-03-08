@@ -275,3 +275,4 @@ lod_plan_free(struct lod_plan* p)
   free(p->ends);
   memset(p, 0, sizeof(*p));
 }
+

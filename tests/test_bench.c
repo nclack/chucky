@@ -1,4 +1,5 @@
 #include "compress.h"
+#include "lod.h"
 #include "platform.h"
 #include "prelude.cuda.h"
 #include "prelude.h"
@@ -413,6 +414,7 @@ run_bench(const char* label,
     .dimensions = dims,
     .codec = CODEC_ZSTD,
     .shard_sink = sink,
+    .reduce_method = lod_reduce_mean
   };
 
   {

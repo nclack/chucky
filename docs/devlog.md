@@ -24,6 +24,10 @@ Adding more reduce methods - min, max, median, min suppressed, max suppressed.
 
 Re-valuating some of the past todo's
 
+Something very wrong with the lod scatter kernel. Was thinking there's probably
+a way for threads to share work when computing the compacted morton code, and
+started looking at the scatter kernel. I started fixing it but it needs more
+work...
 
 ## 2026-03-01
 

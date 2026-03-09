@@ -24,21 +24,6 @@ extern "C"
     lod_reduce_min_suppressed, // 2nd lowest value
   };
 
-  struct morton_tile_layout
-  {
-    enum lod_dtype dtype;
-    int ndim;
-    CUdeviceptr d_full_shape;
-    int lod_ndim;
-    uint32_t lod_mask;
-    CUdeviceptr d_lod_shape;
-    uint64_t lod_count;
-    uint64_t n_elements;
-    int lod_nlod;
-    CUdeviceptr d_lifted_shape;
-    CUdeviceptr d_lifted_strides;
-  };
-
   // returns 1 on succes, 0 on failure
   int lod_scatter(CUdeviceptr d_dst,
                   CUdeviceptr d_src,
@@ -73,16 +58,6 @@ extern "C"
                  uint64_t dst_lod_count,
                  uint64_t batch_count,
                  CUstream stream);
-
-  // Pre-compute lod_nlod (= ceil_log2(max(lod_shape))) for morton_tile_layout.
-  int lod_morton_tile_nlod(int lod_ndim, const uint64_t* lod_shape_host);
-
-  // Morton-to-tile scatter: reads morton-ordered LOD data and writes into
-  // tile-pool layout using lifted strides. See struct morton_tile_layout.
-  void lod_morton_to_tiles(CUdeviceptr d_tiles,
-                           CUdeviceptr d_morton,
-                           const struct morton_tile_layout* layout,
-                           CUstream stream);
 
   // Build a LUT mapping lod_linear_index -> morton_rank.
   // d_lut: device buffer of lod_count uint32_t entries.

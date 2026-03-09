@@ -186,11 +186,6 @@ struct lod_state
 
   // Per-level tile layouts [1..nlod-1], index 0 unused
   struct stream_layout layouts[LOD_MAX_LEVELS];
-  CUdeviceptr d_lv_full_shapes[LOD_MAX_LEVELS];
-  CUdeviceptr d_lv_lod_shapes[LOD_MAX_LEVELS];
-
-  // Morton-to-tile layout structs: [0] = L0, [1..nlod-1] = LOD levels
-  struct morton_tile_layout morton_tile[LOD_MAX_LEVELS];
 
   // Morton-to-tile scatter LUTs (precomputed)
   CUdeviceptr d_morton_tile_lut[LOD_MAX_LEVELS];          // u32, lod_counts[lv]

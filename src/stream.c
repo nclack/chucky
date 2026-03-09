@@ -159,7 +159,7 @@ Error:
 }
 
 // H2D transfer + copy to linear epoch buffer for LOD.
-// L0 tiling is deferred to run_lod (lod_morton_to_tiles at lv=0).
+// L0 tiling is deferred to run_lod (lod_morton_to_tiles_lut at lv=0).
 // Returns 0 on success, 1 on error.
 static int
 dispatch_scatter_multiscale(struct tile_stream_gpu* s)
@@ -753,8 +753,6 @@ tile_stream_gpu_destroy(struct tile_stream_gpu* stream)
     CUWARN(cuMemFree(stream->lod.d_level_ends[i]));
   }
   for (int i = 1; i < stream->lod.plan.nlod; ++i) {
-    CUWARN(cuMemFree(stream->lod.d_lv_full_shapes[i]));
-    CUWARN(cuMemFree(stream->lod.d_lv_lod_shapes[i]));
     CUWARN(cuMemFree((CUdeviceptr)stream->lod.layouts[i].d_lifted_shape));
     CUWARN(cuMemFree((CUdeviceptr)stream->lod.layouts[i].d_lifted_strides));
   }
@@ -1241,73 +1239,6 @@ init_lod_layouts(struct tile_stream_gpu* s)
              (CUdeviceptr)lay->d_lifted_strides, lay->lifted_strides, stb));
       }
 
-      // Upload per-level full shape and LOD shape for morton-to-tile
-      {
-        CU(Fail,
-           cuMemAlloc(&s->lod.d_lv_full_shapes[lv], rank * sizeof(uint64_t)));
-        CU(Fail,
-           cuMemcpyHtoD(s->lod.d_lv_full_shapes[lv],
-                        s->lod.plan.shapes[lv],
-                        rank * sizeof(uint64_t)));
-
-        CU(Fail,
-           cuMemAlloc(&s->lod.d_lv_lod_shapes[lv],
-                      s->lod.plan.lod_ndim * sizeof(uint64_t)));
-        CU(Fail,
-           cuMemcpyHtoD(s->lod.d_lv_lod_shapes[lv],
-                        s->lod.plan.lod_shapes[lv],
-                        s->lod.plan.lod_ndim * sizeof(uint64_t)));
-      }
-    }
-  }
-
-  // Populate morton_tile_layout structs
-  {
-    enum lod_dtype dtype = (bpe == 2) ? lod_dtype_u16 : lod_dtype_f32;
-
-    // L0
-    {
-      uint64_t n_el = 1;
-      for (int d = 0; d < rank; ++d)
-        n_el *= s->lod.plan.shapes[0][d];
-
-      s->lod.morton_tile[0] = (struct morton_tile_layout){
-        .dtype = dtype,
-        .ndim = rank,
-        .d_full_shape = s->lod.d_full_shape,
-        .lod_ndim = s->lod.plan.lod_ndim,
-        .lod_mask = s->lod.plan.lod_mask,
-        .d_lod_shape = s->lod.d_lod_shape,
-        .lod_count = s->lod.plan.lod_counts[0],
-        .n_elements = n_el,
-        .lod_nlod =
-          lod_morton_tile_nlod(s->lod.plan.lod_ndim, s->lod.plan.lod_shapes[0]),
-        .d_lifted_shape = (CUdeviceptr)s->layout.d_lifted_shape,
-        .d_lifted_strides = (CUdeviceptr)s->layout.d_lifted_strides,
-      };
-    }
-
-    // Levels 1+
-    for (int lv = 1; lv < s->lod.plan.nlod; ++lv) {
-      struct stream_layout* lay = &s->lod.layouts[lv];
-      uint64_t n_el = 1;
-      for (int d = 0; d < rank; ++d)
-        n_el *= s->lod.plan.shapes[lv][d];
-
-      s->lod.morton_tile[lv] = (struct morton_tile_layout){
-        .dtype = dtype,
-        .ndim = rank,
-        .d_full_shape = s->lod.d_lv_full_shapes[lv],
-        .lod_ndim = s->lod.plan.lod_ndim,
-        .lod_mask = s->lod.plan.lod_mask,
-        .d_lod_shape = s->lod.d_lv_lod_shapes[lv],
-        .lod_count = s->lod.plan.lod_counts[lv],
-        .n_elements = n_el,
-        .lod_nlod = lod_morton_tile_nlod(s->lod.plan.lod_ndim,
-                                         s->lod.plan.lod_shapes[lv]),
-        .d_lifted_shape = (CUdeviceptr)lay->d_lifted_shape,
-        .d_lifted_strides = (CUdeviceptr)lay->d_lifted_strides,
-      };
     }
   }
 
@@ -1318,8 +1249,17 @@ init_lod_layouts(struct tile_stream_gpu* s)
     for (int lv = 0; lv < p->nlod; ++lv) {
       struct stream_layout* lay = (lv == 0) ? &s->layout : &s->lod.layouts[lv];
       uint64_t lod_count = p->lod_counts[lv];
-      CUdeviceptr d_lod_shape_lv =
-        (lv == 0) ? s->lod.d_lod_shape : s->lod.d_lv_lod_shapes[lv];
+
+      // Upload LOD shape to device (temporary for LUT building)
+      CUdeviceptr d_lod_shape_lv = 0;
+      if (lv == 0) {
+        d_lod_shape_lv = s->lod.d_lod_shape;
+      } else {
+        const size_t lod_shape_bytes = p->lod_ndim * sizeof(uint64_t);
+        CU(Fail, cuMemAlloc(&d_lod_shape_lv, lod_shape_bytes));
+        CU(Fail,
+           cuMemcpyHtoD(d_lod_shape_lv, p->lod_shapes[lv], lod_shape_bytes));
+      }
 
       // Build temporary forward LUT for this level
       CUdeviceptr d_fwd_lut = 0;
@@ -1372,11 +1312,15 @@ init_lod_layouts(struct tile_stream_gpu* s)
         cuMemFree(d_tile_sizes);
         cuMemFree(d_tile_strides);
         cuMemFree(d_fwd_lut);
+        if (lv > 0)
+          cuMemFree(d_lod_shape_lv);
         goto Fail;
       Built:;
       }
 
       cuMemFree(d_fwd_lut);
+      if (lv > 0)
+        cuMemFree(d_lod_shape_lv);
 
       // Compute batch_tile_offsets on host and upload
       {
@@ -1879,8 +1823,6 @@ tile_stream_gpu_memory_estimate(
     for (int lv = 1; lv < plan.nlod; ++lv) {
       lod_device += 2 * rank * sizeof(uint64_t);        // d_lifted_shape
       lod_device += 2 * rank * sizeof(int64_t);          // d_lifted_strides
-      lod_device += rank * sizeof(uint64_t);              // d_lv_full_shapes
-      lod_device += plan.lod_ndim * sizeof(uint64_t);     // d_lv_lod_shapes
     }
   }
 

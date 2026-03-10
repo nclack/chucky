@@ -1,0 +1,15 @@
+#include "bench_util.h"
+#include "prelude.h"
+
+int
+main(int ac, char* av[])
+{
+  struct dimension dims[] = {
+    { .size = 1000, .tile_size = 2, .tiles_per_shard = 32, .name = "t", .downsample = 1 },
+    { .size = 256, .tile_size = 16, .tiles_per_shard = 8, .name = "z", .downsample = 1 },
+    { .size = 256, .tile_size = 16, .tiles_per_shard = 8, .name = "y", .downsample = 1 },
+    { .size = 256, .tile_size = 16, .tiles_per_shard = 8, .name = "x", .downsample = 1 },
+    { .size = 3, .tile_size = 1, .tiles_per_shard = 3, .name = "c" },
+  };
+  return bench_stream_main(ac, av, "multiscale_dim0", dims, countof(dims));
+}

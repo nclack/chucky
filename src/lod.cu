@@ -136,8 +136,6 @@ morton_rank_d(int ndim,
   return rank;
 }
 
-// --- Scatter kernel (templated on dtype and NdimMax) ---
-
 template<typename T, int NdimMax>
 __global__ void
 lod_scatter_k(T* __restrict__ dst,
@@ -259,26 +257,29 @@ lod_scatter_lut_k(T* __restrict__ dst,
 template<int NdimMax>
 __global__ void
 lod_build_gather_lut_k(uint32_t* __restrict__ src_lut,
-                       const uint32_t* __restrict__ fwd_lut,
                        int lod_ndim,
                        const uint64_t* __restrict__ lod_shape,
                        const uint64_t* __restrict__ lod_strides,
+                       int lod_nlod,
                        uint64_t lod_count)
 {
   const uint64_t gid = (uint64_t)blockIdx.x * LOD_BLOCK + threadIdx.x;
   if (gid >= lod_count)
     return;
 
-  // Decompose gid (= lod_linear) into lod_coords, compute src offset
+  uint64_t coords[NdimMax];
   uint64_t remainder = gid;
   uint64_t src_offset = 0;
   for (int d = lod_ndim - 1; d >= 0; --d) {
     uint64_t coord = remainder % lod_shape[d];
     remainder /= lod_shape[d];
+    coords[d] = coord;
     src_offset += coord * lod_strides[d];
   }
 
-  src_lut[fwd_lut[gid]] = (uint32_t)src_offset;
+  uint64_t morton_pos =
+    morton_rank_d<NdimMax>(lod_ndim, lod_shape, lod_nlod, coords, 0);
+  src_lut[morton_pos] = (uint32_t)src_offset;
 }
 
 // --- Gather kernel: shared-memory tiled, u32-aliased, coalesced stores ---
@@ -286,12 +287,12 @@ lod_build_gather_lut_k(uint32_t* __restrict__ src_lut,
 
 template<typename T>
 __global__ void __launch_bounds__(256, 4)
-lod_gather_lut_k(T* __restrict__ dst,
-                 const T* __restrict__ src,
-                 const uint32_t* __restrict__ src_lut,
-                 const uint32_t* __restrict__ batch_offsets,
-                 uint64_t lod_count,
-                 uint64_t total)
+  lod_gather_lut_k(T* __restrict__ dst,
+                   const T* __restrict__ src,
+                   const uint32_t* __restrict__ src_lut,
+                   const uint32_t* __restrict__ batch_offsets,
+                   uint64_t lod_count,
+                   uint64_t total)
 {
   constexpr int T_PER_U32 = sizeof(uint32_t) / sizeof(T);
   constexpr int TILE_U32 = (1 << 12) / sizeof(uint32_t); // 1024 u32 slots = 4KB
@@ -321,13 +322,19 @@ lod_gather_lut_k(T* __restrict__ dst,
             packed |= ((uint32_t)val) << (k * sizeof(T) * 8);
         }
         morton_pos++;
-        if (morton_pos >= lod_count) { morton_pos = 0; batch++; }
+        if (morton_pos >= lod_count) {
+          morton_pos = 0;
+          batch++;
+        }
       }
       tile[i] = packed;
 
       // Advance to next iteration: skip (blockDim.x - 1) * T_PER_U32 elements
       morton_pos += (uint64_t)(blockDim.x - 1) * T_PER_U32;
-      while (morton_pos >= lod_count) { morton_pos -= lod_count; batch++; }
+      while (morton_pos >= lod_count) {
+        morton_pos -= lod_count;
+        batch++;
+      }
     }
   }
 
@@ -360,30 +367,33 @@ lod_gather_lut_k(T* __restrict__ dst,
 template<int NdimMax>
 __global__ void
 lod_build_tile_scatter_lut_k(uint32_t* __restrict__ tile_lut,
-                              const uint32_t* __restrict__ fwd_lut,
-                              int lod_ndim,
-                              const uint64_t* __restrict__ lod_shape,
-                              const uint64_t* __restrict__ lod_tile_sizes,
-                              const int64_t* __restrict__ lod_tile_strides,
-                              uint64_t lod_count)
+                             int lod_ndim,
+                             const uint64_t* __restrict__ lod_shape,
+                             const uint64_t* __restrict__ lod_tile_sizes,
+                             const int64_t* __restrict__ lod_tile_strides,
+                             int lod_nlod,
+                             uint64_t lod_count)
 {
   const uint64_t gid = (uint64_t)blockIdx.x * LOD_BLOCK + threadIdx.x;
   if (gid >= lod_count)
     return;
 
-  // Decompose gid (= lod_linear) into lod_coords, compute tile offset
+  uint64_t coords[NdimMax];
   uint64_t remainder = gid;
   int64_t offset = 0;
   for (int d = lod_ndim - 1; d >= 0; --d) {
     uint64_t coord = remainder % lod_shape[d];
     remainder /= lod_shape[d];
+    coords[d] = coord;
     uint64_t tile_idx = coord / lod_tile_sizes[d];
     uint64_t within = coord % lod_tile_sizes[d];
     offset += (int64_t)tile_idx * lod_tile_strides[2 * d];
     offset += (int64_t)within * lod_tile_strides[2 * d + 1];
   }
 
-  tile_lut[fwd_lut[gid]] = (uint32_t)offset;
+  uint64_t morton_pos =
+    morton_rank_d<NdimMax>(lod_ndim, lod_shape, lod_nlod, coords, 0);
+  tile_lut[morton_pos] = (uint32_t)offset;
 }
 
 // --- Morton-to-tile scatter kernel using LUT ---
@@ -392,11 +402,11 @@ lod_build_tile_scatter_lut_k(uint32_t* __restrict__ tile_lut,
 template<typename T>
 __global__ void
 lod_morton_to_tiles_lut_k(T* __restrict__ dst,
-                           const T* __restrict__ src,
-                           const uint32_t* __restrict__ tile_lut,
-                           const uint32_t* __restrict__ batch_tile_offsets,
-                           uint64_t lod_count,
-                           uint64_t total)
+                          const T* __restrict__ src,
+                          const uint32_t* __restrict__ tile_lut,
+                          const uint32_t* __restrict__ batch_tile_offsets,
+                          uint64_t lod_count,
+                          uint64_t total)
 {
   const uint64_t gid = (uint64_t)blockIdx.x * LOD_BLOCK + threadIdx.x;
   if (gid >= total)
@@ -753,10 +763,10 @@ lod_scatter_lut(CUdeviceptr d_dst,
 template<int NdimMax>
 static void
 lod_build_gather_lut_launch(CUdeviceptr d_src_lut,
-                            CUdeviceptr d_fwd_lut,
                             CUdeviceptr d_lod_shape,
                             CUdeviceptr d_lod_strides,
                             int lod_ndim,
+                            int lod_nlod,
                             uint64_t lod_count,
                             CUstream stream)
 {
@@ -764,29 +774,31 @@ lod_build_gather_lut_launch(CUdeviceptr d_src_lut,
 
   lod_build_gather_lut_k<NdimMax>
     <<<grid_size, LOD_BLOCK, 0, stream>>>((uint32_t*)d_src_lut,
-                                          (const uint32_t*)d_fwd_lut,
                                           lod_ndim,
                                           (const uint64_t*)d_lod_shape,
                                           (const uint64_t*)d_lod_strides,
+                                          lod_nlod,
                                           lod_count);
 }
 
 extern "C" void
 lod_build_gather_lut(CUdeviceptr d_src_lut,
-                     CUdeviceptr d_fwd_lut,
                      CUdeviceptr d_lod_shape,
                      CUdeviceptr d_lod_strides,
                      int lod_ndim,
+                     const uint64_t* lod_shape_host,
                      uint64_t lod_count,
                      CUstream stream)
 {
+  int lod_nlod = ceil_log2_h(max_shape_h(lod_ndim, lod_shape_host));
+
 #define XXX(maxdim)                                                            \
   if (lod_ndim <= maxdim) {                                                    \
     lod_build_gather_lut_launch<maxdim>(d_src_lut,                             \
-                                        d_fwd_lut,                             \
                                         d_lod_shape,                           \
                                         d_lod_strides,                         \
                                         lod_ndim,                              \
+                                        lod_nlod,                              \
                                         lod_count,                             \
                                         stream);                               \
     return;                                                                    \
@@ -800,44 +812,46 @@ lod_build_gather_lut(CUdeviceptr d_src_lut,
 template<int NdimMax>
 static void
 lod_build_tile_scatter_lut_launch(CUdeviceptr d_tile_lut,
-                                   CUdeviceptr d_fwd_lut,
-                                   CUdeviceptr d_lod_shape,
-                                   CUdeviceptr d_lod_tile_sizes,
-                                   CUdeviceptr d_lod_tile_strides,
-                                   int lod_ndim,
-                                   uint64_t lod_count,
-                                   CUstream stream)
+                                  CUdeviceptr d_lod_shape,
+                                  CUdeviceptr d_lod_tile_sizes,
+                                  CUdeviceptr d_lod_tile_strides,
+                                  int lod_ndim,
+                                  int lod_nlod,
+                                  uint64_t lod_count,
+                                  CUstream stream)
 {
   const int grid_size = (int)((lod_count + LOD_BLOCK - 1) / LOD_BLOCK);
 
   lod_build_tile_scatter_lut_k<NdimMax>
     <<<grid_size, LOD_BLOCK, 0, stream>>>((uint32_t*)d_tile_lut,
-                                          (const uint32_t*)d_fwd_lut,
                                           lod_ndim,
                                           (const uint64_t*)d_lod_shape,
                                           (const uint64_t*)d_lod_tile_sizes,
                                           (const int64_t*)d_lod_tile_strides,
+                                          lod_nlod,
                                           lod_count);
 }
 
 extern "C" void
 lod_build_tile_scatter_lut(CUdeviceptr d_tile_lut,
-                            CUdeviceptr d_fwd_lut,
-                            CUdeviceptr d_lod_shape,
-                            CUdeviceptr d_lod_tile_sizes,
-                            CUdeviceptr d_lod_tile_strides,
-                            int lod_ndim,
-                            uint64_t lod_count,
-                            CUstream stream)
+                           CUdeviceptr d_lod_shape,
+                           CUdeviceptr d_lod_tile_sizes,
+                           CUdeviceptr d_lod_tile_strides,
+                           int lod_ndim,
+                           const uint64_t* lod_shape_host,
+                           uint64_t lod_count,
+                           CUstream stream)
 {
+  int lod_nlod = ceil_log2_h(max_shape_h(lod_ndim, lod_shape_host));
+
 #define XXX(maxdim)                                                            \
   if (lod_ndim <= maxdim) {                                                    \
     lod_build_tile_scatter_lut_launch<maxdim>(d_tile_lut,                      \
-                                              d_fwd_lut,                       \
                                               d_lod_shape,                     \
                                               d_lod_tile_sizes,                \
                                               d_lod_tile_strides,              \
                                               lod_ndim,                        \
+                                              lod_nlod,                        \
                                               lod_count,                       \
                                               stream);                         \
     return;                                                                    \
@@ -851,12 +865,12 @@ lod_build_tile_scatter_lut(CUdeviceptr d_tile_lut,
 template<typename T>
 static void
 lod_morton_to_tiles_lut_launch(CUdeviceptr d_tiles,
-                                CUdeviceptr d_morton,
-                                CUdeviceptr d_tile_lut,
-                                CUdeviceptr d_batch_tile_offsets,
-                                uint64_t lod_count,
-                                uint64_t batch_count,
-                                CUstream stream)
+                               CUdeviceptr d_morton,
+                               CUdeviceptr d_tile_lut,
+                               CUdeviceptr d_batch_tile_offsets,
+                               uint64_t lod_count,
+                               uint64_t batch_count,
+                               CUstream stream)
 {
   const uint64_t total = batch_count * lod_count;
   const int grid_size = (int)((total + LOD_BLOCK - 1) / LOD_BLOCK);
@@ -872,13 +886,13 @@ lod_morton_to_tiles_lut_launch(CUdeviceptr d_tiles,
 
 extern "C" void
 lod_morton_to_tiles_lut(CUdeviceptr d_tiles,
-                         CUdeviceptr d_morton,
-                         CUdeviceptr d_tile_lut,
-                         CUdeviceptr d_batch_tile_offsets,
-                         enum lod_dtype dtype,
-                         uint64_t lod_count,
-                         uint64_t batch_count,
-                         CUstream stream)
+                        CUdeviceptr d_morton,
+                        CUdeviceptr d_tile_lut,
+                        CUdeviceptr d_batch_tile_offsets,
+                        enum lod_dtype dtype,
+                        uint64_t lod_count,
+                        uint64_t batch_count,
+                        CUstream stream)
 {
 #define XXX(target_dtype, T)                                                   \
   if (dtype == target_dtype) {                                                 \
@@ -1067,23 +1081,31 @@ lod_accum_fold(CUdeviceptr d_accum,
   const int grid = (int)((n_elements + LOD_BLOCK - 1) / LOD_BLOCK);
 
 #define LAUNCH_FOLD(T, Acc, M)                                                 \
-  lod_accum_fold_k<T, Acc, M>                                                 \
-    <<<grid, LOD_BLOCK, 0, stream>>>((Acc*)d_accum,                            \
-                                     (const T*)d_new_data,                     \
-                                     n_elements,                               \
-                                     count)
+  lod_accum_fold_k<T, Acc, M><<<grid, LOD_BLOCK, 0, stream>>>(                 \
+    (Acc*)d_accum, (const T*)d_new_data, n_elements, count)
 
 #define FOLD_METHOD(T, Acc)                                                    \
   switch (method) {                                                            \
-    case lod_reduce_mean: LAUNCH_FOLD(T, Acc, lod_reduce_mean); return;        \
-    case lod_reduce_min:  LAUNCH_FOLD(T, T, lod_reduce_min);   return;        \
-    case lod_reduce_max:  LAUNCH_FOLD(T, T, lod_reduce_max);   return;        \
-    default: return;                                                           \
+    case lod_reduce_mean:                                                      \
+      LAUNCH_FOLD(T, Acc, lod_reduce_mean);                                    \
+      return;                                                                  \
+    case lod_reduce_min:                                                       \
+      LAUNCH_FOLD(T, T, lod_reduce_min);                                       \
+      return;                                                                  \
+    case lod_reduce_max:                                                       \
+      LAUNCH_FOLD(T, T, lod_reduce_max);                                       \
+      return;                                                                  \
+    default:                                                                   \
+      return;                                                                  \
   }
 
   switch (dtype) {
-    case lod_dtype_u16: FOLD_METHOD(uint16_t, uint32_t); break;
-    case lod_dtype_f32: FOLD_METHOD(float, float);       break;
+    case lod_dtype_u16:
+      FOLD_METHOD(uint16_t, uint32_t);
+      break;
+    case lod_dtype_f32:
+      FOLD_METHOD(float, float);
+      break;
   }
 
 #undef LAUNCH_FOLD
@@ -1102,23 +1124,31 @@ lod_accum_emit(CUdeviceptr d_dst,
   const int grid = (int)((n_elements + LOD_BLOCK - 1) / LOD_BLOCK);
 
 #define LAUNCH_EMIT(T, Acc, M)                                                 \
-  lod_accum_emit_k<T, Acc, M>                                                 \
-    <<<grid, LOD_BLOCK, 0, stream>>>((T*)d_dst,                                \
-                                     (const Acc*)d_accum,                      \
-                                     n_elements,                               \
-                                     count)
+  lod_accum_emit_k<T, Acc, M><<<grid, LOD_BLOCK, 0, stream>>>(                 \
+    (T*)d_dst, (const Acc*)d_accum, n_elements, count)
 
 #define EMIT_METHOD(T, Acc)                                                    \
   switch (method) {                                                            \
-    case lod_reduce_mean: LAUNCH_EMIT(T, Acc, lod_reduce_mean); return;        \
-    case lod_reduce_min:  LAUNCH_EMIT(T, T, lod_reduce_min);   return;        \
-    case lod_reduce_max:  LAUNCH_EMIT(T, T, lod_reduce_max);   return;        \
-    default: return;                                                           \
+    case lod_reduce_mean:                                                      \
+      LAUNCH_EMIT(T, Acc, lod_reduce_mean);                                    \
+      return;                                                                  \
+    case lod_reduce_min:                                                       \
+      LAUNCH_EMIT(T, T, lod_reduce_min);                                       \
+      return;                                                                  \
+    case lod_reduce_max:                                                       \
+      LAUNCH_EMIT(T, T, lod_reduce_max);                                       \
+      return;                                                                  \
+    default:                                                                   \
+      return;                                                                  \
   }
 
   switch (dtype) {
-    case lod_dtype_u16: EMIT_METHOD(uint16_t, uint32_t); break;
-    case lod_dtype_f32: EMIT_METHOD(float, float);       break;
+    case lod_dtype_u16:
+      EMIT_METHOD(uint16_t, uint32_t);
+      break;
+    case lod_dtype_f32:
+      EMIT_METHOD(float, float);
+      break;
   }
 
 #undef LAUNCH_EMIT
@@ -1178,15 +1208,26 @@ lod_accum_fold_fused(CUdeviceptr d_accum,
 
 #define FUSED_METHOD(T, Acc)                                                   \
   switch (method) {                                                            \
-    case lod_reduce_mean: LAUNCH_FUSED(T, Acc, lod_reduce_mean); return;       \
-    case lod_reduce_min:  LAUNCH_FUSED(T, T, lod_reduce_min);   return;       \
-    case lod_reduce_max:  LAUNCH_FUSED(T, T, lod_reduce_max);   return;       \
-    default: return;                                                           \
+    case lod_reduce_mean:                                                      \
+      LAUNCH_FUSED(T, Acc, lod_reduce_mean);                                   \
+      return;                                                                  \
+    case lod_reduce_min:                                                       \
+      LAUNCH_FUSED(T, T, lod_reduce_min);                                      \
+      return;                                                                  \
+    case lod_reduce_max:                                                       \
+      LAUNCH_FUSED(T, T, lod_reduce_max);                                      \
+      return;                                                                  \
+    default:                                                                   \
+      return;                                                                  \
   }
 
   switch (dtype) {
-    case lod_dtype_u16: FUSED_METHOD(uint16_t, uint32_t); break;
-    case lod_dtype_f32: FUSED_METHOD(float, float);       break;
+    case lod_dtype_u16:
+      FUSED_METHOD(uint16_t, uint32_t);
+      break;
+    case lod_dtype_f32:
+      FUSED_METHOD(float, float);
+      break;
   }
 
 #undef LAUNCH_FUSED

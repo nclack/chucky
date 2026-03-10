@@ -2,13 +2,12 @@
 
 ## TODO
 
-- [ ] lod for dim0
+- [ ] move benchmark suite out of tests
 - [ ] optimize buffering for compression stage - may need more than one epoch
 
-- [ ] move benchmark suite out of tests
-
+- [x] lod for dim0
 - [ ] interface for streaming from device, integrating with a cuda stream
-- [ ] "append dimension" semantics for dim0
+- [ ] "append dimension" semantics for dim0 - can be infinitely sized, updates over time 
 - [x] uniform handling of tiles across lods for compress and aggregate
 - [x] uniform handling of tiles for shard writer
 - [x] shard writer handles lods
@@ -23,6 +22,7 @@
 - [ ] u64, i64, double?
 - [ ] ? f16
 - [ ] cpu impl
+- [ ] whitepaper
 
 ## 2026-03-09
 
@@ -46,7 +46,7 @@ emit every epoch, lod1 every other epoch, lod2 every 4th, and so on. I suspect
 this can be handled by adjusting how much data needs to be moved during the
 "LOD to tiles" step.
 
-On auk:
+Reasonable throughput on auk:
 
 ```
 === bench_multiscale ===
@@ -114,6 +114,9 @@ On auk:
   Wall time:     49.942 s
   Throughput:    1.88 GiB/s  
 ```
+
+Factoring benchmarks out of the tests - it takes too long to run the tests
+and I don't always want to see all three benchmarks, manage scenarios etc.
 
 ## 2026-03-08
 

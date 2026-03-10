@@ -1283,16 +1283,6 @@ init_lod_layouts(struct tile_stream_gpu* s)
       }
     }
 
-    // Build temporary scatter (forward) LUT
-    CUdeviceptr d_fwd_lut = 0;
-    CU(Fail, cuMemAlloc(&d_fwd_lut, lod_count * sizeof(uint32_t)));
-    lod_build_scatter_lut(d_fwd_lut,
-                          s->lod.d_lod_shape,
-                          p->lod_ndim,
-                          p->lod_shapes[0],
-                          lod_count,
-                          0);
-
     // Compute LOD strides on host and upload
     CUdeviceptr d_lod_strides = 0;
     {
@@ -1319,14 +1309,13 @@ init_lod_layouts(struct tile_stream_gpu* s)
     // Build gather (inverse) LUT
     CU(Fail, cuMemAlloc(&s->lod.d_gather_lut, lod_count * sizeof(uint32_t)));
     lod_build_gather_lut(s->lod.d_gather_lut,
-                         d_fwd_lut,
                          s->lod.d_lod_shape,
                          d_lod_strides,
                          p->lod_ndim,
+                         p->lod_shapes[0],
                          lod_count,
                          0);
 
-    cuMemFree(d_fwd_lut);
     cuMemFree(d_lod_strides);
 
     // Compute batch_offsets on host and upload
@@ -1462,16 +1451,6 @@ init_lod_layouts(struct tile_stream_gpu* s)
            cuMemcpyHtoD(d_lod_shape_lv, p->lod_shapes[lv], lod_shape_bytes));
       }
 
-      // Build temporary forward LUT for this level
-      CUdeviceptr d_fwd_lut = 0;
-      CU(Fail, cuMemAlloc(&d_fwd_lut, lod_count * sizeof(uint32_t)));
-      lod_build_scatter_lut(d_fwd_lut,
-                            d_lod_shape_lv,
-                            p->lod_ndim,
-                            p->lod_shapes[lv],
-                            lod_count,
-                            0);
-
       // Compute lod_tile_sizes and lod_tile_strides on host
       {
         uint64_t lod_tile_sizes[LOD_MAX_NDIM];
@@ -1502,11 +1481,11 @@ init_lod_layouts(struct tile_stream_gpu* s)
            cuMemAlloc(&s->lod.d_morton_tile_lut[lv],
                       lod_count * sizeof(uint32_t)));
         lod_build_tile_scatter_lut(s->lod.d_morton_tile_lut[lv],
-                                   d_fwd_lut,
                                    d_lod_shape_lv,
                                    d_tile_sizes,
                                    d_tile_strides,
                                    p->lod_ndim,
+                                   p->lod_shapes[lv],
                                    lod_count,
                                    0);
 
@@ -1516,14 +1495,12 @@ init_lod_layouts(struct tile_stream_gpu* s)
       Fail2:
         cuMemFree(d_tile_sizes);
         cuMemFree(d_tile_strides);
-        cuMemFree(d_fwd_lut);
         if (lv > 0)
           cuMemFree(d_lod_shape_lv);
         goto Fail;
       Built:;
       }
 
-      cuMemFree(d_fwd_lut);
       if (lv > 0)
         cuMemFree(d_lod_shape_lv);
 

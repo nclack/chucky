@@ -481,7 +481,7 @@ main(int ac, char* av[])
 
     CU(Cleanup, cuInit(0));
     CU(Cleanup, cuDeviceGet(&dev, 0));
-    CU(Cleanup, cuCtxCreate(&ctx, 0, dev));
+    CU(Cleanup, cuCtxCreate(&ctx, NULL, 0, dev));
 
     {
       char sub[4200];

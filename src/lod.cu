@@ -373,7 +373,9 @@ lod_reduce_k(T* __restrict__ values,
 
   uint64_t start = (element > 0) ? ends[element - 1] : 0;
   uint64_t end = ends[element];
+#pragma nv_diag_suppress 177,550  // len unused in min/max constexpr branches
   uint64_t len = end - start;
+#pragma nv_diag_default 177,550
 
   T result;
 

@@ -34,4 +34,4 @@ add_src_lib(platform_io SOURCES platform_io.h)
 add_platform_sources(platform_io)
 
 add_src_lib(zarr_sink SOURCES zarr_sink.c zarr_sink.h
-    LINKS json_writer io_queue platform_io lod_plan chucky_log)
+    LINKS stream json_writer io_queue platform_io lod_plan chucky_log)

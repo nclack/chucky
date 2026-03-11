@@ -7,8 +7,8 @@ main(int ac, char* av[])
   struct dimension dims[] = {
     {
       .size = 1000,
-      .tile_size = 16,
-      .tiles_per_shard = 128,
+      .tile_size = 64,
+      .tiles_per_shard = 20,
       .name = "t",
       .downsample = 1,
     },
@@ -20,14 +20,14 @@ main(int ac, char* av[])
     },
     {
       .size = 2048,
-      .tile_size = 96,
+      .tile_size = 128,
       .tiles_per_shard = 10,
       .name = "y",
       .downsample = 1,
     },
     {
       .size = 2304,
-      .tile_size = 96,
+      .tile_size = 128,
       .tiles_per_shard = 10,
       .name = "x",
       .downsample = 1,

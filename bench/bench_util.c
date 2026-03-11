@@ -336,7 +336,7 @@ run_bench(const struct bench_config* cfg)
       print_report("    lod:       %.2f MiB   codec:     %.2f MiB",
                    (double)mem.lod_bytes / (1024.0 * 1024.0),
                    (double)mem.codec_bytes / (1024.0 * 1024.0));
-      print_report("    tiles:     %llu/epoch, %llu total (%d LOD levels, K=%u)",
+      print_report("    tiles:     %llu/epoch, %llu total (%d LOD levels, batch=%u)",
                    (unsigned long long)mem.tiles_per_epoch,
                    (unsigned long long)mem.total_tiles,
                    mem.nlod,
@@ -502,7 +502,7 @@ bench_stream_main(int ac,
 
   CU(Fail, cuInit(0));
   CU(Fail, cuDeviceGet(&dev, 0));
-  CU(Fail, cuCtxCreate(&ctx, 0, dev));
+  CU(Fail, cuCtxCreate(&ctx, NULL, 0, dev));
 
   int need_xor = (fill == fill_xor);
   if (need_xor)

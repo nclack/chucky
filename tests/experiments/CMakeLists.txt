@@ -12,5 +12,5 @@ enable_openmp(index.ops)
 
 add_experiment(index.ops.cuda index.ops.cuda.c CUDA::cuda_driver CUDA::cudart_static transpose index_ops_util chucky_log)
 
-add_experiment(test_morton morton.c lod_plan index_ops chucky_log)
+add_experiment(test_morton morton.c lod_plan lod index_ops chucky_log)
 target_include_directories(test_morton PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/..)

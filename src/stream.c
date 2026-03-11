@@ -2185,14 +2185,14 @@ int
 tile_stream_gpu_create(const struct tile_stream_configuration* config,
                        struct tile_stream_gpu* out)
 {
-  CHECK(Fail, config);
-  CHECK(Fail, out);
-  CHECK(Fail, config->bytes_per_element > 0);
-  CHECK(Fail, config->buffer_capacity_bytes > 0);
-  CHECK(Fail, config->rank > 0);
-  CHECK(Fail, config->rank <= MAX_RANK / 2);
-  CHECK(Fail, config->dimensions);
-  CHECK(Fail, config->shard_sink);
+  CHECK(EarlyFail, config);
+  CHECK(EarlyFail, out);
+  CHECK(EarlyFail, config->bytes_per_element > 0);
+  CHECK(EarlyFail, config->buffer_capacity_bytes > 0);
+  CHECK(EarlyFail, config->rank > 0);
+  CHECK(EarlyFail, config->rank <= MAX_RANK / 2);
+  CHECK(EarlyFail, config->dimensions);
+  CHECK(EarlyFail, config->shard_sink);
 
   // Compute lod_mask and enable_multiscale from dimensions.
   // Dim 0 downsample is handled separately (temporal accumulation),
@@ -2298,6 +2298,7 @@ tile_stream_gpu_create(const struct tile_stream_configuration* config,
 
 Fail:
   tile_stream_gpu_destroy(out);
+EarlyFail:
   return 1;
 }
 

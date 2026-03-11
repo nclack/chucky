@@ -301,7 +301,7 @@ main(int argc, char* argv[])
 
   CU(InitFail, cuInit(0));
   CU(InitFail, cuDeviceGet(&dev, 0));
-  CU(InitFail, cuCtxCreate(&ctx, 0, dev));
+  CU(InitFail, cuCtxCreate(&ctx, NULL, 0, dev));
 
   int fail = 0;
   fail |= test_aggregate_even();

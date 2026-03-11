@@ -266,7 +266,7 @@ test_lod_gpu_method(const char* label,
   for (uint64_t i = 0; i < n; ++i)
     src[i] = (float)(i + 1);
 
-  CHECK(Fail, lod_plan_init(&plan, ndim, shape, NULL, lod_mask, MAX_LOD) == 0);
+  CHECK(Fail, lod_plan_init(&plan, ndim, shape, NULL, lod_mask, MAX_LOD, 0) == 0);
   printf("  lod_mask=0x%x  lod_ndim=%d  batch_ndim=%d  batch_count=%llu  nlod=%d\n",
          lod_mask, plan.lod_ndim, plan.batch_ndim,
          (unsigned long long)plan.batch_count, plan.nlod);
@@ -599,7 +599,7 @@ test_lod_gpu_u16_method(const char* label,
   for (uint64_t i = 0; i < n; ++i)
     src[i] = (uint16_t)((i + 1) & 0xFFFF);
 
-  CHECK(Fail, lod_plan_init(&plan, ndim, shape, NULL, lod_mask, MAX_LOD) == 0);
+  CHECK(Fail, lod_plan_init(&plan, ndim, shape, NULL, lod_mask, MAX_LOD, 0) == 0);
   printf("  lod_mask=0x%x  lod_ndim=%d  batch_ndim=%d  batch_count=%llu  nlod=%d\n",
          lod_mask, plan.lod_ndim, plan.batch_ndim,
          (unsigned long long)plan.batch_count, plan.nlod);
@@ -1019,7 +1019,7 @@ main(void)
   CUcontext ctx;
   if (cuInit(0) != CUDA_SUCCESS ||
       cuDeviceGet(&dev, 0) != CUDA_SUCCESS ||
-      cuCtxCreate(&ctx, NULL, 0, dev) != CUDA_SUCCESS) {
+      cuCtxCreate(&ctx, 0, dev) != CUDA_SUCCESS) {
     printf("CUDA init failed\n");
     return 1;
   }

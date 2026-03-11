@@ -21,7 +21,12 @@ platform_mkdirp(const char* path)
     return -1;
   memcpy(tmp, path, len + 1);
 
-  for (size_t i = 1; i < len; ++i) {
+  // Skip drive letter prefix (e.g. "D:\") so we don't try to mkdir "D:"
+  size_t start = 1;
+  if (len >= 3 && tmp[1] == ':' && (tmp[2] == '\\' || tmp[2] == '/'))
+    start = 3;
+
+  for (size_t i = start; i < len; ++i) {
     if (tmp[i] == '/' || tmp[i] == '\\') {
       char saved = tmp[i];
       tmp[i] = '\0';

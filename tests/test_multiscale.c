@@ -736,7 +736,7 @@ test_dim0_multi_epoch_levels(void)
         lod_mask |= (1u << i);
     }
     CHECK(Fail, lod_plan_init_shapes(&plan, rank, shape, tile_shape,
-                                      lod_mask, LOD_MAX_LEVELS) == 0);
+                                      lod_mask, LOD_MAX_LEVELS, 0) == 0);
   }
 
   int nlod = plan.nlod;
@@ -857,7 +857,7 @@ main(int ac, char* av[])
 
   CU(Fail, cuInit(0));
   CU(Fail, cuDeviceGet(&dev, 0));
-  CU(Fail, cuCtxCreate(&ctx, NULL, 0, dev));
+  CU(Fail, cuCtxCreate(&ctx, 0, dev));
 
   ecode |= test_multiscale_l0_correctness();
   ecode |= test_dim0_l0_correctness();

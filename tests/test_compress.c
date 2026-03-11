@@ -382,7 +382,7 @@ main(int ac, char* av[])
 
   CU(Fail, cuInit(0));
   CU(Fail, cuDeviceGet(&dev, 0));
-  CU(Fail, cuCtxCreate(&ctx, NULL, 0, dev));
+  CU(Fail, cuCtxCreate(&ctx, 0, dev));
 
   ecode |= test_compress_roundtrip();
   ecode |= test_compress_lz4_roundtrip();

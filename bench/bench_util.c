@@ -260,9 +260,14 @@ run_bench(const struct bench_config* cfg)
   print_report("=== %s ===", label);
 
   int is_multiscale = 0;
-  for (uint8_t d = 0; d < rank; ++d)
-    if (dims[d].downsample)
+  int dim0_downsample = 0;
+  for (uint8_t d = 0; d < rank; ++d) {
+    if (dims[d].downsample) {
       is_multiscale = 1;
+      if (d == 0)
+        dim0_downsample = 1;
+    }
+  }
 
   const size_t total_elements = dim_total_elements(dims, rank);
   const size_t total_bytes = total_elements * sizeof(uint16_t);
@@ -286,6 +291,7 @@ run_bench(const struct bench_config* cfg)
         .rank = rank,
         .dimensions = dims,
         .nlod = 0,
+        .exclude_dim0 = dim0_downsample,
       };
       zmsink = zarr_multiscale_sink_create(&zcfg);
       CHECK(Fail, zmsink);
@@ -502,7 +508,7 @@ bench_stream_main(int ac,
 
   CU(Fail, cuInit(0));
   CU(Fail, cuDeviceGet(&dev, 0));
-  CU(Fail, cuCtxCreate(&ctx, NULL, 0, dev));
+  CU(Fail, cuCtxCreate(&ctx, 0, dev));
 
   int need_xor = (fill == fill_xor);
   if (need_xor)

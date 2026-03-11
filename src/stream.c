@@ -1749,7 +1749,8 @@ init_lod_layouts(struct tile_stream_gpu* s)
                       shape,
                       tile_shape,
                       (uint8_t)s->lod_mask,
-                      LOD_MAX_LEVELS) == 0);
+                      LOD_MAX_LEVELS,
+                      s->dim0_downsample) == 0);
 
   // Validate LOD counts fit in uint32_t (scatter LUT uses uint32_t offsets)
   for (int k = 0; k < s->lod.plan.nlod; ++k) {
@@ -2194,13 +2195,14 @@ tile_stream_gpu_create(const struct tile_stream_configuration* config,
   CHECK(EarlyFail, config->dimensions);
   CHECK(EarlyFail, config->shard_sink);
 
-  // Compute lod_mask and enable_multiscale from dimensions.
-  // Dim 0 downsample is handled separately (temporal accumulation),
-  // NOT included in the spatial lod_mask.
+  // Compute lod_mask from dimensions (uniform: includes dim 0 if marked).
+  // Dim 0 downsample is handled separately (temporal accumulation) via
+  // exclude_dim0 in the LOD plan, but lod_mask itself is computed uniformly.
   uint32_t lod_mask = 0;
   int dim0_downsample = 0;
   for (int d = 0; d < config->rank; ++d) {
     if (config->dimensions[d].downsample) {
+      lod_mask |= (1u << d);
       if (d == 0) {
         dim0_downsample = 1;
         // Validate dim0 reduce method: only mean/min/max supported
@@ -2210,17 +2212,16 @@ tile_stream_gpu_create(const struct tile_stream_configuration* config,
           log_error("dim0 reduce method must be mean, min, or max");
           goto Fail;
         }
-      } else {
-        lod_mask |= (1u << d);
       }
     }
   }
   // dim0 downsampling requires at least one spatial dim also downsampled
-  if (dim0_downsample && lod_mask == 0) {
+  if (dim0_downsample && (lod_mask & ~1u) == 0) {
     log_error("dim0 downsample requires at least one spatial dim downsampled");
     goto Fail;
   }
-  int enable_multiscale = lod_mask != 0;
+  // enable_multiscale requires at least one spatial (non-dim0) LOD dim
+  int enable_multiscale = (lod_mask & ~1u) != 0;
 
   *out = (struct tile_stream_gpu){
     .writer = { .append = tile_stream_gpu_append,
@@ -2482,13 +2483,12 @@ tile_stream_gpu_memory_estimate(const struct tile_stream_configuration* config,
   int dim0_ds = 0;
   for (int d = 0; d < rank; ++d) {
     if (dims[d].downsample) {
+      lod_mask |= (1u << d);
       if (d == 0)
         dim0_ds = 1;
-      else
-        lod_mask |= (1u << d);
     }
   }
-  const int enable_multiscale = lod_mask != 0;
+  const int enable_multiscale = (lod_mask & ~1u) != 0;
 
   struct lod_plan plan = { 0 };
   int nlod = 1;
@@ -2502,8 +2502,8 @@ tile_stream_gpu_memory_estimate(const struct tile_stream_configuration* config,
     for (int d = 0; d < rank; ++d)
       tile_shape[d] = dims[d].tile_size;
 
-    if (lod_plan_init(
-          &plan, rank, shape, tile_shape, (uint8_t)lod_mask, LOD_MAX_LEVELS))
+    if (lod_plan_init(&plan, rank, shape, tile_shape, (uint8_t)lod_mask,
+                      LOD_MAX_LEVELS, dim0_ds))
       return 1;
 
     nlod = plan.nlod;

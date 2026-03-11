@@ -53,6 +53,7 @@ struct zarr_multiscale_config
   uint8_t rank;
   const struct dimension* dimensions; // L0 dimensions
   int nlod;                           // number of levels (0 = auto)
+  int exclude_dim0;                   // exclude dim 0 from LOD (temporal)
 };
 
 struct zarr_multiscale_sink;

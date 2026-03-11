@@ -177,48 +177,12 @@ lod_plan_init(struct lod_plan* p,
               const uint64_t* shape,
               const uint64_t* tile_shape,
               uint8_t lod_mask,
-              int max_levels)
+              int max_levels,
+              int exclude_dim0)
 {
-  memset(p, 0, sizeof(*p));
-  p->ndim = ndim;
-  p->lod_mask = lod_mask;
-
-  for (int d = 0; d < ndim; ++d) {
-    if (lod_mask & (1 << d)) {
-      p->lod_map[p->lod_ndim++] = d;
-    } else {
-      p->batch_map[p->batch_ndim] = d;
-      p->batch_shape[p->batch_ndim] = shape[d];
-      p->batch_ndim++;
-    }
-  }
-  p->batch_count = 1;
-  for (int k = 0; k < p->batch_ndim; ++k)
-    p->batch_count *= p->batch_shape[k];
-
-  memcpy(p->shapes[0], shape, (size_t)ndim * sizeof(uint64_t));
-  for (int k = 0; k < p->lod_ndim; ++k)
-    p->lod_shapes[0][k] = shape[p->lod_map[k]];
-
-  // Extract LOD tile sizes (default to 1 when tile_shape is NULL).
-  uint64_t lod_tile[LOD_MAX_NDIM];
-  for (int k = 0; k < p->lod_ndim; ++k)
-    lod_tile[k] = tile_shape ? tile_shape[p->lod_map[k]] : 1;
-
-  p->nlod = 1;
-  while (p->nlod < max_levels &&
-         !is_all_ones(p->lod_ndim, p->lod_shapes[p->nlod - 1]) &&
-         !next_level_below_tile(
-           p->lod_ndim, p->lod_shapes[p->nlod - 1], lod_tile)) {
-    for (int k = 0; k < p->lod_ndim; ++k)
-      p->lod_shapes[p->nlod][k] = (p->lod_shapes[p->nlod - 1][k] + 1) / 2;
-    memcpy(p->shapes[p->nlod],
-           p->shapes[p->nlod - 1],
-           (size_t)ndim * sizeof(uint64_t));
-    for (int k = 0; k < p->lod_ndim; ++k)
-      p->shapes[p->nlod][p->lod_map[k]] = p->lod_shapes[p->nlod][k];
-    ++p->nlod;
-  }
+  if (lod_plan_init_shapes(
+        p, ndim, shape, tile_shape, lod_mask, max_levels, exclude_dim0))
+    return 1;
 
   for (int k = 0; k < p->nlod; ++k) {
     p->lod_counts[k] = 1;
@@ -271,10 +235,13 @@ lod_plan_init_shapes(struct lod_plan* p,
                      const uint64_t* shape,
                      const uint64_t* tile_shape,
                      uint8_t lod_mask,
-                     int max_levels)
+                     int max_levels,
+                     int exclude_dim0)
 {
   memset(p, 0, sizeof(*p));
   p->ndim = ndim;
+  if (exclude_dim0)
+    lod_mask &= ~(uint8_t)1;
   p->lod_mask = lod_mask;
 
   for (int d = 0; d < ndim; ++d) {

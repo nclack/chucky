@@ -53,6 +53,61 @@ Exploring tile size vs performance with `bench_stream_orca2_multiscale`.
 especially for smaller tile sizes. LOD scales particularly badly - the number
 of lod's goes up.
 
+Benchmarking on livescreen-1 (A6000)
+
+```
++-----------------------------------------------------------------------------------------+
+| NVIDIA-SMI 595.71                 Driver Version: 595.71         CUDA Version: 13.2     |
++-----------------------------------------+------------------------+----------------------+
+| GPU  Name                  Driver-Model | Bus-Id          Disp.A | Volatile Uncorr. ECC |
+| Fan  Temp   Perf          Pwr:Usage/Cap |           Memory-Usage | GPU-Util  Compute M. |
+|                                         |                        |               MIG M. |
+|=========================================+========================+======================|
+|   0  NVIDIA RTX PRO 6000 Blac...  WDDM  |   00000000:E1:00.0  On |                  Off |
+| 30%   32C    P8             16W /  600W |    1676MiB /  97887MiB |      0%      Default |
+|                                         |                        |                  N/A |
++-----------------------------------------+------------------------+----------------------+  
+```
+
+Using 64x1x64x64 zcyx tiles on bench_stream_orca2_multiscale_dim0
+
+```
+=== multiscale_dim0 ===
+  GPU memory:  16.59 GiB device, 3.26 GiB pinned
+    staging:   256.00 MiB   tile_pool: 3.01 GiB
+    comp_pool: 3.01 GiB   aggregate: 3.01 GiB
+    lod:       3676.68 MiB   codec:     3813.82 MiB
+    tiles:     2304/epoch, 3080 total (6 LOD levels, batch=1)
+  total:       17.58 GiB (9437184000 elements, 16 epochs)
+  tile:        262144 elements = 512 KiB  (stride=262144)
+  epoch:       2304 slots, 1152 MiB pool
+  compress:    max_output=524322 comp_pool=1540 MiB
+  LOD levels:  6
+
+  --- Benchmark Results ---
+  Input:        17.58 GiB (9437184000 elements)
+  Compressed:   2.38 GiB (ratio: 0.132)
+  Tiles:        36864 (2304/epoch x 16 epochs)
+  
+  Stage        avg GB/s best GB/s     avg ms    best ms
+  Memcpy          25.49   106.32       2.45       0.59
+  H2D             53.71    53.81       1.16       1.16
+  Copy           928.99  1387.16       0.07       0.05
+  LOD Gather     657.86   670.32       1.71       1.68
+  LOD Reduce    1000.00  1001.98       1.50       1.50
+  Dim0 Fold      406.52   699.80       1.84       1.07
+  LOD to tiles    23.41   855.75      64.25       1.76
+  Compress        14.01    19.79     107.37      76.00
+  Aggregate     3276.13  4799.85       0.46       0.31
+  D2H             62.40    71.37      24.10      21.07
+  Sink            41.98 2420882.97      28.83       0.00
+
+  Init time:     1.314 s
+  Wall time:     3.997 s
+  Throughput:    4.40 GiB/s
+  PASS  
+```
+
 
 ## 2026-03-10
 

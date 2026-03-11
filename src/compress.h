@@ -43,7 +43,7 @@ extern "C"
                           size_t chunk_bytes,
                           size_t batch_size);
 
-  // Init codec context. Allocates device memory. Returns 1 on success.
+  // Init codec context. Allocates device memory. Returns 0 on success.
   int codec_init(struct codec* c,
                  enum compression_codec type,
                  size_t chunk_size,
@@ -60,7 +60,7 @@ extern "C"
   // actual_batch_size: number of chunks to compress (0 = use c->batch_size).
   //   Must be <= c->batch_size. Allows partial batch compression without
   //   re-initializing the codec.
-  // Returns 1 on success.
+  // Returns 0 on success.
   int codec_compress(struct codec* c,
                      const void* d_input,
                      size_t input_stride,

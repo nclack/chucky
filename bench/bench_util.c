@@ -342,7 +342,7 @@ run_bench(const struct bench_config* cfg)
 
   struct platform_clock init_clock = { 0 };
   platform_toc(&init_clock);
-  CHECK(Fail, tile_stream_gpu_create(&config, &s));
+  CHECK(Fail, tile_stream_gpu_create(&config, &s) == 0);
   float init_s = platform_toc(&init_clock);
 
   log_bench_header(&s, total_bytes, total_elements);

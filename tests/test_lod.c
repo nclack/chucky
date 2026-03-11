@@ -25,6 +25,82 @@ upload(CUdeviceptr* d_ptr, const void* h_ptr, size_t bytes)
   return 1;
 }
 
+// Build gather LUT and batch offsets for lod_gather_lut, mirroring stream.c.
+// Returns 1 on success, 0 on failure.
+static int
+setup_gather(const struct lod_plan* p,
+             CUdeviceptr* d_lod_shape,
+             CUdeviceptr* d_lod_strides,
+             CUdeviceptr* d_gather_lut,
+             CUdeviceptr* d_batch_offsets,
+             CUstream stream)
+{
+  *d_lod_shape = 0;
+  *d_lod_strides = 0;
+  *d_gather_lut = 0;
+  *d_batch_offsets = 0;
+
+  uint64_t full_strides[MAX_NDIM];
+  full_strides[p->ndim - 1] = 1;
+  for (int d = p->ndim - 2; d >= 0; --d)
+    full_strides[d] = full_strides[d + 1] * p->shapes[0][d + 1];
+
+  if (p->lod_ndim > 0) {
+    CHECK(Fail,
+          upload(d_lod_shape, p->lod_shapes[0],
+                 p->lod_ndim * sizeof(uint64_t)));
+
+    uint64_t lod_strides[MAX_NDIM];
+    int li = p->lod_ndim - 1;
+    for (int d = p->ndim - 1; d >= 0; --d) {
+      if ((p->lod_mask >> d) & 1) {
+        lod_strides[li] = full_strides[d];
+        li--;
+      }
+    }
+    CHECK(Fail,
+          upload(d_lod_strides, lod_strides,
+                 p->lod_ndim * sizeof(uint64_t)));
+
+    CU(Fail, cuMemAlloc(d_gather_lut, p->lod_counts[0] * sizeof(uint32_t)));
+    lod_build_gather_lut(*d_gather_lut, *d_lod_shape, *d_lod_strides,
+                         p->lod_ndim, p->lod_shapes[0],
+                         p->lod_counts[0], stream);
+  } else {
+    uint32_t zero = 0;
+    CHECK(Fail, upload(d_gather_lut, &zero, sizeof(uint32_t)));
+  }
+
+  {
+    uint32_t* batch_off =
+      (uint32_t*)calloc(p->batch_count, sizeof(uint32_t));
+    CHECK(Fail, batch_off);
+    for (uint64_t bi = 0; bi < p->batch_count; ++bi) {
+      uint64_t remainder = bi;
+      uint64_t offset = 0;
+      for (int k = p->batch_ndim - 1; k >= 0; --k) {
+        uint64_t coord = remainder % p->batch_shape[k];
+        remainder /= p->batch_shape[k];
+        offset += coord * full_strides[p->batch_map[k]];
+      }
+      batch_off[bi] = (uint32_t)offset;
+    }
+    CHECK(Fail,
+          upload(d_batch_offsets, batch_off,
+                 p->batch_count * sizeof(uint32_t)));
+    free(batch_off);
+  }
+
+  return 1;
+Fail:
+  cuMemFree(*d_lod_shape);
+  cuMemFree(*d_lod_strides);
+  cuMemFree(*d_gather_lut);
+  cuMemFree(*d_batch_offsets);
+  *d_lod_shape = *d_lod_strides = *d_gather_lut = *d_batch_offsets = 0;
+  return 0;
+}
+
 static void
 report_metric(const struct stream_metric* m)
 {
@@ -74,7 +150,8 @@ lod_compute_gpu(const struct lod_plan* p,
   CUevent ev_start = NULL, ev_scatter = NULL, ev_done = NULL;
 
   CUdeviceptr d_src = 0, d_values = 0;
-  CUdeviceptr d_full_shape = 0, d_lod_shape = 0;
+  CUdeviceptr d_lod_shape = 0, d_lod_strides = 0;
+  CUdeviceptr d_gather_lut = 0, d_batch_offsets = 0;
   CUdeviceptr d_ends = 0;
   CUdeviceptr d_child_shape = 0, d_parent_shape = 0;
 
@@ -90,17 +167,13 @@ lod_compute_gpu(const struct lod_plan* p,
   CU(Fail, cuMemAlloc(&d_values, total_vals * sizeof(float)));
 
   CHECK(Fail,
-        upload(&d_full_shape, p->shapes[0], p->ndim * sizeof(uint64_t)));
-  if (p->lod_ndim > 0)
-    CHECK(Fail,
-          upload(&d_lod_shape, p->lod_shapes[0],
-                 p->lod_ndim * sizeof(uint64_t)));
+        setup_gather(p, &d_lod_shape, &d_lod_strides,
+                     &d_gather_lut, &d_batch_offsets, stream));
 
   CU(Fail, cuEventRecord(ev_start, stream));
 
-  lod_scatter(d_values, d_src, lod_dtype_f32, p->ndim, n_elements,
-              d_full_shape, d_lod_shape, p->lod_ndim,
-              p->lod_shapes[0], p->lod_mask, p->lod_counts[0], stream);
+  lod_gather_lut(d_values, d_src, d_gather_lut, d_batch_offsets,
+                 lod_dtype_f32, p->lod_counts[0], p->batch_count, stream);
 
   CU(Fail, cuEventRecord(ev_scatter, stream));
 
@@ -155,8 +228,10 @@ lod_compute_gpu(const struct lod_plan* p,
 Fail:
   cuMemFree(d_src);
   cuMemFree(d_values);
-  cuMemFree(d_full_shape);
   cuMemFree(d_lod_shape);
+  cuMemFree(d_lod_strides);
+  cuMemFree(d_gather_lut);
+  cuMemFree(d_batch_offsets);
   cuMemFree(d_ends);
   cuMemFree(d_child_shape);
   cuMemFree(d_parent_shape);
@@ -191,7 +266,7 @@ test_lod_gpu_method(const char* label,
   for (uint64_t i = 0; i < n; ++i)
     src[i] = (float)(i + 1);
 
-  CHECK(Fail, lod_plan_init(&plan, ndim, shape, NULL, lod_mask, MAX_LOD));
+  CHECK(Fail, lod_plan_init(&plan, ndim, shape, NULL, lod_mask, MAX_LOD) == 0);
   printf("  lod_mask=0x%x  lod_ndim=%d  batch_ndim=%d  batch_count=%llu  nlod=%d\n",
          lod_mask, plan.lod_ndim, plan.batch_ndim,
          (unsigned long long)plan.batch_count, plan.nlod);
@@ -408,7 +483,8 @@ lod_compute_gpu_u16(const struct lod_plan* p,
   CUevent ev_start = NULL, ev_scatter = NULL, ev_done = NULL;
 
   CUdeviceptr d_src = 0, d_values = 0;
-  CUdeviceptr d_full_shape = 0, d_lod_shape = 0;
+  CUdeviceptr d_lod_shape = 0, d_lod_strides = 0;
+  CUdeviceptr d_gather_lut = 0, d_batch_offsets = 0;
   CUdeviceptr d_ends = 0;
   CUdeviceptr d_child_shape = 0, d_parent_shape = 0;
 
@@ -424,17 +500,13 @@ lod_compute_gpu_u16(const struct lod_plan* p,
   CU(Fail, cuMemAlloc(&d_values, total_vals * sizeof(uint16_t)));
 
   CHECK(Fail,
-        upload(&d_full_shape, p->shapes[0], p->ndim * sizeof(uint64_t)));
-  if (p->lod_ndim > 0)
-    CHECK(Fail,
-          upload(&d_lod_shape, p->lod_shapes[0],
-                 p->lod_ndim * sizeof(uint64_t)));
+        setup_gather(p, &d_lod_shape, &d_lod_strides,
+                     &d_gather_lut, &d_batch_offsets, stream));
 
   CU(Fail, cuEventRecord(ev_start, stream));
 
-  lod_scatter(d_values, d_src, lod_dtype_u16, p->ndim, n_elements,
-              d_full_shape, d_lod_shape, p->lod_ndim,
-              p->lod_shapes[0], p->lod_mask, p->lod_counts[0], stream);
+  lod_gather_lut(d_values, d_src, d_gather_lut, d_batch_offsets,
+                 lod_dtype_u16, p->lod_counts[0], p->batch_count, stream);
 
   CU(Fail, cuEventRecord(ev_scatter, stream));
 
@@ -489,8 +561,10 @@ lod_compute_gpu_u16(const struct lod_plan* p,
 Fail:
   cuMemFree(d_src);
   cuMemFree(d_values);
-  cuMemFree(d_full_shape);
   cuMemFree(d_lod_shape);
+  cuMemFree(d_lod_strides);
+  cuMemFree(d_gather_lut);
+  cuMemFree(d_batch_offsets);
   cuMemFree(d_ends);
   cuMemFree(d_child_shape);
   cuMemFree(d_parent_shape);
@@ -525,7 +599,7 @@ test_lod_gpu_u16_method(const char* label,
   for (uint64_t i = 0; i < n; ++i)
     src[i] = (uint16_t)((i + 1) & 0xFFFF);
 
-  CHECK(Fail, lod_plan_init(&plan, ndim, shape, NULL, lod_mask, MAX_LOD));
+  CHECK(Fail, lod_plan_init(&plan, ndim, shape, NULL, lod_mask, MAX_LOD) == 0);
   printf("  lod_mask=0x%x  lod_ndim=%d  batch_ndim=%d  batch_count=%llu  nlod=%d\n",
          lod_mask, plan.lod_ndim, plan.batch_ndim,
          (unsigned long long)plan.batch_count, plan.nlod);
@@ -584,12 +658,15 @@ test_accum_fold_u16(const char* label,
   printf("--- %s ---\n", label);
   int ok = 0;
   const uint64_t n_elements = 128;
+  const int nlod = 2;
 
   CUstream stream = NULL;
   CUdeviceptr d_accum = 0, d_data = 0, d_out = 0;
+  CUdeviceptr d_level_ids = 0, d_counts = 0;
   uint16_t* h_data = NULL;
   uint16_t* h_result = NULL;
   uint16_t* h_expected = NULL;
+  uint8_t* h_level_ids = NULL;
 
   size_t accum_bpe = (method == lod_reduce_mean) ? sizeof(uint32_t)
                                                  : sizeof(uint16_t);
@@ -597,7 +674,8 @@ test_accum_fold_u16(const char* label,
   h_data = (uint16_t*)malloc(n_epochs * n_elements * sizeof(uint16_t));
   h_result = (uint16_t*)malloc(n_elements * sizeof(uint16_t));
   h_expected = (uint16_t*)malloc(n_elements * sizeof(uint16_t));
-  CHECK(Fail, h_data && h_result && h_expected);
+  h_level_ids = (uint8_t*)malloc(n_elements);
+  CHECK(Fail, h_data && h_result && h_expected && h_level_ids);
 
   for (int e = 0; e < n_epochs; ++e)
     for (uint64_t i = 0; i < n_elements; ++i)
@@ -624,16 +702,25 @@ test_accum_fold_u16(const char* label,
     }
   }
 
+  memset(h_level_ids, 1, n_elements);
+
   CU(Fail, cuStreamCreate(&stream, CU_STREAM_DEFAULT));
   CU(Fail, cuMemAlloc(&d_accum, n_elements * accum_bpe));
   CU(Fail, cuMemAlloc(&d_data, n_elements * sizeof(uint16_t)));
   CU(Fail, cuMemAlloc(&d_out, n_elements * sizeof(uint16_t)));
+  CHECK(Fail, upload(&d_level_ids, h_level_ids, n_elements));
+  CU(Fail, cuMemAlloc(&d_counts, nlod * sizeof(uint32_t)));
 
-  for (int e = 0; e < n_epochs; ++e) {
-    CU(Fail, cuMemcpyHtoD(d_data, h_data + e * n_elements,
-                           n_elements * sizeof(uint16_t)));
-    lod_accum_fold(d_accum, d_data, lod_dtype_u16, method,
-                   n_elements, (uint32_t)e, stream);
+  {
+    uint32_t counts[2] = { 0, 0 };
+    for (int e = 0; e < n_epochs; ++e) {
+      CU(Fail, cuMemcpyHtoD(d_data, h_data + e * n_elements,
+                             n_elements * sizeof(uint16_t)));
+      CU(Fail, cuMemcpyHtoD(d_counts, counts, nlod * sizeof(uint32_t)));
+      lod_accum_fold_fused(d_accum, d_data, d_level_ids, d_counts,
+                           lod_dtype_u16, method, n_elements, stream);
+      counts[1]++;
+    }
   }
 
   lod_accum_emit(d_out, d_accum, lod_dtype_u16, method,
@@ -656,9 +743,12 @@ Fail:
   free(h_data);
   free(h_result);
   free(h_expected);
+  free(h_level_ids);
   cuMemFree(d_accum);
   cuMemFree(d_data);
   cuMemFree(d_out);
+  cuMemFree(d_level_ids);
+  cuMemFree(d_counts);
   cuStreamDestroy(stream);
   return ok;
 }
@@ -671,17 +761,21 @@ test_accum_fold_f32(const char* label,
   printf("--- %s ---\n", label);
   int ok = 0;
   const uint64_t n_elements = 128;
+  const int nlod = 2;
 
   CUstream stream = NULL;
   CUdeviceptr d_accum = 0, d_data = 0, d_result = 0;
+  CUdeviceptr d_level_ids = 0, d_counts = 0;
   float* h_data = NULL;
   float* h_result = NULL;
   float* h_expected = NULL;
+  uint8_t* h_level_ids = NULL;
 
   h_data = (float*)malloc(n_epochs * n_elements * sizeof(float));
   h_result = (float*)malloc(n_elements * sizeof(float));
   h_expected = (float*)malloc(n_elements * sizeof(float));
-  CHECK(Fail, h_data && h_result && h_expected);
+  h_level_ids = (uint8_t*)malloc(n_elements);
+  CHECK(Fail, h_data && h_result && h_expected && h_level_ids);
 
   for (int e = 0; e < n_epochs; ++e)
     for (uint64_t i = 0; i < n_elements; ++i)
@@ -708,15 +802,24 @@ test_accum_fold_f32(const char* label,
     }
   }
 
+  memset(h_level_ids, 1, n_elements);
+
   CU(Fail, cuStreamCreate(&stream, CU_STREAM_DEFAULT));
   CU(Fail, cuMemAlloc(&d_accum, n_elements * sizeof(float)));
   CU(Fail, cuMemAlloc(&d_data, n_elements * sizeof(float)));
+  CHECK(Fail, upload(&d_level_ids, h_level_ids, n_elements));
+  CU(Fail, cuMemAlloc(&d_counts, nlod * sizeof(uint32_t)));
 
-  for (int e = 0; e < n_epochs; ++e) {
-    CU(Fail, cuMemcpyHtoD(d_data, h_data + e * n_elements,
-                           n_elements * sizeof(float)));
-    lod_accum_fold(d_accum, d_data, lod_dtype_f32, method,
-                   n_elements, (uint32_t)e, stream);
+  {
+    uint32_t counts[2] = { 0, 0 };
+    for (int e = 0; e < n_epochs; ++e) {
+      CU(Fail, cuMemcpyHtoD(d_data, h_data + e * n_elements,
+                             n_elements * sizeof(float)));
+      CU(Fail, cuMemcpyHtoD(d_counts, counts, nlod * sizeof(uint32_t)));
+      lod_accum_fold_fused(d_accum, d_data, d_level_ids, d_counts,
+                           lod_dtype_f32, method, n_elements, stream);
+      counts[1]++;
+    }
   }
 
   CU(Fail, cuMemAlloc(&d_result, n_elements * sizeof(float)));
@@ -740,9 +843,12 @@ Fail:
   free(h_data);
   free(h_result);
   free(h_expected);
+  free(h_level_ids);
   cuMemFree(d_accum);
   cuMemFree(d_data);
   cuMemFree(d_result);
+  cuMemFree(d_level_ids);
+  cuMemFree(d_counts);
   cuStreamDestroy(stream);
   return ok;
 }

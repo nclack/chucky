@@ -45,7 +45,6 @@ On auk, `bench_stream_256cube_multiscale_dim0` looks like it improved from
 and see if robustness improved there.
 
 chunk sizes
-test_bench still in tests
 
 ## 2026-03-09
 

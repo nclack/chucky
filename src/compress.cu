@@ -63,8 +63,8 @@ handle_nvcomp(int level,
     if (r_ != CUDA_SUCCESS) {                                                  \
       const char* s_ = NULL;                                                   \
       cuGetErrorString(r_, &s_);                                               \
-      log_error("CUDA error: %s at %s:%d", s_ ? s_ : "unknown",               \
-                __FILE__, __LINE__);                                           \
+      log_error(                                                               \
+        "CUDA error: %s at %s:%d", s_ ? s_ : "unknown", __FILE__, __LINE__);   \
       goto lbl;                                                                \
     }                                                                          \
   } while (0)
@@ -234,8 +234,8 @@ codec_init(struct codec* c,
       goto Fail;
     for (size_t i = 0; i < batch_size; ++i)
       h[i] = chunk_size;
-    CUresult rc =
-      cuMemcpyHtoD((CUdeviceptr)c->d_uncomp_sizes, h, batch_size * sizeof(size_t));
+    CUresult rc = cuMemcpyHtoD(
+      (CUdeviceptr)c->d_uncomp_sizes, h, batch_size * sizeof(size_t));
     free(h);
     CU(Fail, rc);
   }
@@ -247,8 +247,8 @@ codec_init(struct codec* c,
       goto Fail;
     for (size_t i = 0; i < batch_size; ++i)
       h[i] = chunk_size;
-    CUresult rc =
-      cuMemcpyHtoD((CUdeviceptr)c->d_comp_sizes, h, batch_size * sizeof(size_t));
+    CUresult rc = cuMemcpyHtoD(
+      (CUdeviceptr)c->d_comp_sizes, h, batch_size * sizeof(size_t));
     free(h);
     CU(Fail, rc);
   }
@@ -264,11 +264,11 @@ codec_init(struct codec* c,
     CU(Fail, cuMemAlloc((CUdeviceptr*)&c->d_temp, c->temp_bytes));
   }
 
-  return 1;
+  return 0;
 
 Fail:
   codec_free(c);
-  return 0;
+  return 1;
 }
 
 // --- codec_free ---
@@ -310,24 +310,36 @@ codec_compress(struct codec* c,
   cudaStream_t cuda_stream = (cudaStream_t)stream;
 
   if (c->type == CODEC_NONE) {
-    CU(Fail,
-       cuMemcpyDtoDAsync((CUdeviceptr)d_output,
-                         (CUdeviceptr)d_input,
-                         n * c->chunk_size,
-                         stream));
-    return 1;
+    // All callers pass input_stride == chunk_size (tile_bytes from codec_init).
+    // The strided path is dead code, but kept as a defensive fallback.
+    if (input_stride != c->chunk_size) {
+      for (size_t i = 0; i < n; ++i) {
+        CU(Fail,
+           cuMemcpyDtoDAsync(
+             (CUdeviceptr)((char*)d_output + i * c->chunk_size),
+             (CUdeviceptr)((const char*)d_input + i * input_stride),
+             c->chunk_size,
+             stream));
+      }
+    } else {
+      CU(Fail,
+         cuMemcpyDtoDAsync((CUdeviceptr)d_output,
+                           (CUdeviceptr)d_input,
+                           n * c->chunk_size,
+                           stream));
+    }
+    return 0;
   }
 
   // Fill pointer arrays
   {
     unsigned blocks = (unsigned)((n + 255) / 256);
-    fill_ptrs_kernel<<<blocks, 256, 0, cuda_stream>>>(
-      c->d_ptrs,
-      (const char*)d_input,
-      input_stride,
-      (char*)d_output,
-      c->max_output_size,
-      n);
+    fill_ptrs_kernel<<<blocks, 256, 0, cuda_stream>>>(c->d_ptrs,
+                                                      (const char*)d_input,
+                                                      input_stride,
+                                                      (char*)d_output,
+                                                      c->max_output_size,
+                                                      n);
   }
 
   switch (c->type) {
@@ -347,26 +359,27 @@ codec_compress(struct codec* c,
       break;
 
     case CODEC_ZSTD:
-      NVCOMP(Fail,
-             nvcompBatchedZstdCompressAsync(uncomp_ptrs,
-                                            c->d_uncomp_sizes,
-                                            c->chunk_size,
-                                            n,
-                                            c->d_temp,
-                                            c->temp_bytes,
-                                            comp_ptrs,
-                                            c->d_comp_sizes,
-                                            nvcompBatchedZstdCompressDefaultOpts,
-                                            NULL,
-                                            cuda_stream));
+      NVCOMP(
+        Fail,
+        nvcompBatchedZstdCompressAsync(uncomp_ptrs,
+                                       c->d_uncomp_sizes,
+                                       c->chunk_size,
+                                       n,
+                                       c->d_temp,
+                                       c->temp_bytes,
+                                       comp_ptrs,
+                                       c->d_comp_sizes,
+                                       nvcompBatchedZstdCompressDefaultOpts,
+                                       NULL,
+                                       cuda_stream));
       break;
 
     default:
       goto Fail;
   }
 
-  return 1;
+  return 0;
 
 Fail:
-  return 0;
+  return 1;
 }

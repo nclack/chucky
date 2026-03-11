@@ -16,7 +16,6 @@ add_src_lib(transpose SOURCES transpose.cu transpose.h)
 add_src_lib(chucky_log SOURCES log/log.c log/log.h)
 
 add_src_lib(compress    SOURCES compress.cu compress.h      LINKS nvcomp::nvcomp CUDA::cudart_static chucky_log)
-add_src_lib(downsample  SOURCES downsample.cu downsample.h  LINKS CUDA::cudart_static CUDA::cuda_driver chucky_log)
 add_src_lib(aggregate   SOURCES aggregate.cu aggregate.h    LINKS CUDA::cudart_static CUDA::cuda_driver chucky_log)
 add_src_lib(index_ops   SOURCES index.ops.c index.ops.h)
 add_src_lib(lod_plan    SOURCES lod_plan.c lod_plan.h       LINKS index_ops)

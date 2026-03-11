@@ -197,7 +197,7 @@ test_multiscale_l0_correctness(void)
       .codec = CODEC_ZSTD,
       .shard_sink = &baseline_sink.base,
     };
-    CHECK(Fail1, tile_stream_gpu_create(&config, &s));
+    CHECK(Fail1, tile_stream_gpu_create(&config, &s) == 0);
     xor_pattern_init(dims, rank, 2);
     CHECK(Fail1b, pump_data(&s.writer, total_elements, fill_xor) == 0);
     CHECK(Fail1b, s.cursor == total_elements);
@@ -226,7 +226,7 @@ Run2:
       .codec = CODEC_ZSTD,
       .shard_sink = &ms_sink.base,
     };
-    CHECK(Fail2b, tile_stream_gpu_create(&config, &s));
+    CHECK(Fail2b, tile_stream_gpu_create(&config, &s) == 0);
     xor_pattern_init(dims_ms, rank, 2);
     CHECK(Fail2c, pump_data(&s.writer, total_elements, fill_xor) == 0);
     CHECK(Fail2c, s.cursor == total_elements);
@@ -371,7 +371,7 @@ test_multiscale_zarr_visual(const char* output_path)
     .shard_sink = zarr_multiscale_sink_as_shard_sink(ms),
   };
 
-  CHECK(Fail2, tile_stream_gpu_create(&config, &s));
+  CHECK(Fail2, tile_stream_gpu_create(&config, &s) == 0);
   log_info("  total: %zu elements, LOD levels: %d", total_elements, s.lod.plan.nlod);
 
   xor_pattern_init(dims, rank, 2);
@@ -474,7 +474,7 @@ test_dim0_l0_correctness(void)
       .shard_sink = &baseline_sink.base,
       .reduce_method = lod_reduce_mean,
     };
-    CHECK(Fail1, tile_stream_gpu_create(&config, &s));
+    CHECK(Fail1, tile_stream_gpu_create(&config, &s) == 0);
     xor_pattern_init(dims_spatial, rank, 2);
     CHECK(Fail1b, pump_data(&s.writer, total_elements, fill_xor) == 0);
     CHECK(Fail1b, s.cursor == total_elements);
@@ -505,7 +505,7 @@ Run2d:
       .reduce_method = lod_reduce_mean,
       .dim0_reduce_method = lod_reduce_mean,
     };
-    CHECK(Fail2b, tile_stream_gpu_create(&config, &s));
+    CHECK(Fail2b, tile_stream_gpu_create(&config, &s) == 0);
     log_info("  dim0 enabled: nlod=%d, dim0_downsample=%d",
              s.nlod, s.dim0_downsample);
     xor_pattern_init(dims_dim0, rank, 2);

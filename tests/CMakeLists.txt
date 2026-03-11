@@ -66,8 +66,6 @@ add_test_exe(test_json_writer test_json_writer.c json_writer chucky_log)
 add_test_exe(test_io_queue    test_io_queue.c    io_queue chucky_log)
 
 add_test_exe(test_zarr_sink   test_zarr_sink.c   CUDA::cuda_driver CUDA::cudart_static zarr_sink stream Zstd::Zstd test_platform)
-add_test_exe(test_downsample  test_downsample.c  CUDA::cuda_driver CUDA::cudart_static downsample)
-
 add_test_exe(test_morton      morton.c           lod_plan index_ops chucky_log)
 
 add_test_exe(test_lod         test_lod.c         CUDA::cuda_driver CUDA::cudart_static lod lod_plan index_ops)

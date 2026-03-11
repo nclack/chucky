@@ -208,7 +208,7 @@ test_pipeline(const char* tmpdir)
   };
 
   struct tile_stream_gpu s;
-  CHECK(Fail3, tile_stream_gpu_create(&config, &s));
+  CHECK(Fail3, tile_stream_gpu_create(&config, &s) == 0);
 
   // Feed data
   {

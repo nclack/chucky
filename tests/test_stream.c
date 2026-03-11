@@ -134,7 +134,7 @@ test_stream_single_append(void)
   };
 
   struct tile_stream_gpu s;
-  CHECK(Fail0, tile_stream_gpu_create(&config, &s));
+  CHECK(Fail0, tile_stream_gpu_create(&config, &s) == 0);
 
   // Verify computed layout
   log_info("  tile_elements=%lu  tiles_per_epoch=%lu  epoch_elements=%lu",
@@ -263,7 +263,7 @@ test_stream_chunked_append(void)
   };
 
   struct tile_stream_gpu s;
-  CHECK(Fail0, tile_stream_gpu_create(&config, &s));
+  CHECK(Fail0, tile_stream_gpu_create(&config, &s) == 0);
 
   const int total = 96;
   uint16_t src[96];
@@ -389,7 +389,7 @@ test_stream_compressed_roundtrip(void)
   };
 
   struct tile_stream_gpu s;
-  CHECK(Fail0, tile_stream_gpu_create(&config, &s));
+  CHECK(Fail0, tile_stream_gpu_create(&config, &s) == 0);
 
   log_info("  tile_elements=%lu  tile_stride=%lu  tiles_per_epoch=%lu  "
            "epoch_elements=%lu",

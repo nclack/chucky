@@ -234,7 +234,7 @@ test_shard_contents(void)
   };
 
   struct tile_stream_gpu s;
-  CHECK(Fail1, tile_stream_gpu_create(&config, &s));
+  CHECK(Fail1, tile_stream_gpu_create(&config, &s) == 0);
 
   log_info("  tile_elements=%lu  tile_stride=%lu  tiles_per_epoch=%lu  "
            "epoch_elements=%lu",

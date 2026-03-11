@@ -259,10 +259,10 @@ lod_plan_init(struct lod_plan* p,
     }
   }
 
-  return 1;
+  return 0;
 Fail:
   lod_plan_free(p);
-  return 0;
+  return 1;
 }
 
 int
@@ -313,7 +313,7 @@ lod_plan_init_shapes(struct lod_plan* p,
     ++p->nlod;
   }
 
-  return 1;
+  return 0;
 }
 
 void

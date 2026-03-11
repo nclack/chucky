@@ -56,12 +56,6 @@ extern "C"
 
   void aggregate_layout_destroy(struct aggregate_layout* layout);
 
-  // Initialize a slot (allocate device/host buffers).
-  // comp_pool_bytes = tiles_per_epoch * max_chunk_bytes.
-  int aggregate_slot_init(struct aggregate_slot* slot,
-                          const struct aggregate_layout* layout,
-                          size_t comp_pool_bytes);
-
   void aggregate_slot_destroy(struct aggregate_slot* slot);
 
   // Enqueue all 3 passes on stream. Returns 0 on success.

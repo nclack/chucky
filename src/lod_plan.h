@@ -54,7 +54,7 @@ lod_spans_at(const struct lod_spans* s, uint64_t i);
 struct lod_span
 lod_segment(const struct lod_plan* p, int level);
 
-// Initialize a plan. Returns 1 on success, 0 on failure.
+// Initialize a plan. Returns 0 on success, non-zero on failure.
 // tile_shape: per-dimension tile sizes (may be NULL). When provided,
 // levels stop before any LOD dimension would drop below its tile size.
 int

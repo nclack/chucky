@@ -42,7 +42,7 @@ test_compress_roundtrip(void)
   CUstream stream = 0;
   int ok = 0;
 
-  CHECK(Fail, codec_init(&c, CODEC_ZSTD, tile_bytes, num_tiles));
+  CHECK(Fail, codec_init(&c, CODEC_ZSTD, tile_bytes, num_tiles) == 0);
 
   const size_t comp_pool = num_tiles * c.max_output_size;
 
@@ -78,7 +78,7 @@ test_compress_roundtrip(void)
 
     // Compress
     CHECK(Fail,
-          codec_compress(&c, d_data, tile_bytes, d_compressed, 0, stream));
+          codec_compress(&c, d_data, tile_bytes, d_compressed, 0, stream) == 0);
 
     // Wait for compress to finish, then D2H
     CU(Fail, cuStreamSynchronize(stream));

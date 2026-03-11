@@ -25,6 +25,3 @@ foreach(src IN LISTS BENCH_STREAM_SOURCES)
     string(REPLACE ".c" "" target ${src})
     add_bench(${target} ${src} bench_util CUDA::cudart_static Zstd::Zstd)
 endforeach()
-
-# bench_scatter_lut: scatter LUT kernel benchmark
-add_bench(bench_scatter_lut bench_scatter_lut.c lod lod_plan index_ops CUDA::cuda_driver CUDA::cudart_static)

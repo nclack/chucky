@@ -180,52 +180,6 @@ aggregate_layout_destroy(struct aggregate_layout* layout)
   memset(layout, 0, sizeof(*layout));
 }
 
-extern "C" int
-aggregate_slot_init(struct aggregate_slot* slot,
-                    const struct aggregate_layout* layout,
-                    size_t comp_pool_bytes)
-{
-  uint64_t C, M;
-
-  CHECK(Error, slot);
-  CHECK(Error, layout);
-  memset(slot, 0, sizeof(*slot));
-
-  C = layout->covering_count;
-  M = layout->tiles_per_epoch;
-
-  CU(Error,
-     cuMemAlloc((CUdeviceptr*)&slot->d_permuted_sizes,
-                (C + 1) * sizeof(size_t)));
-  CU(Error,
-     cuMemAlloc((CUdeviceptr*)&slot->d_offsets, (C + 1) * sizeof(size_t)));
-  CU(Error, cuMemAlloc((CUdeviceptr*)&slot->d_perm, M * sizeof(uint32_t)));
-  CU(Error, cuMemAlloc((CUdeviceptr*)&slot->d_aggregated, comp_pool_bytes));
-  CU(Error, cuMemHostAlloc(&slot->h_aggregated, comp_pool_bytes, 0));
-  CU(Error,
-     cuMemHostAlloc((void**)&slot->h_offsets, (C + 1) * sizeof(size_t), 0));
-
-  // Query CUB temp storage requirement
-  slot->temp_bytes = 0;
-  cub::DeviceScan::ExclusiveSum(nullptr,
-                                slot->temp_bytes,
-                                slot->d_permuted_sizes,
-                                slot->d_offsets,
-                                (int)C,
-                                (cudaStream_t)0);
-
-  if (slot->temp_bytes > 0)
-    CU(Error, cuMemAlloc((CUdeviceptr*)&slot->d_temp, slot->temp_bytes));
-
-  CU(Error, cuEventCreate(&slot->ready, CU_EVENT_DEFAULT));
-
-  return 0;
-
-Error:
-  aggregate_slot_destroy(slot);
-  return 1;
-}
-
 extern "C" void
 aggregate_slot_destroy(struct aggregate_slot* slot)
 {

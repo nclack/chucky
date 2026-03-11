@@ -62,7 +62,7 @@ test_aggregate_even(void)
   CHECK(Fail, C == 48);
 
   const size_t pool_bytes = M * max_comp;
-  CHECK(Fail, aggregate_slot_init(&slot, &layout, pool_bytes) == 0);
+  CHECK(Fail, aggregate_batch_slot_init(&slot, M, C, pool_bytes) == 0);
 
   CU(Fail, cuStreamCreate(&stream, CU_STREAM_NON_BLOCKING));
 
@@ -195,7 +195,7 @@ test_aggregate_uneven(void)
   CHECK(Fail, C > M);
 
   const size_t pool_bytes = M * max_comp;
-  CHECK(Fail, aggregate_slot_init(&slot, &layout, pool_bytes) == 0);
+  CHECK(Fail, aggregate_batch_slot_init(&slot, M, C, pool_bytes) == 0);
 
   CU(Fail, cuStreamCreate(&stream, CU_STREAM_NON_BLOCKING));
 

@@ -24,21 +24,6 @@ extern "C"
     lod_reduce_min_suppressed, // 2nd lowest value
   };
 
-  // FIXME: Remove lod_scatter. Only used in tests
-  // returns 1 on succes, 0 on failure
-  int lod_scatter(CUdeviceptr d_dst,
-                  CUdeviceptr d_src,
-                  enum lod_dtype dtype,
-                  int ndim,
-                  uint64_t n_elements,
-                  CUdeviceptr d_full_shape,
-                  CUdeviceptr d_lod_shape,
-                  int lod_ndim,
-                  const uint64_t* lod_shape_host,
-                  uint32_t lod_mask,
-                  uint64_t lod_count,
-                  CUstream stream);
-
   void lod_fill_ends_gpu(CUdeviceptr d_ends,
                          int ndim,
                          CUdeviceptr d_child_shape,
@@ -48,7 +33,7 @@ extern "C"
                          uint64_t n_parents,
                          CUstream stream);
 
-  // returns 1 on succes, 0 on failure
+  // returns 0 on success, non-zero on failure
   int lod_reduce(CUdeviceptr d_values,
                  CUdeviceptr d_ends,
                  enum lod_dtype dtype,
@@ -59,29 +44,6 @@ extern "C"
                  uint64_t dst_lod_count,
                  uint64_t batch_count,
                  CUstream stream);
-
-  // Build a LUT mapping lod_linear_index -> morton_rank.
-  // d_lut: device buffer of lod_count uint32_t entries.
-  void lod_build_scatter_lut(CUdeviceptr d_lut,
-                             CUdeviceptr d_lod_shape,
-                             int lod_ndim,
-                             const uint64_t* lod_shape_host,
-                             uint64_t lod_count,
-                             CUstream stream);
-
-  // Scatter using a precomputed morton rank LUT.
-  void lod_scatter_lut(CUdeviceptr d_dst,
-                       CUdeviceptr d_src,
-                       CUdeviceptr d_lut,
-                       enum lod_dtype dtype,
-                       int ndim,
-                       uint64_t n_elements,
-                       CUdeviceptr d_full_shape,
-                       CUdeviceptr d_lod_shape,
-                       int lod_ndim,
-                       uint32_t lod_mask,
-                       uint64_t lod_count,
-                       CUstream stream);
 
   // Build a tile-scatter LUT: tile_lut[morton_pos] = tile_pool_offset.
   // The offset is the contribution from LOD dims only (using lifted strides).
@@ -138,18 +100,6 @@ extern "C"
                       enum lod_dtype dtype,
                       uint64_t lod_count,
                       uint64_t batch_count,
-                      CUstream stream);
-
-  // Fold one epoch's spatial LOD data into a running accumulator.
-  // For mean: accumulator is wider type (u32 for u16), running sum.
-  // For min/max: accumulator is native type, running min/max.
-  // count: 0 = first epoch (initialize), >0 = fold.
-  void lod_accum_fold(CUdeviceptr d_accum,
-                      CUdeviceptr d_new_data,
-                      enum lod_dtype dtype,
-                      enum lod_reduce_method method,
-                      uint64_t n_elements,
-                      uint32_t count,
                       CUstream stream);
 
   // Finalize a mean accumulator: divide running sum by count, store in native

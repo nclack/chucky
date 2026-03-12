@@ -1,3 +1,4 @@
+#define _GNU_SOURCE
 #include "platform_io.h"
 
 #include "log/log.h"
@@ -44,11 +45,10 @@ platform_open_write(const char* path)
 platform_fd
 platform_open_write_ex(const char* path, int flags)
 {
-  if (flags & PLATFORM_OPEN_UNBUFFERED) {
-    log_error("Unbuffered IO (O_DIRECT) is not yet implemented on POSIX");
-    return -1;
-  }
-  return open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+  int oflags = O_WRONLY | O_CREAT | O_TRUNC;
+  if (flags & PLATFORM_OPEN_UNBUFFERED)
+    oflags |= O_DIRECT;
+  return open(path, oflags, 0644);
 }
 
 int

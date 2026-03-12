@@ -2,12 +2,12 @@
 
 ## TODO
 
-- [ ] boundary conditions for dim0 downsampling
+- [x] boundary conditions for dim0 downsampling
 - [x] lod for dim0
 - [x] move benchmark suite out of tests
 - [x] optimize buffering for compression stage - may need more than one epoch
 - [ ] interface for streaming from device, integrating with a cuda stream
-- [ ] "append dimension" semantics for dim0 - can be infinitely sized, updates over time 
+- [x] "append dimension" semantics for dim0 - can be infinitely sized, updates over time 
 - [x] uniform handling of tiles across lods for compress and aggregate
 - [x] uniform handling of tiles for shard writer
 - [x] shard writer handles lods
@@ -26,10 +26,16 @@
 - [ ] coverage
 - [ ] characterize performance by chunk size
 - [ ] metadata
+- [ ] fix "temporal" vs "spatial" naming.
+- [ ] fix uses of the work chunk, then fix uses of the word tile.
 
 
 - [x] cleanup tests vs experiments
 - [x] evaluate gather vs scatter for non-lod stream
+
+## 2026-03-12
+
+Finishing unbuffered io on posix
 
 ## 2026-03-11
 

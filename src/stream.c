@@ -377,9 +377,11 @@ deliver_to_shards_batch(struct tile_stream_gpu* s,
                         uint8_t level,
                         struct shard_state* ss,
                         struct aggregate_slot* agg_slot,
-                        uint32_t n_active)
+                        uint32_t n_active,
+                        size_t* out_bytes)
 {
   const uint64_t tps_inner = ss->tiles_per_shard_inner;
+  size_t total_bytes = 0;
 
   for (uint32_t a = 0; a < n_active; ++a) {
     const uint64_t epoch_in_shard = ss->epoch_in_shard;
@@ -406,6 +408,7 @@ deliver_to_shards_batch(struct tile_stream_gpu* s,
         // Unbuffered IO: round write size up to alignment. The padding
         // region in h_aggregated is safe to read (buffer is oversized).
         size_t write_bytes = sa > 0 ? align_up(shard_bytes, sa) : shard_bytes;
+        total_bytes += write_bytes;
         const void* src_end = (const char*)src + write_bytes;
         if (sh->writer->write_direct) {
           CHECK(Error,
@@ -447,6 +450,8 @@ deliver_to_shards_batch(struct tile_stream_gpu* s,
     }
   }
 
+  if (out_bytes)
+    *out_bytes = total_bytes;
   return 0;
 
 Error:
@@ -576,13 +581,12 @@ wait_and_deliver(struct tile_stream_gpu* s, int fc)
         continue;
 
       struct lod_level_state* lvl = &s->lod_levels[lv];
-      uint64_t tiles_lv = s->level_tile_count[lv];
-      sink_bytes +=
-        (uint64_t)active_count * tiles_lv * s->codec.max_output_size;
 
+      size_t level_bytes = 0;
       if (deliver_to_shards_batch(
-            s, (uint8_t)lv, &lvl->shard, &lvl->agg[fc], active_count))
+            s, (uint8_t)lv, &lvl->shard, &lvl->agg[fc], active_count, &level_bytes))
         goto Error;
+      sink_bytes += level_bytes;
 
       // Record fence for THIS level right away
       if (s->config.shard_sink->record_fence)
@@ -1123,13 +1127,15 @@ kick_and_deliver_one_epoch(struct tile_stream_gpu* s,
     for (int lv = 0; lv < s->nlod; ++lv) {
       if (!(active_mask & (1u << lv)))
         continue;
-      sink_bytes += s->level_tile_count[lv] * s->codec.max_output_size;
+      size_t level_bytes = 0;
       if (deliver_to_shards_batch(s,
                                   (uint8_t)lv,
                                   &s->lod_levels[lv].shard,
                                   &s->lod_levels[lv].agg[fc],
-                                  1))
+                                  1,
+                                  &level_bytes))
         goto Error;
+      sink_bytes += level_bytes;
 
       // Record fence for this level right away
       if (s->config.shard_sink->record_fence)

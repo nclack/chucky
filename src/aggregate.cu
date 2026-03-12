@@ -80,6 +80,33 @@ gather_k(const void* __restrict__ d_compressed,
 }
 
 // ---------------------------------------------------------------------------
+// Kernel: pad_shard_sizes_k
+//   Each thread handles one shard: sums its tile sizes, computes padding to
+//   reach the next page boundary, and adds it to the last tile's size.
+//   This ensures shard-boundary offsets are page-aligned after prefix sum.
+// ---------------------------------------------------------------------------
+__global__ void
+pad_shard_sizes_k(size_t* __restrict__ d_permuted_sizes,
+                  uint64_t tps_inner,
+                  uint64_t num_shards,
+                  size_t page_size)
+{
+  uint64_t s = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
+  if (s >= num_shards)
+    return;
+
+  uint64_t base = s * tps_inner;
+  size_t total = 0;
+  for (uint64_t i = 0; i < tps_inner; i++)
+    total += d_permuted_sizes[base + i];
+
+  size_t aligned = ((total + page_size - 1) / page_size) * page_size;
+  size_t padding = aligned - total;
+  if (padding > 0)
+    d_permuted_sizes[base + tps_inner - 1] += padding;
+}
+
+// ---------------------------------------------------------------------------
 // Host functions
 // ---------------------------------------------------------------------------
 
@@ -198,6 +225,7 @@ aggregate_slot_destroy(struct aggregate_slot* slot)
   cuMemFree((CUdeviceptr)slot->d_aggregated);
   cuMemFreeHost(slot->h_aggregated);
   cuMemFreeHost(slot->h_offsets);
+  cuMemFreeHost(slot->h_permuted_sizes);
   cuMemFree((CUdeviceptr)slot->d_temp);
   memset(slot, 0, sizeof(*slot));
 }
@@ -231,6 +259,22 @@ aggregate_by_shard_async(const struct aggregate_layout* layout,
                                                      layout->lifted_rank,
                                                      layout->d_lifted_shape,
                                                      layout->d_lifted_strides);
+  }
+
+  // D2H real (pre-padding) permuted sizes for shard index
+  CU(Error,
+     cuMemcpyDtoHAsync(slot->h_permuted_sizes,
+                       (CUdeviceptr)slot->d_permuted_sizes,
+                       C * sizeof(size_t),
+                       stream));
+
+  // Pass 1.5: pad shard sizes for page alignment
+  if (layout->page_size > 0) {
+    uint64_t num_shards = C / layout->tps_inner;
+    const int block = 256;
+    const int grid = (int)((num_shards + block - 1) / block);
+    pad_shard_sizes_k<<<grid, block, 0, cuda_stream>>>(
+      slot->d_permuted_sizes, layout->tps_inner, num_shards, layout->page_size);
   }
 
   // Pass 2: exclusive prefix sum on C elements
@@ -337,6 +381,8 @@ aggregate_batch_slot_init(struct aggregate_slot* slot,
   CU(Error, cuMemHostAlloc(&slot->h_aggregated, comp_pool_bytes, 0));
   CU(Error,
      cuMemHostAlloc((void**)&slot->h_offsets, (C + 1) * sizeof(size_t), 0));
+  CU(Error,
+     cuMemHostAlloc((void**)&slot->h_permuted_sizes, C * sizeof(size_t), 0));
 
   slot->temp_bytes = 0;
   cub::DeviceScan::ExclusiveSum(nullptr,
@@ -371,6 +417,7 @@ aggregate_batch_by_shard_async(
   uint64_t batch_tile_count,
   uint64_t batch_covering_count,
   size_t max_chunk_bytes,
+  const struct aggregate_layout* layout,
   struct aggregate_slot* slot,
   CUstream stream)
 {
@@ -391,6 +438,25 @@ aggregate_batch_by_shard_async(
     const int grid = (int)((N + block - 1) / block);
     permute_sizes_batch_k<<<grid, block, 0, cuda_stream>>>(
       d_comp_sizes, slot->d_permuted_sizes, d_batch_gather, d_batch_perm, N);
+  }
+
+  // D2H real (pre-padding) permuted sizes for shard index
+  CU(Error,
+     cuMemcpyDtoHAsync(slot->h_permuted_sizes,
+                       (CUdeviceptr)slot->d_permuted_sizes,
+                       C * sizeof(size_t),
+                       stream));
+
+  // Pass 1.5: pad shard sizes for page alignment.
+  // Pad at shard-group boundaries (tps_inner * batch_count entries per group)
+  // so all epochs for one shard are contiguous and can be written in one call.
+  if (layout->page_size > 0 && layout->tps_inner > 0) {
+    uint64_t num_shards = layout->covering_count / layout->tps_inner;
+    uint64_t tps_group = C / num_shards; // tps_inner * batch_count
+    const int block = 256;
+    const int grid = (int)((num_shards + block - 1) / block);
+    pad_shard_sizes_k<<<grid, block, 0, cuda_stream>>>(
+      slot->d_permuted_sizes, tps_group, num_shards, layout->page_size);
   }
 
   // Pass 2: exclusive prefix sum on C elements

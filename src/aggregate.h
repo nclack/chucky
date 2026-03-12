@@ -12,6 +12,23 @@ extern "C"
 {
 #endif
 
+  // Compute the aggregated-buffer size including page-alignment padding slack.
+  // covering_count and tps_inner are per-epoch values.
+  static inline size_t
+  agg_pool_bytes(uint64_t tile_count,
+                 size_t max_chunk_bytes,
+                 uint64_t covering_count,
+                 uint64_t tps_inner,
+                 size_t page_size)
+  {
+    size_t bytes = tile_count * max_chunk_bytes;
+    if (page_size > 0 && tps_inner > 0) {
+      uint64_t num_shards = covering_count / tps_inner;
+      bytes += num_shards * page_size + page_size;
+    }
+    return bytes;
+  }
+
   struct aggregate_layout
   {
     uint8_t lifted_rank;                // 2 * (rank - 1)
@@ -34,6 +51,7 @@ extern "C"
     void* d_aggregated;         // device: comp_pool_bytes
     void* h_aggregated;         // host pinned: comp_pool_bytes
     size_t* h_offsets;          // host pinned: (C+1) size_t
+    size_t* h_permuted_sizes;   // host pinned: C size_t (real, pre-padding)
     void* d_temp;               // CUB scratch
     size_t temp_bytes;
     CUevent ready;              // D2H completion
@@ -93,6 +111,7 @@ extern "C"
     uint64_t batch_tile_count,
     uint64_t batch_covering_count,
     size_t max_chunk_bytes,
+    const struct aggregate_layout* layout,
     struct aggregate_slot* slot,
     CUstream stream);
 

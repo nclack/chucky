@@ -388,15 +388,21 @@ deliver_to_shards_batch(struct tile_stream_gpu* s,
                         size_t* out_bytes)
 {
   const uint64_t tps_inner = ss->tiles_per_shard_inner;
+  const size_t sa = s->config.shard_alignment;
   size_t total_bytes = 0;
 
-  for (uint32_t a = 0; a < n_active; ++a) {
-    const uint64_t epoch_in_shard = ss->epoch_in_shard;
+  // Process epochs in runs: a run is a contiguous sequence of epochs that
+  // belong to the same shard (no shard completion boundary in between).
+  // Writing all epochs in a run with one write_direct call reduces syscalls.
+  uint32_t a = 0;
+  while (a < n_active) {
+    uint32_t remaining_in_shard = (uint32_t)(ss->tiles_per_shard_0 - ss->epoch_in_shard);
+    uint32_t remaining_in_batch = n_active - a;
+    uint32_t run_len = remaining_in_shard < remaining_in_batch
+                         ? remaining_in_shard
+                         : remaining_in_batch;
 
     for (uint64_t si = 0; si < ss->shard_inner_count; ++si) {
-      uint64_t j_start = si * n_active * tps_inner + a * tps_inner;
-      uint64_t j_end = j_start + tps_inner;
-
       struct active_shard* sh = &ss->shards[si];
 
       if (!sh->writer) {
@@ -406,18 +412,26 @@ deliver_to_shards_batch(struct tile_stream_gpu* s,
         CHECK(Error, sh->writer);
       }
 
-      size_t shard_bytes =
-        agg_slot->h_offsets[j_end] - agg_slot->h_offsets[j_start];
-      if (shard_bytes > 0) {
+      // Contiguous range in aggregated buffer for this run
+      uint64_t j_run_start = si * n_active * tps_inner + a * tps_inner;
+      uint64_t j_run_end = j_run_start + (uint64_t)run_len * tps_inner;
+
+      size_t run_bytes =
+        agg_slot->h_offsets[j_run_end] - agg_slot->h_offsets[j_run_start];
+      if (run_bytes > 0) {
         const void* src =
-          (const char*)agg_slot->h_aggregated + agg_slot->h_offsets[j_start];
-        size_t sa = s->config.shard_alignment;
+          (const char*)agg_slot->h_aggregated + agg_slot->h_offsets[j_run_start];
         // Unbuffered IO: round write size up to alignment. The padding
         // region in h_aggregated is safe to read (buffer is oversized).
-        size_t write_bytes = sa > 0 ? align_up(shard_bytes, sa) : shard_bytes;
+        size_t write_bytes = sa > 0 ? align_up(run_bytes, sa) : run_bytes;
         total_bytes += write_bytes;
         const void* src_end = (const char*)src + write_bytes;
-        if (sh->writer->write_direct) {
+
+        // Use write_direct when source pointer is page-aligned (always true
+        // at shard-group boundaries; may not hold after a mid-batch shard
+        // completion splits a group).
+        int aligned = sa == 0 || ((uintptr_t)src % sa == 0);
+        if (aligned && sh->writer->write_direct) {
           CHECK(Error,
                 sh->writer->write_direct(sh->writer,
                                          sh->data_cursor,
@@ -432,27 +446,31 @@ deliver_to_shards_batch(struct tile_stream_gpu* s,
         }
       }
 
-      for (uint64_t j = j_start; j < j_end; ++j) {
-        size_t tile_size = agg_slot->h_offsets[j + 1] - agg_slot->h_offsets[j];
-        if (tile_size > 0) {
-          uint64_t within_inner = j - j_start;
-          uint64_t slot_idx = epoch_in_shard * tps_inner + within_inner;
-          size_t tile_off = sh->data_cursor + (agg_slot->h_offsets[j] -
-                                               agg_slot->h_offsets[j_start]);
-          sh->index[2 * slot_idx] = tile_off;
-          sh->index[2 * slot_idx + 1] = tile_size;
+      // Record shard index entries for each epoch in the run
+      for (uint32_t r = 0; r < run_len; ++r) {
+        uint64_t eis = ss->epoch_in_shard + r;
+        uint64_t j_start = j_run_start + (uint64_t)r * tps_inner;
+        for (uint64_t j = j_start; j < j_start + tps_inner; ++j) {
+          size_t tile_size = agg_slot->h_permuted_sizes[j];
+          if (tile_size > 0) {
+            uint64_t within_inner = j - j_start;
+            uint64_t slot_idx = eis * tps_inner + within_inner;
+            size_t tile_off = sh->data_cursor + (agg_slot->h_offsets[j] -
+                                                 agg_slot->h_offsets[j_run_start]);
+            sh->index[2 * slot_idx] = tile_off;
+            sh->index[2 * slot_idx + 1] = tile_size;
+          }
         }
       }
-      {
-        size_t sa = s->config.shard_alignment;
-        sh->data_cursor += sa > 0 ? align_up(shard_bytes, sa) : shard_bytes;
-      }
+
+      sh->data_cursor += sa > 0 ? align_up(run_bytes, sa) : run_bytes;
     }
 
-    ss->epoch_in_shard++;
+    ss->epoch_in_shard += run_len;
+    a += run_len;
 
     if (ss->epoch_in_shard >= ss->tiles_per_shard_0) {
-      if (emit_shards(ss, s->config.shard_alignment))
+      if (emit_shards(ss, sa))
         goto Error;
     }
   }
@@ -538,19 +556,33 @@ record_flush_metrics(struct tile_stream_gpu* s, int fc)
     const size_t pool_bytes = (uint64_t)fs->batch_epoch_count * s->total_tiles *
                               s->layout.tile_stride *
                               s->config.bytes_per_element;
-    const size_t comp_bytes = (uint64_t)fs->batch_epoch_count * s->total_tiles *
-                              s->codec.max_output_size;
 
     accumulate_metric_cu(&s->metrics.compress,
                          fs->t_compress_start,
                          fs->d_compressed.ready,
                          pool_bytes);
+
+    // Use actual aggregated bytes from h_offsets (available after D2H sync).
+    size_t agg_bytes = 0;
+    const uint32_t n_epochs = (uint32_t)fs->batch_epoch_count;
+    for (int lv = 0; lv < s->nlod; ++lv) {
+      if (!(fs->active_levels_mask & (1u << lv)))
+        continue;
+      uint32_t active_count = level_actual_active_count(s, fs, lv, n_epochs);
+      if (active_count == 0)
+        continue;
+      struct lod_level_state* lvl = &s->lod_levels[lv];
+      uint64_t batch_covering =
+        (uint64_t)active_count * lvl->agg_layout.covering_count;
+      agg_bytes += lvl->agg[fc].h_offsets[batch_covering];
+    }
+
     accumulate_metric_cu(&s->metrics.aggregate,
                          fs->d_compressed.ready,
                          fs->t_aggregate_end,
-                         comp_bytes);
+                         agg_bytes);
     accumulate_metric_cu(
-      &s->metrics.d2h, fs->t_d2h_start, fs->ready, comp_bytes);
+      &s->metrics.d2h, fs->t_d2h_start, fs->ready, agg_bytes);
   }
 }
 
@@ -722,6 +754,7 @@ kick_batch(struct tile_stream_gpu* s, int fc, uint32_t n_epochs)
                 batch_tile_count,
                 batch_covering,
                 s->codec.max_output_size,
+                &lvl->agg_layout,
                 agg,
                 s->compress) == 0);
       } else {
@@ -768,8 +801,10 @@ kick_batch(struct tile_stream_gpu* s, int fc, uint32_t n_epochs)
     struct lod_level_state* lvl = &s->lod_levels[lv];
     struct aggregate_slot* agg = &lvl->agg[fc];
     uint64_t tiles_lv = s->level_tile_count[lv];
-    size_t agg_bytes =
-      (uint64_t)active_count * tiles_lv * s->codec.max_output_size;
+    size_t agg_bytes = agg_pool_bytes(
+      (uint64_t)active_count * tiles_lv, s->codec.max_output_size,
+      lvl->agg_layout.covering_count, lvl->agg_layout.tps_inner,
+      lvl->agg_layout.page_size);
     uint64_t batch_covering =
       (uint64_t)active_count * lvl->agg_layout.covering_count;
 
@@ -1126,7 +1161,11 @@ kick_and_deliver_one_epoch(struct tile_stream_gpu* s,
       continue;
 
     struct aggregate_slot* agg = &s->lod_levels[lv].agg[fc];
-    size_t pool_bytes_lv = s->level_tile_count[lv] * s->codec.max_output_size;
+    size_t pool_bytes_lv = agg_pool_bytes(
+      s->level_tile_count[lv], s->codec.max_output_size,
+      s->lod_levels[lv].agg_layout.covering_count,
+      s->lod_levels[lv].agg_layout.tps_inner,
+      s->lod_levels[lv].agg_layout.page_size);
 
     CU(Error,
        cuMemcpyDtoHAsync(agg->h_aggregated,
@@ -1678,20 +1717,11 @@ init_aggregate_and_shards(struct tile_stream_gpu* s)
     uint64_t batch_tiles = (uint64_t)slot_count * tiles_lv;
     uint64_t batch_covering =
       (uint64_t)slot_count * s->lod_levels[lv].agg_layout.covering_count;
-    size_t batch_agg_bytes = batch_tiles * s->codec.max_output_size;
-
-    // Add page-alignment padding slack: each shard boundary may add up to
-    // page_size bytes of padding. num_shards = batch_covering / (slot_count * tps_inner).
-    {
-      size_t ps = s->lod_levels[lv].agg_layout.page_size;
-      if (ps > 0) {
-        uint64_t tpsi = s->lod_levels[lv].agg_layout.tps_inner;
-        uint64_t num_shards = (tpsi > 0) ? batch_covering / (slot_count * tpsi) : 0;
-        batch_agg_bytes += num_shards * ps;
-        // Extra tail padding for rounding up the last write.
-        batch_agg_bytes += ps;
-      }
-    }
+    size_t batch_agg_bytes = agg_pool_bytes(
+      batch_tiles, s->codec.max_output_size,
+      s->lod_levels[lv].agg_layout.covering_count,
+      s->lod_levels[lv].agg_layout.tps_inner,
+      s->lod_levels[lv].agg_layout.page_size);
 
     for (int i = 0; i < 2; ++i) {
       CHECK(Fail,
@@ -2786,16 +2816,10 @@ tile_stream_gpu_memory_estimate(const struct tile_stream_configuration* config,
 
     uint64_t batch_tiles = (uint64_t)batch_count * level_tile_count[lv];
     uint64_t batch_covering = (uint64_t)batch_count * covering_count;
-    size_t batch_agg_bytes = batch_tiles * max_output_size;
-
-    // Page-alignment padding slack
-    {
-      size_t ps = config->shard_alignment; // 0 when not using unbuffered IO
-      uint64_t num_shards = (tps_inner_lv > 0)
-        ? batch_covering / (batch_count * tps_inner_lv) : 0;
-      batch_agg_bytes += num_shards * ps;
-      batch_agg_bytes += ps; // tail padding
-    }
+    size_t batch_agg_bytes = agg_pool_bytes(
+      batch_tiles, max_output_size,
+      covering_count, tps_inner_lv,
+      config->shard_alignment);
 
     // aggregate_layout: device lifted shape + strides
     size_t agg_layout_dev =
@@ -2809,7 +2833,8 @@ tile_stream_gpu_memory_estimate(const struct tile_stream_configuration* config,
 
     // aggregate_slot x 2: host pinned (batch-sized)
     size_t slot_host = batch_agg_bytes                          // h_aggregated
-                       + (batch_covering + 1) * sizeof(size_t); // h_offsets
+                       + (batch_covering + 1) * sizeof(size_t)  // h_offsets
+                       + batch_covering * sizeof(size_t);       // h_permuted_sizes
 
     // Batch LUTs (per level, if K > 1)
     size_t lut_dev = 0;

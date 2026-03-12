@@ -6,7 +6,7 @@ main(int ac, char* av[])
 {
   struct dimension dims[] = {
     {
-      .size = 100000,
+      .size = 10000,
       .tile_size = 64,
       .tiles_per_shard = 20,
       .name = "t",

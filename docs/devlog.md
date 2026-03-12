@@ -24,7 +24,7 @@
 - [ ] cpu impl
 - [ ] whitepaper
 - [ ] coverage
-- [ ] characterize performance by chunk size
+- [ ] make a report to characterize performance/memory by chunk size
 - [ ] within epoch transpose
 - [x] unbuffered io
 - [ ] metadata
@@ -35,7 +35,20 @@
 
 ## 2026-03-12
 
-Finishing unbuffered io on posix
+Finishing unbuffered io on posix.
+
+I think I'm about done with all the major features besides maybe the in-epoch
+transpose. I need to look at that pr in acquire-zarr some more ... ok, it's
+compatible. It restricts dim0 and adds some other restrictions that are
+artifacts of how aqz's frame-based streaming.
+
+I'm at about 20ksloc in the code right now. ~2ksloc cuda and ~15ksloc in c.
+A lot of that is in `tests`. In `src`, it's a total of 8ksloc (2k cuda, 5k c).
+Worst offenders are `stream.c` and `lod.cu`. `aggregate.cu` has gotten a bit
+beefy too.
+
+ - Review - separate static (config) state from mutable state
+ - target_min_tiles config parameter - rename to make clear this is per batch
 
 ## 2026-03-11
 
@@ -50,10 +63,8 @@ GB/s
 2.81  bench_stream_orca2_multiscale
 Fail  bench_stream_orca2_multiscale_dim0
 ```
- - Need to debug that failure
- - Review - separate static (config) state from mutable state
- - target_min_tiles config parameter - rename to make clear this is per batch
- - need a max lod parameter
+
+(I fixed the failure but didn't get the timing)
 
 Exploring tile size vs performance with `bench_stream_orca2_multiscale`.
 `auk` doesn't have much memory and I keep running into memory blowing up,

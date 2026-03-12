@@ -39,13 +39,7 @@ platform_mkdirp(const char* path)
 }
 
 platform_fd
-platform_open_write(const char* path)
-{
-  return platform_open_write_ex(path, 0);
-}
-
-platform_fd
-platform_open_write_ex(const char* path, int flags)
+platform_open_write(const char* path, int flags)
 {
   DWORD attrs = FILE_ATTRIBUTE_NORMAL;
   if (flags & PLATFORM_OPEN_UNBUFFERED)

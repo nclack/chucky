@@ -266,10 +266,8 @@ zarr_sink_open(struct shard_sink* self, uint8_t level, uint64_t shard_index)
     return NULL;
   }
 
-  {
-    int flags = zs->unbuffered ? PLATFORM_OPEN_UNBUFFERED : 0;
-    w->fd = platform_open_write_ex(path, flags);
-  }
+  int flags = zs->unbuffered ? PLATFORM_OPEN_UNBUFFERED : 0;
+  w->fd = platform_open_write(path, flags);
   if (w->fd == PLATFORM_FD_INVALID) {
     // Directory may not exist yet (unbounded dim0) — create and retry
     char dir[4096];
@@ -278,7 +276,7 @@ zarr_sink_open(struct shard_sink* self, uint8_t level, uint64_t shard_index)
     if (last_slash) {
       *last_slash = '\0';
       if (platform_mkdirp(dir) == 0)
-        w->fd = platform_open_write(path);
+        w->fd = platform_open_write(path, flags);
     }
     if (w->fd == PLATFORM_FD_INVALID) {
       log_error("zarr_sink_open: open(%s) failed", path);
@@ -294,7 +292,7 @@ zarr_sink_open(struct shard_sink* self, uint8_t level, uint64_t shard_index)
 static int
 write_file(const char* path, const char* data, size_t len)
 {
-  platform_fd fd = platform_open_write(path);
+  platform_fd fd = platform_open_write(path, 0);
   if (fd == PLATFORM_FD_INVALID)
     return -1;
   int rc = platform_write(fd, data, len);

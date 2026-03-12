@@ -7,7 +7,7 @@
 - [x] move benchmark suite out of tests
 - [x] optimize buffering for compression stage - may need more than one epoch
 - [ ] interface for streaming from device, integrating with a cuda stream
-- [ ] "append dimension" semantics for dim0 - can be infinitely sized, updates over time 
+- [x] "append dimension" semantics for dim0 - can be infinitely sized, updates over time 
 - [x] uniform handling of tiles across lods for compress and aggregate
 - [x] uniform handling of tiles for shard writer
 - [x] shard writer handles lods
@@ -26,11 +26,16 @@
 - [ ] coverage
 - [ ] characterize performance by chunk size
 - [ ] within epoch transpose
-- [ ] unbuffered io
-
-
+- [x] unbuffered io
+- [ ] metadata
+- [ ] fix "temporal" vs "spatial" naming.
+- [ ] fix uses of the work chunk, then fix uses of the word tile.
 - [x] cleanup tests vs experiments
 - [x] evaluate gather vs scatter for non-lod stream
+
+## 2026-03-12
+
+Finishing unbuffered io on posix
 
 ## 2026-03-11
 
@@ -112,7 +117,9 @@ here.
   PASS  
 ```
 
-Looking into unbuffered writes, which comes with some alignment restrictions.
+Looking into unbuffered io - at the very least to get more accurate io numbers.
+There's some performance to eke out there too. That comes with some alignment
+constraints. I probably need to aggregate shards to page-aligned boundaries.
 
 Also working on making sure I'm treating dim0 right. `dim[0].size=0` should
 enable infinite streaming. For a finite size, the stream should terminate. And

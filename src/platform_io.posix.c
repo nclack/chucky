@@ -1,5 +1,7 @@
+#define _GNU_SOURCE
 #include "platform_io.h"
 
+#include "log/log.h"
 #include <errno.h>
 #include <fcntl.h>
 #include <string.h>
@@ -37,7 +39,16 @@ platform_mkdirp(const char* path)
 platform_fd
 platform_open_write(const char* path)
 {
-  return open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+  return platform_open_write_ex(path, 0);
+}
+
+platform_fd
+platform_open_write_ex(const char* path, int flags)
+{
+  int oflags = O_WRONLY | O_CREAT | O_TRUNC;
+  if (flags & PLATFORM_OPEN_UNBUFFERED)
+    oflags |= O_DIRECT;
+  return open(path, oflags, 0644);
 }
 
 int
@@ -68,6 +79,12 @@ platform_write(platform_fd fd, const void* buf, size_t nbytes)
     remaining -= (size_t)n;
   }
   return 0;
+}
+
+int
+platform_truncate(platform_fd fd, uint64_t size)
+{
+  return ftruncate(fd, (off_t)size);
 }
 
 void

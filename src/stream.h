@@ -28,7 +28,7 @@ enum writer_error_code
 
 struct writer_result
 {
-  int error; // writer_error_code; 0 = ok, 1 = fail, 2 = finished
+  int error;         // writer_error_code; 0 = ok, 1 = fail, 2 = finished
   struct slice rest; // unconsumed input (empty on success for append)
 };
 
@@ -44,6 +44,12 @@ struct shard_writer
                uint64_t offset, // byte offset within the shard
                const void* beg,
                const void* end);
+  // Zero-copy write: caller guarantees buffer lifetime until io_event.
+  // NULL = fall back to write (copy-based).
+  int (*write_direct)(struct shard_writer* self,
+                      uint64_t offset,
+                      const void* beg,
+                      const void* end);
   int (*finalize)(struct shard_writer* self); // shard complete, close/flush
 };
 
@@ -60,6 +66,12 @@ struct shard_sink
   void (*update_dim0)(struct shard_sink* self,
                       uint8_t level,
                       uint64_t dim0_size);
+
+  // IO fence for backpressure. NULL = no async IO.
+  struct io_event (*record_fence)(struct shard_sink* self, uint8_t level);
+  void (*wait_fence)(struct shard_sink* self,
+                     uint8_t level,
+                     struct io_event ev);
 };
 
 struct stream_metrics
@@ -98,7 +110,7 @@ struct double_buffer
 
 struct dimension
 {
-  uint64_t size;            // 0 means unbounded (dim 0 only: stream indefinitely)
+  uint64_t size; // 0 means unbounded (dim 0 only: stream indefinitely)
   uint64_t tile_size;
   uint64_t tiles_per_shard; // 0 means all tiles along this dimension
                             // (must be > 0 when size == 0)
@@ -118,7 +130,10 @@ struct tile_stream_configuration
   enum lod_reduce_method dim0_reduce_method; // dim0 (temporal) LOD reduction
   uint32_t epochs_per_batch; // K: 0 = auto (target_min_tiles), must be pow2
   uint32_t target_min_tiles; // minimum tiles per compress batch (default 1024)
-  double metadata_update_interval_s; // seconds between metadata updates (0 = disable)
+  float metadata_update_interval_s; // seconds between metadata updates (0 =
+                                    // disable)
+  size_t
+    shard_alignment; // 0 = no padding; platform_page_size() for unbuffered IO
 };
 
 struct staging_slot

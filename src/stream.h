@@ -13,7 +13,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define MAX_BATCH_EPOCHS 256
+#define MAX_BATCH_EPOCHS 128
 
 struct stream_metrics
 {
@@ -64,7 +64,7 @@ struct dimension
 
 struct tile_stream_configuration
 {
-  // FIXME: which buffer is this refering to?
+  // Size of each H2D staging buffer (double-buffered: 4x total allocation)
   size_t buffer_capacity_bytes;
   size_t bytes_per_element;
   uint8_t rank;
@@ -73,10 +73,8 @@ struct tile_stream_configuration
   enum compression_codec codec;  // compression codec for tiles
   enum lod_reduce_method reduce_method;      // epoch LOD reduction method
   enum lod_reduce_method dim0_reduce_method; // dim0 LOD reduction
-  // FIXME: this doesn't need 4-bytes - could be a u8
-  uint32_t epochs_per_batch; // K: 0 = auto (target_min_tiles), must be pow2
-  // FIXME: rename target_min_tiles to make it clear it's per batch
-  uint32_t target_min_tiles; // minimum tiles per compress batch (default 1024)
+  uint8_t epochs_per_batch;    // K: 0 = auto (target_batch_tiles), must be pow2
+  uint32_t target_batch_tiles; // minimum tiles per compress batch (default 1024)
   float metadata_update_interval_s; // seconds between metadata updates
   size_t
     shard_alignment; // 0 = no padding; platform_page_size() for unbuffered IO

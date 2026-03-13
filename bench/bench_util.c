@@ -356,7 +356,7 @@ run_bench(const struct bench_config* cfg)
     .shard_sink = sink,
     .reduce_method = cfg->reduce_method,
     .dim0_reduce_method = cfg->dim0_reduce_method,
-    .target_min_tiles = 2048,
+    .target_batch_tiles = 2048,
     .shard_alignment = output_path ? platform_page_size() : 0,
   };
 

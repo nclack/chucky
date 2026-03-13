@@ -37,7 +37,7 @@ compute_epochs_per_batch(const struct tile_stream_configuration* config,
 {
   uint32_t K = config->epochs_per_batch;
   if (K == 0) {
-    uint32_t target = config->target_min_tiles;
+    uint32_t target = config->target_batch_tiles;
     if (target == 0)
       target = 1024;
     K = (uint32_t)ceildiv(target, total_tiles_per_epoch);
@@ -347,21 +347,83 @@ record_flush_metrics(struct tile_stream_gpu* s, int fc)
   }
 }
 
-// Wait for D2H on the given flush slot, record timing, deliver to sinks.
-static struct writer_result
-wait_and_deliver(struct tile_stream_gpu* s, int fc)
+// Wait for pending IO fences on aggregate slots before reuse.
+static void
+wait_io_fences(struct tile_stream_gpu* s, int fc, uint32_t level_mask)
+{
+  if (!s->config.shard_sink->wait_fence)
+    return;
+  for (int lv = 0; lv < s->levels.nlod; ++lv) {
+    if (!(level_mask & (1u << lv)))
+      continue;
+    struct aggregate_slot* agg = &s->lod_levels[lv].agg[fc];
+    if (agg->io_done.seq > 0)
+      s->config.shard_sink->wait_fence(
+        s->config.shard_sink, (uint8_t)lv, agg->io_done);
+  }
+}
+
+// Record compress-start, compress, record compress-end.
+static int
+kick_compress(struct tile_stream_gpu* s,
+              struct flush_slot_gpu* fs,
+              const void* d_input,
+              uint64_t n_tiles)
+{
+  const size_t tile_bytes = s->layout.tile_stride * s->config.bytes_per_element;
+
+  CU(Error, cuEventRecord(fs->t_compress_start, s->streams.compress));
+  CHECK(Error,
+        codec_compress(&s->codec,
+                       d_input,
+                       tile_bytes,
+                       fs->d_compressed.data,
+                       n_tiles,
+                       s->streams.compress) == 0);
+  CU(Error, cuEventRecord(fs->d_compressed.ready, s->streams.compress));
+  return 0;
+
+Error:
+  return 1;
+}
+
+// Aggregate one epoch's tiles for a single level.
+// epoch_in_compressed: index of this epoch within the compressed buffer.
+static int
+aggregate_epoch_level(struct tile_stream_gpu* s,
+                      int fc,
+                      int lv,
+                      uint32_t epoch_in_compressed)
 {
   struct flush_slot_gpu* fs = &s->flush.slot[fc];
+  struct lod_level_state* lvl = &s->lod_levels[lv];
+  struct aggregate_slot* agg = &lvl->agg[fc];
 
-  // Wait for previous IO from this flush slot's agg_slots before reuse
-  if (s->config.shard_sink->wait_fence) {
-    for (int lv = 0; lv < s->levels.nlod; ++lv) {
-      struct aggregate_slot* agg = &s->lod_levels[lv].agg[fc];
-      if (agg->io_done.seq > 0)
-        s->config.shard_sink->wait_fence(
-          s->config.shard_sink, (uint8_t)lv, agg->io_done);
-    }
-  }
+  void* d_comp =
+    (char*)fs->d_compressed.data +
+    ((uint64_t)epoch_in_compressed * s->levels.total_tiles +
+     s->levels.tile_offset[lv]) *
+      s->codec.max_output_size;
+  size_t* d_sizes =
+    s->codec.d_comp_sizes +
+    (uint64_t)epoch_in_compressed * s->levels.total_tiles +
+    s->levels.tile_offset[lv];
+
+  CHECK(Error,
+        aggregate_by_shard_async(
+          &lvl->agg_layout, d_comp, d_sizes, agg, s->streams.compress) == 0);
+  return 0;
+
+Error:
+  return 1;
+}
+
+// Synchronize D2H, record metrics, deliver to sinks.
+// Precondition: fs->batch_epoch_count and fs->active_levels_mask must be set.
+static struct writer_result
+sync_and_deliver(struct tile_stream_gpu* s, int fc)
+{
+  struct flush_slot_gpu* fs = &s->flush.slot[fc];
 
   CU(Error, cuEventSynchronize(fs->ready));
   record_flush_metrics(s, fc);
@@ -393,7 +455,6 @@ wait_and_deliver(struct tile_stream_gpu* s, int fc)
         goto Error;
       sink_bytes += level_bytes;
 
-      // Record fence for THIS level right away
       if (s->config.shard_sink->record_fence)
         lvl->agg[fc].io_done =
           s->config.shard_sink->record_fence(s->config.shard_sink, (uint8_t)lv);
@@ -403,29 +464,45 @@ wait_and_deliver(struct tile_stream_gpu* s, int fc)
     accumulate_metric_ms(&s->metrics.sink, sink_ms, sink_bytes);
   }
 
-  // Time-based metadata updates.
-  // Peek at elapsed time without resetting; only reset when we fire.
-  if (s->config.shard_sink->update_dim0) {
-    struct platform_clock peek = s->metadata_update_clock;
-    float elapsed = platform_toc(&peek);
-    if (elapsed >= s->config.metadata_update_interval_s) {
-      s->metadata_update_clock = peek; // commit the reset
-      const struct dimension* dims = s->config.dimensions;
-      for (int lv = 0; lv < s->levels.nlod; ++lv) {
-        struct shard_state* ss = &s->lod_levels[lv].shard;
-        uint64_t dim0_tiles =
-          ss->shard_epoch * ss->tiles_per_shard_0 + ss->epoch_in_shard;
-        uint64_t dim0_extent = dim0_tiles * dims[0].tile_size;
-        s->config.shard_sink->update_dim0(
-          s->config.shard_sink, (uint8_t)lv, dim0_extent);
-      }
-    }
-  }
-
   return writer_ok();
 
 Error:
   return writer_error();
+}
+
+// Periodic metadata update (dim0 extent per level).
+static void
+maybe_update_metadata(struct tile_stream_gpu* s)
+{
+  if (!s->config.shard_sink->update_dim0)
+    return;
+
+  struct platform_clock peek = s->metadata_update_clock;
+  float elapsed = platform_toc(&peek);
+  if (elapsed < s->config.metadata_update_interval_s)
+    return;
+
+  s->metadata_update_clock = peek;
+  const struct dimension* dims = s->config.dimensions;
+  for (int lv = 0; lv < s->levels.nlod; ++lv) {
+    struct shard_state* ss = &s->lod_levels[lv].shard;
+    uint64_t dim0_tiles =
+      ss->shard_epoch * ss->tiles_per_shard_0 + ss->epoch_in_shard;
+    uint64_t dim0_extent = dim0_tiles * dims[0].tile_size;
+    s->config.shard_sink->update_dim0(
+      s->config.shard_sink, (uint8_t)lv, dim0_extent);
+  }
+}
+
+// Wait for D2H on the given flush slot, record timing, deliver to sinks.
+static struct writer_result
+wait_and_deliver(struct tile_stream_gpu* s, int fc)
+{
+  wait_io_fences(s, fc, ~0u);
+  struct writer_result r = sync_and_deliver(s, fc);
+  if (!r.error)
+    maybe_update_metadata(s);
+  return r;
 }
 
 // Drain pending flush from the previous epoch.
@@ -529,7 +606,6 @@ static int
 kick_batch(struct tile_stream_gpu* s, int fc, uint32_t n_epochs)
 {
   struct flush_slot_gpu* fs = &s->flush.slot[fc];
-  const size_t tile_bytes = s->layout.tile_stride * s->config.bytes_per_element;
 
   // Wait for all per-epoch pool-ready events
   for (uint32_t e = 0; e < n_epochs; ++e)
@@ -537,19 +613,9 @@ kick_batch(struct tile_stream_gpu* s, int fc, uint32_t n_epochs)
   if (s->levels.enable_multiscale && s->lod.t_end)
     CU(Error, cuStreamWaitEvent(s->streams.compress, s->lod.t_end, 0));
 
-  CU(Error, cuEventRecord(fs->t_compress_start, s->streams.compress));
-
-  // Compress all epochs in the batch as one big batch
-  size_t batch_tiles = (uint64_t)n_epochs * s->levels.total_tiles;
-  CHECK(Error,
-        codec_compress(&s->codec,
-                       s->pools.buf[fc].data,
-                       tile_bytes,
-                       fs->d_compressed.data,
-                       batch_tiles,
-                       s->streams.compress) == 0);
-
-  CU(Error, cuEventRecord(fs->d_compressed.ready, s->streams.compress));
+  // Compress all epochs as one batch
+  uint64_t batch_tiles = (uint64_t)n_epochs * s->levels.total_tiles;
+  CHECK(Error, kick_compress(s, fs, s->pools.buf[fc].data, batch_tiles) == 0);
 
   // Per-level batch aggregate on compress stream
   for (int lv = 0; lv < s->levels.nlod; ++lv) {
@@ -568,17 +634,7 @@ kick_batch(struct tile_stream_gpu* s, int fc, uint32_t n_epochs)
         if (!(fs->batch_active_masks[e] & (1u << lv)))
           continue;
         active_count++;
-
-        void* d_comp =
-          (char*)fs->d_compressed.data +
-          ((uint64_t)e * s->levels.total_tiles + s->levels.tile_offset[lv]) *
-            s->codec.max_output_size;
-        size_t* d_sizes = s->codec.d_comp_sizes + (uint64_t)e * s->levels.total_tiles +
-                          s->levels.tile_offset[lv];
-
-        CHECK(Error,
-              aggregate_by_shard_async(
-                &lvl->agg_layout, d_comp, d_sizes, agg, s->streams.compress) == 0);
+        CHECK(Error, aggregate_epoch_level(s, fc, lv, e) == 0);
       }
       if (active_count == 0)
         continue;
@@ -609,18 +665,7 @@ kick_batch(struct tile_stream_gpu* s, int fc, uint32_t n_epochs)
           if (s->levels.dim0_downsample && lv > 0)
             period = 1u << lv;
           uint32_t pool_epoch = (n_epochs == 1) ? 0 : (a + 1) * period - 1;
-
-          void* d_comp =
-            (char*)fs->d_compressed.data +
-            (pool_epoch * s->levels.total_tiles + s->levels.tile_offset[lv]) *
-              s->codec.max_output_size;
-          size_t* d_sizes = s->codec.d_comp_sizes +
-                            pool_epoch * s->levels.total_tiles +
-                            s->levels.tile_offset[lv];
-
-          CHECK(Error,
-                aggregate_by_shard_async(
-                  &lvl->agg_layout, d_comp, d_sizes, agg, s->streams.compress) == 0);
+          CHECK(Error, aggregate_epoch_level(s, fc, lv, pool_epoch) == 0);
         }
       }
     }
@@ -913,96 +958,41 @@ kick_and_deliver_one_epoch(struct tile_stream_gpu* s,
                            uint32_t active_mask)
 {
   struct flush_slot_gpu* fs = &s->flush.slot[fc];
-  const size_t bpe = s->config.bytes_per_element;
-  const size_t tile_bytes = s->layout.tile_stride * bpe;
+  const size_t tile_bytes = s->layout.tile_stride * s->config.bytes_per_element;
 
   CU(Error,
      cuStreamWaitEvent(s->streams.compress, s->batch.pool_events[epoch_in_batch], 0));
   if (s->levels.enable_multiscale && s->lod.t_end)
     CU(Error, cuStreamWaitEvent(s->streams.compress, s->lod.t_end, 0));
 
-  CU(Error, cuEventRecord(fs->t_compress_start, s->streams.compress));
-
+  // Compress single epoch
   void* epoch_pool = (char*)s->pools.buf[fc].data +
                      (uint64_t)epoch_in_batch * s->levels.total_tiles * tile_bytes;
-
   CHECK(Error,
-        codec_compress(&s->codec,
-                       epoch_pool,
-                       tile_bytes,
-                       fs->d_compressed.data,
-                       s->levels.total_tiles,
-                       s->streams.compress) == 0);
+        kick_compress(s, fs, epoch_pool, s->levels.total_tiles) == 0);
 
-  CU(Error, cuEventRecord(fs->d_compressed.ready, s->streams.compress));
-
+  // Aggregate per level
   for (int lv = 0; lv < s->levels.nlod; ++lv) {
     if (!(active_mask & (1u << lv)))
       continue;
-
-    void* d_comp = (char*)fs->d_compressed.data +
-                   s->levels.tile_offset[lv] * s->codec.max_output_size;
-    size_t* d_sizes = s->codec.d_comp_sizes + s->levels.tile_offset[lv];
-
-    CHECK(Error,
-          aggregate_by_shard_async(&s->lod_levels[lv].agg_layout,
-                                   d_comp,
-                                   d_sizes,
-                                   &s->lod_levels[lv].agg[fc],
-                                   s->streams.compress) == 0);
+    CHECK(Error, aggregate_epoch_level(s, fc, lv, 0) == 0);
   }
 
   CU(Error, cuEventRecord(fs->t_aggregate_end, s->streams.compress));
 
-  // Wait for any pending IO from a previous call before overwriting
-  // h_aggregated/h_offsets with the D2H below.
-  if (s->config.shard_sink->wait_fence) {
-    for (int lv = 0; lv < s->levels.nlod; ++lv) {
-      if (!(active_mask & (1u << lv)))
-        continue;
-      struct aggregate_slot* agg = &s->lod_levels[lv].agg[fc];
-      if (agg->io_done.seq > 0)
-        s->config.shard_sink->wait_fence(
-          s->config.shard_sink, (uint8_t)lv, agg->io_done);
-    }
-  }
+  // Wait for previous IO fences before D2H
+  wait_io_fences(s, fc, active_mask);
 
   CU(Error, cuStreamWaitEvent(s->streams.d2h, fs->t_aggregate_end, 0));
   CU(Error, cuEventRecord(fs->t_d2h_start, s->streams.d2h));
   CHECK(Error, two_phase_d2h(s, fs, fc, active_mask, 1) == 0);
-  CU(Error, cuEventSynchronize(fs->ready));
 
+  // Set up for sync_and_deliver
   fs->batch_epoch_count = 1;
-  {
-    struct platform_clock sink_clock = { 0 };
-    platform_toc(&sink_clock);
-    size_t sink_bytes = 0;
+  fs->active_levels_mask = active_mask;
+  fs->batch_active_masks[0] = active_mask;
 
-    for (int lv = 0; lv < s->levels.nlod; ++lv) {
-      if (!(active_mask & (1u << lv)))
-        continue;
-      size_t level_bytes = 0;
-      if (deliver_to_shards_batch((uint8_t)lv,
-                                  &s->lod_levels[lv].shard,
-                                  &s->lod_levels[lv].agg[fc],
-                                  1,
-                                  s->config.shard_sink,
-                                  s->config.shard_alignment,
-                                  &level_bytes))
-        goto Error;
-      sink_bytes += level_bytes;
-
-      // Record fence for this level right away
-      if (s->config.shard_sink->record_fence)
-        s->lod_levels[lv].agg[fc].io_done =
-          s->config.shard_sink->record_fence(s->config.shard_sink, (uint8_t)lv);
-    }
-
-    float sink_ms = platform_toc(&sink_clock) * 1000.0f;
-    accumulate_metric_ms(&s->metrics.sink, sink_ms, sink_bytes);
-  }
-
-  return writer_ok();
+  return sync_and_deliver(s, fc);
 
 Error:
   return writer_error();

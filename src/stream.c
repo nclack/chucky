@@ -1461,7 +1461,7 @@ Fail:
 }
 
 static int
-init_l0_layout(struct tile_stream_gpu* s)
+init_l0_layout(struct tile_stream_gpu* s, const uint8_t* storage_order)
 {
   const uint8_t rank = s->config.rank;
   const size_t bpe = s->config.bytes_per_element;
@@ -1507,7 +1507,7 @@ init_l0_layout(struct tile_stream_gpu* s)
     compute_lifted_strides(rank,
                            ts,
                            tile_count,
-                           s->storage_order,
+                           storage_order,
                            (int64_t)s->layout.tile_stride,
                            s->layout.lifted_strides);
   }
@@ -1618,7 +1618,8 @@ Fail:
 }
 
 static int
-init_aggregate_and_shards(struct tile_stream_gpu* s)
+init_aggregate_and_shards(struct tile_stream_gpu* s,
+                          const uint8_t* storage_order)
 {
   const uint8_t rank = s->config.rank;
   const struct dimension* dims = s->config.dimensions;
@@ -1664,8 +1665,8 @@ init_aggregate_and_shards(struct tile_stream_gpu* s)
     // which is now storage order.
     uint64_t so_tile_count[HALF_MAX_RANK], so_tiles_per_shard[HALF_MAX_RANK];
     for (int j = 0; j < rank; ++j) {
-      so_tile_count[j] = tile_count[s->storage_order[j]];
-      so_tiles_per_shard[j] = tiles_per_shard[s->storage_order[j]];
+      so_tile_count[j] = tile_count[storage_order[j]];
+      so_tiles_per_shard[j] = tiles_per_shard[storage_order[j]];
     }
 
     // Aggregate layout: per-epoch tile geometry (used by the single-epoch
@@ -1851,7 +1852,7 @@ Fail:
 // morton_tile structs. Must be called BEFORE init_tile_pools so total_tiles can
 // be computed.
 static int
-init_lod_layouts(struct tile_stream_gpu* s)
+init_lod_layouts(struct tile_stream_gpu* s, const uint8_t* storage_order)
 {
   if (!s->enable_multiscale)
     return 0;
@@ -2045,7 +2046,7 @@ init_lod_layouts(struct tile_stream_gpu* s)
         compute_lifted_strides(rank,
                                ts,
                                tc,
-                               s->storage_order,
+                               storage_order,
                                (int64_t)lay->tile_stride,
                                lay->lifted_strides);
       }
@@ -2311,30 +2312,12 @@ Fail:
 
 // Extract forward permutation from dims[d].storage_position.
 // forward[j] = acquisition dim d such that dims[d].storage_position == j.
-// Handles all-zero backward compat (identity). Returns 0 on success.
+// Returns 0 on success.
 static int
 resolve_storage_order(uint8_t rank,
                       const struct dimension* dims,
                       uint8_t* forward)
 {
-  // Detect all-zero backward compat: treat as identity
-  int all_zero = 1;
-  for (int d = 0; d < rank; ++d) {
-    if (dims[d].storage_position != 0) {
-      all_zero = 0;
-      break;
-    }
-  }
-
-  if (all_zero && rank > 1) {
-    // Identity permutation
-    if (forward) {
-      for (int d = 0; d < rank; ++d)
-        forward[d] = (uint8_t)d;
-    }
-    return 0;
-  }
-
   // dims[0].storage_position must be 0
   if (dims[0].storage_position != 0)
     return 1;
@@ -2431,12 +2414,11 @@ tile_stream_gpu_create(const struct tile_stream_configuration* config,
 
   out->config.buffer_capacity_bytes =
     (config->buffer_capacity_bytes + 4095) & ~(size_t)4095;
-  memcpy(out->storage_order, resolved_storage_order, config->rank);
 
   CHECK(Fail, init_cuda_streams_and_events(out) == 0);
-  CHECK(Fail, init_l0_layout(out) == 0);
+  CHECK(Fail, init_l0_layout(out, resolved_storage_order) == 0);
   CHECK(Fail, init_staging_buffers(out) == 0);
-  CHECK(Fail, init_lod_layouts(out) == 0);
+  CHECK(Fail, init_lod_layouts(out, resolved_storage_order) == 0);
 
   // Compute epochs_per_batch (K) after lod_layouts sets total_tiles/nlod.
   // nlod is set by init_lod_layouts; total_tiles is set by init_tile_pools.
@@ -2465,7 +2447,7 @@ tile_stream_gpu_create(const struct tile_stream_configuration* config,
 
   CHECK(Fail, init_tile_pools(out) == 0);
   CHECK(Fail, init_compression(out) == 0);
-  CHECK(Fail, init_aggregate_and_shards(out) == 0);
+  CHECK(Fail, init_aggregate_and_shards(out, resolved_storage_order) == 0);
   CHECK(Fail, init_batch_luts(out) == 0);
   CHECK(Fail, init_batch_events(out) == 0);
   CHECK(Fail, init_lod_buffers(out) == 0);

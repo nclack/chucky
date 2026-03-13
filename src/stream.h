@@ -118,7 +118,7 @@ struct dimension
   int downsample;           // include in LOD pyramid
   uint8_t storage_position; // position in storage layout (0=outermost).
                             // dims[0].storage_position must be 0.
-                            // 0 for all dims means identity (backward compat).
+                            // Must be a valid permutation of 0..rank-1.
 };
 
 struct tile_stream_configuration
@@ -323,7 +323,6 @@ struct tile_stream_gpu
   uint64_t level_tile_offset[LOD_MAX_LEVELS]; // first tile index per level
   uint64_t level_tile_count[LOD_MAX_LEVELS];  // tiles_per_epoch per level
 
-  uint8_t storage_order[HALF_MAX_RANK]; // resolved permutation (acq→storage)
   int nlod;              // 1 when multiscale off, lod.nlod when on
   int enable_multiscale; // computed from dimensions[].downsample
   uint32_t lod_mask;     // computed from dimensions[].downsample

@@ -22,12 +22,14 @@ main(int ac, char* av[])
       .tile_size = t_z,
       .tiles_per_shard = tps_z,
       .name = "t",
+      .storage_position = 0,
     },
     {
       .size = 2,
       .tile_size = 1,
       .tiles_per_shard = 2,
       .name = "c",
+      .storage_position = 1,
     },
     {
       .size = 2048,
@@ -35,6 +37,7 @@ main(int ac, char* av[])
       .tiles_per_shard = tps_xy,
       .name = "y",
       .downsample = 1,
+      .storage_position = 2,
     },
     {
       .size = 2304,
@@ -42,6 +45,7 @@ main(int ac, char* av[])
       .tiles_per_shard = tps_xy,
       .name = "x",
       .downsample = 1,
+      .storage_position = 3,
     },
   };
   return bench_stream_main(ac, av, "multiscale", dims, countof(dims));

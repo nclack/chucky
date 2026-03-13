@@ -1,5 +1,6 @@
 #pragma once
 
+#include "compress.h"
 #include "stream.h"
 
 #include <stdint.h>
@@ -27,6 +28,7 @@ struct zarr_config
   uint8_t rank;
   const struct dimension* dimensions;
   int unbuffered; // use FILE_FLAG_NO_BUFFERING | FILE_FLAG_WRITE_THROUGH
+  enum compression_codec codec; // CODEC_ZSTD, CODEC_LZ4, or CODEC_NONE
 };
 
 struct zarr_sink;
@@ -59,6 +61,7 @@ struct zarr_multiscale_config
   int nlod;                           // number of levels (0 = auto)
   int exclude_dim0;                   // exclude dim 0 from LOD (temporal)
   int unbuffered;                     // use unbuffered IO for shard data
+  enum compression_codec codec;       // CODEC_ZSTD, CODEC_LZ4, or CODEC_NONE
 };
 
 struct zarr_multiscale_sink;

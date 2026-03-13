@@ -2,6 +2,12 @@
 
 #include <stdint.h>
 
+#ifdef __cplusplus
+extern "C"
+{
+#define restrict __restrict
+#endif
+
 // Decompose a flat index into coordinates for a row-major array.
 // coords[d] = idx % shape[d], then idx /= shape[d], for d=0..rank-1.
 void
@@ -53,3 +59,12 @@ compute_lifted_strides(int rank,
                        const uint8_t* storage_order,
                        int64_t tile_stride,
                        int64_t* lifted_strides);
+
+// Maximum element in shape array.
+uint64_t
+max_shape(int ndim, const uint64_t* shape);
+
+#ifdef __cplusplus
+#undef restrict
+}
+#endif

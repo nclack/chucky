@@ -29,6 +29,25 @@ next_pow2_u32(uint32_t v)
   return v + 1;
 }
 
+// Compute epochs_per_batch (K) from config and total tiles per epoch.
+// Returns K as a power of 2, clamped to MAX_BATCH_EPOCHS.
+static uint32_t
+compute_epochs_per_batch(const struct tile_stream_configuration* config,
+                         uint64_t total_tiles_per_epoch)
+{
+  uint32_t K = config->epochs_per_batch;
+  if (K == 0) {
+    uint32_t target = config->target_min_tiles;
+    if (target == 0)
+      target = 1024;
+    K = (uint32_t)ceildiv(target, total_tiles_per_epoch);
+    K = next_pow2_u32(K);
+  }
+  if (K > MAX_BATCH_EPOCHS)
+    K = MAX_BATCH_EPOCHS;
+  return K;
+}
+
 
 static void
 buffer_free(struct buffer* buffer)
@@ -420,6 +439,87 @@ drain_pending_flush(struct tile_stream_gpu* s)
   return wait_and_deliver(s, s->flush.current);
 }
 
+// Two-phase D2H: transfer offsets first (small), synchronize, then only
+// actual compressed bytes.
+// n_epochs: number of epochs in this batch (1 for single-epoch path).
+// level_mask: which levels are active.
+// When n_epochs > 1, per-level active_count is computed from batch masks;
+// when n_epochs == 1, active_count is always 1.
+static int
+two_phase_d2h(struct tile_stream_gpu* s,
+              struct flush_slot_gpu* fs,
+              int fc,
+              uint32_t level_mask,
+              uint32_t n_epochs)
+{
+  // Phase 1: D2H offsets only
+  for (int lv = 0; lv < s->levels.nlod; ++lv) {
+    if (!(level_mask & (1u << lv)))
+      continue;
+
+    uint32_t active_count = 1;
+    if (n_epochs > 1) {
+      active_count = level_actual_active_count(s, fs, lv, n_epochs);
+      if (active_count == 0)
+        continue;
+    }
+
+    struct lod_level_state* lvl = &s->lod_levels[lv];
+    struct aggregate_slot* agg = &lvl->agg[fc];
+    uint64_t covering =
+      (uint64_t)active_count * lvl->agg_layout.covering_count;
+
+    CU(Error,
+       cuMemcpyDtoHAsync(agg->h_offsets,
+                         (CUdeviceptr)agg->d_offsets,
+                         (covering + 1) * sizeof(size_t),
+                         s->streams.d2h));
+  }
+  CU(Error, cuEventRecord(fs->ready, s->streams.d2h));
+  CU(Error, cuEventSynchronize(fs->ready));
+
+  // Phase 2: D2H only actual compressed bytes per level
+  for (int lv = 0; lv < s->levels.nlod; ++lv) {
+    if (!(level_mask & (1u << lv)))
+      continue;
+
+    uint32_t active_count = 1;
+    if (n_epochs > 1) {
+      active_count = level_actual_active_count(s, fs, lv, n_epochs);
+      if (active_count == 0)
+        continue;
+    }
+
+    struct lod_level_state* lvl = &s->lod_levels[lv];
+    struct aggregate_slot* agg = &lvl->agg[fc];
+    uint64_t covering =
+      (uint64_t)active_count * lvl->agg_layout.covering_count;
+
+    size_t actual = agg->h_offsets[covering];
+    if (s->config.shard_alignment > 0)
+      actual += s->config.shard_alignment;
+    size_t cap = agg_pool_bytes(
+      (uint64_t)active_count * s->levels.tile_count[lv],
+      s->codec.max_output_size,
+      lvl->agg_layout.covering_count, lvl->agg_layout.tps_inner,
+      lvl->agg_layout.page_size);
+    if (actual > cap)
+      actual = cap;
+
+    CU(Error,
+       cuMemcpyDtoHAsync(
+         agg->h_aggregated, (CUdeviceptr)agg->d_aggregated, actual, s->streams.d2h));
+    CU(Error, cuEventRecord(agg->ready, s->streams.d2h));
+  }
+
+  CU(Error, cuEventRecord(fs->ready, s->streams.d2h));
+
+  return 0;
+
+Error:
+  return 1;
+}
+
 // --- Batch flush pipeline ---
 
 // Kick compress + aggregate + D2H for a batch of n_epochs epochs.
@@ -528,66 +628,10 @@ kick_batch(struct tile_stream_gpu* s, int fc, uint32_t n_epochs)
 
   CU(Error, cuEventRecord(fs->t_aggregate_end, s->streams.compress));
 
-  // Two-phase D2H: transfer offsets first (small), then only actual compressed
-  // bytes instead of the full worst-case aggregated pool.
   CU(Error, cuStreamWaitEvent(s->streams.d2h, fs->t_aggregate_end, 0));
   CU(Error, cuEventRecord(fs->t_d2h_start, s->streams.d2h));
-
-  // Phase 1: D2H offsets only
-  for (int lv = 0; lv < s->levels.nlod; ++lv) {
-    if (!(fs->active_levels_mask & (1u << lv)))
-      continue;
-
-    uint32_t active_count = level_actual_active_count(s, fs, lv, n_epochs);
-    if (active_count == 0)
-      continue;
-
-    struct lod_level_state* lvl = &s->lod_levels[lv];
-    struct aggregate_slot* agg = &lvl->agg[fc];
-    uint64_t batch_covering =
-      (uint64_t)active_count * lvl->agg_layout.covering_count;
-
-    CU(Error,
-       cuMemcpyDtoHAsync(agg->h_offsets,
-                         (CUdeviceptr)agg->d_offsets,
-                         (batch_covering + 1) * sizeof(size_t),
-                         s->streams.d2h));
-  }
-  CU(Error, cuEventRecord(fs->ready, s->streams.d2h));
-  CU(Error, cuEventSynchronize(fs->ready));
-
-  // Phase 2: D2H only actual compressed bytes per level
-  for (int lv = 0; lv < s->levels.nlod; ++lv) {
-    if (!(fs->active_levels_mask & (1u << lv)))
-      continue;
-
-    uint32_t active_count = level_actual_active_count(s, fs, lv, n_epochs);
-    if (active_count == 0)
-      continue;
-
-    struct lod_level_state* lvl = &s->lod_levels[lv];
-    struct aggregate_slot* agg = &lvl->agg[fc];
-    uint64_t batch_covering =
-      (uint64_t)active_count * lvl->agg_layout.covering_count;
-
-    size_t actual = agg->h_offsets[batch_covering];
-    if (s->config.shard_alignment > 0)
-      actual += s->config.shard_alignment;
-    size_t cap = agg_pool_bytes(
-      (uint64_t)active_count * s->levels.tile_count[lv],
-      s->codec.max_output_size,
-      lvl->agg_layout.covering_count, lvl->agg_layout.tps_inner,
-      lvl->agg_layout.page_size);
-    if (actual > cap)
-      actual = cap;
-
-    CU(Error,
-       cuMemcpyDtoHAsync(
-         agg->h_aggregated, (CUdeviceptr)agg->d_aggregated, actual, s->streams.d2h));
-    CU(Error, cuEventRecord(agg->ready, s->streams.d2h));
-  }
-
-  CU(Error, cuEventRecord(fs->ready, s->streams.d2h));
+  CHECK(Error,
+        two_phase_d2h(s, fs, fc, fs->active_levels_mask, n_epochs) == 0);
 
   return 0;
 
@@ -750,28 +794,30 @@ run_lod(struct tile_stream_gpu* s)
     struct lod_span seg = lod_segment(p, l);
     uint64_t n_parents = lod_span_len(seg);
 
-    lod_fill_ends_gpu(s->lod.d_level_ends[l],
-                      p->lod_ndim,
-                      s->lod.d_child_shapes[l],
-                      s->lod.d_parent_shapes[l],
-                      p->lod_shapes[l],
-                      p->lod_shapes[l + 1],
-                      n_parents,
-                      s->streams.compute);
+    CHECK(Error,
+          lod_fill_ends_gpu(s->lod.d_level_ends[l],
+                            p->lod_ndim,
+                            s->lod.d_child_shapes[l],
+                            s->lod.d_parent_shapes[l],
+                            p->lod_shapes[l],
+                            p->lod_shapes[l + 1],
+                            n_parents,
+                            s->streams.compute) == 0);
 
     struct lod_span src_level = lod_spans_at(&p->levels, l);
     struct lod_span dst_level = lod_spans_at(&p->levels, l + 1);
 
-    lod_reduce((CUdeviceptr)s->lod.d_morton.data,
-               s->lod.d_level_ends[l],
-               dtype,
-               s->config.reduce_method,
-               src_level.beg,
-               dst_level.beg,
-               p->lod_counts[l],
-               p->lod_counts[l + 1],
-               p->batch_count,
-               s->streams.compute);
+    CHECK(Error,
+          lod_reduce((CUdeviceptr)s->lod.d_morton.data,
+                     s->lod.d_level_ends[l],
+                     dtype,
+                     s->config.reduce_method,
+                     src_level.beg,
+                     dst_level.beg,
+                     p->lod_counts[l],
+                     p->lod_counts[l + 1],
+                     p->batch_count,
+                     s->streams.compute) == 0);
   }
 
   CU(Error, cuEventRecord(s->lod.t_reduce_end, s->streams.compute));
@@ -921,53 +967,9 @@ kick_and_deliver_one_epoch(struct tile_stream_gpu* s,
     }
   }
 
-  // Two-phase D2H: transfer offsets first (small), then only actual compressed
-  // bytes instead of the full worst-case aggregated pool.
   CU(Error, cuStreamWaitEvent(s->streams.d2h, fs->t_aggregate_end, 0));
   CU(Error, cuEventRecord(fs->t_d2h_start, s->streams.d2h));
-
-  // Phase 1: D2H offsets only
-  for (int lv = 0; lv < s->levels.nlod; ++lv) {
-    if (!(active_mask & (1u << lv)))
-      continue;
-
-    struct aggregate_slot* agg = &s->lod_levels[lv].agg[fc];
-    CU(Error,
-       cuMemcpyDtoHAsync(agg->h_offsets,
-                         (CUdeviceptr)agg->d_offsets,
-                         (s->lod_levels[lv].agg_layout.covering_count + 1) *
-                           sizeof(size_t),
-                         s->streams.d2h));
-  }
-  CU(Error, cuEventRecord(fs->ready, s->streams.d2h));
-  CU(Error, cuEventSynchronize(fs->ready));
-
-  // Phase 2: D2H only actual compressed bytes per level
-  for (int lv = 0; lv < s->levels.nlod; ++lv) {
-    if (!(active_mask & (1u << lv)))
-      continue;
-
-    struct lod_level_state* lvl = &s->lod_levels[lv];
-    struct aggregate_slot* agg = &lvl->agg[fc];
-    uint64_t covering = lvl->agg_layout.covering_count;
-
-    size_t actual = agg->h_offsets[covering];
-    if (s->config.shard_alignment > 0)
-      actual += s->config.shard_alignment;
-    size_t cap = agg_pool_bytes(
-      s->levels.tile_count[lv], s->codec.max_output_size,
-      covering, lvl->agg_layout.tps_inner,
-      lvl->agg_layout.page_size);
-    if (actual > cap)
-      actual = cap;
-
-    CU(Error,
-       cuMemcpyDtoHAsync(agg->h_aggregated,
-                         (CUdeviceptr)agg->d_aggregated,
-                         actual,
-                         s->streams.d2h));
-  }
-  CU(Error, cuEventRecord(fs->ready, s->streams.d2h));
+  CHECK(Error, two_phase_d2h(s, fs, fc, active_mask, 1) == 0);
   CU(Error, cuEventSynchronize(fs->ready));
 
   fs->batch_epoch_count = 1;
@@ -1770,14 +1772,22 @@ init_lod_layouts(struct tile_stream_gpu* s, const uint8_t* storage_order)
     }
 
     // Build gather (inverse) LUT
-    CU(Fail, cuMemAlloc(&s->lod.d_gather_lut, lod_count * sizeof(uint32_t)));
-    lod_build_gather_lut(s->lod.d_gather_lut,
-                         s->lod.d_lod_shape,
-                         d_lod_strides,
-                         p->lod_ndim,
-                         p->lod_shapes[0],
-                         lod_count,
-                         0);
+    {
+      CUresult alloc_res =
+        cuMemAlloc(&s->lod.d_gather_lut, lod_count * sizeof(uint32_t));
+      if (alloc_res != CUDA_SUCCESS) {
+        cuMemFree(d_lod_strides);
+        goto Fail;
+      }
+    }
+    CHECK(Fail,
+          lod_build_gather_lut(s->lod.d_gather_lut,
+                               s->lod.d_lod_shape,
+                               d_lod_strides,
+                               p->lod_ndim,
+                               p->lod_shapes[0],
+                               lod_count,
+                               0) == 0);
 
     cuMemFree(d_lod_strides);
 
@@ -1911,8 +1921,11 @@ init_lod_layouts(struct tile_stream_gpu* s, const uint8_t* storage_order)
       } else {
         const size_t lod_shape_bytes = p->lod_ndim * sizeof(uint64_t);
         CU(Fail, cuMemAlloc(&d_lod_shape_lv, lod_shape_bytes));
-        CU(Fail,
-           cuMemcpyHtoD(d_lod_shape_lv, p->lod_shapes[lv], lod_shape_bytes));
+        if (cuMemcpyHtoD(d_lod_shape_lv, p->lod_shapes[lv], lod_shape_bytes) !=
+            CUDA_SUCCESS) {
+          cuMemFree(d_lod_shape_lv);
+          goto Fail;
+        }
       }
 
       // Compute lod_tile_sizes and lod_tile_strides on host
@@ -1944,14 +1957,15 @@ init_lod_layouts(struct tile_stream_gpu* s, const uint8_t* storage_order)
         CU(Fail2,
            cuMemAlloc(&s->lod.d_morton_tile_lut[lv],
                       lod_count * sizeof(uint32_t)));
-        lod_build_tile_scatter_lut(s->lod.d_morton_tile_lut[lv],
-                                   d_lod_shape_lv,
-                                   d_tile_sizes,
-                                   d_tile_strides,
-                                   p->lod_ndim,
-                                   p->lod_shapes[lv],
-                                   lod_count,
-                                   0);
+        CHECK(Fail2,
+              lod_build_tile_scatter_lut(s->lod.d_morton_tile_lut[lv],
+                                         d_lod_shape_lv,
+                                         d_tile_sizes,
+                                         d_tile_strides,
+                                         p->lod_ndim,
+                                         p->lod_shapes[lv],
+                                         lod_count,
+                                         0) == 0);
 
         cuMemFree(d_tile_sizes);
         cuMemFree(d_tile_strides);
@@ -2207,7 +2221,7 @@ tile_stream_gpu_create(const struct tile_stream_configuration* config,
   if (resolve_storage_order(
         config->rank, config->dimensions, resolved_storage_order)) {
     log_error("invalid storage_order permutation");
-    goto Fail;
+    goto EarlyFail;
   }
 
   // Compute lod_mask from dimensions (uniform: includes dim 0 if marked).
@@ -2266,16 +2280,7 @@ tile_stream_gpu_create(const struct tile_stream_configuration* config,
     for (int lv = 1; lv < out->levels.nlod; ++lv)
       total_tiles_per_epoch += out->lod.layouts[lv].tiles_per_epoch;
 
-    uint32_t K = config->epochs_per_batch;
-    if (K == 0) {
-      uint32_t target = config->target_min_tiles;
-      if (target == 0)
-        target = 1024;
-      K = (uint32_t)ceildiv(target, total_tiles_per_epoch);
-      K = next_pow2_u32(K);
-    }
-    if (K > MAX_BATCH_EPOCHS)
-      K = MAX_BATCH_EPOCHS;
+    uint32_t K = compute_epochs_per_batch(config, total_tiles_per_epoch);
     // Ensure K is a power of 2
     CHECK(Fail, (K & (K - 1)) == 0);
     out->batch.epochs_per_batch = K;
@@ -2595,19 +2600,8 @@ tile_stream_gpu_memory_estimate(const struct tile_stream_configuration* config,
     total_tiles += lv_tiles;
   }
 
-  // --- Compute K (mirrors create path) ---
-  // FIXME: factor into a helper and reuse
-
-  uint32_t K = config->epochs_per_batch;
-  if (K == 0) {
-    uint32_t target = config->target_min_tiles;
-    if (target == 0)
-      target = 1024;
-    K = (uint32_t)ceildiv(target, total_tiles);
-    K = next_pow2_u32(K);
-  }
-  if (K > MAX_BATCH_EPOCHS)
-    K = MAX_BATCH_EPOCHS;
+  // --- Compute K ---
+  uint32_t K = compute_epochs_per_batch(config, total_tiles);
 
   // --- Codec queries (no GPU allocation) ---
 

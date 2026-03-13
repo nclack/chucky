@@ -218,7 +218,8 @@ aggregate_slot_destroy(struct aggregate_slot* slot)
 {
   if (!slot)
     return;
-  cuEventDestroy(slot->ready);
+  if (slot->ready)
+    cuEventDestroy(slot->ready);
   cuMemFree((CUdeviceptr)slot->d_permuted_sizes);
   cuMemFree((CUdeviceptr)slot->d_offsets);
   cuMemFree((CUdeviceptr)slot->d_perm);

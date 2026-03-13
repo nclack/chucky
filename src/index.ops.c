@@ -72,6 +72,16 @@ inverse_permutation_i32(int n, const int* restrict p, int* restrict inv)
   }
 }
 
+uint64_t
+max_shape(int ndim, const uint64_t* shape)
+{
+  uint64_t m = 0;
+  for (int d = 0; d < ndim; ++d)
+    if (shape[d] > m)
+      m = shape[d];
+  return m;
+}
+
 void
 compute_lifted_strides(int rank,
                        const uint64_t* tile_sizes,

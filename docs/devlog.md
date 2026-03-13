@@ -38,6 +38,9 @@
 
 Confirmed using a non-trivial storage order doesn't effect performance.
 
+Realized I was hardcoding zstd in the zarr metadata. Fixing. Probably need to
+double check that part of the code again.
+
 ## 2026-03-12
 
 Finishing unbuffered io on posix.

@@ -1,33 +1,11 @@
 #include "lod.h"
+#include "index.ops.h"
+#include "prelude.h"
 
 #include <assert.h>
 #include <stdint.h>
 
 #define LOD_BLOCK 256
-
-static int
-ceil_log2_h(uint64_t v)
-{
-  if (v <= 1)
-    return 0;
-  v -= 1;
-  int n = 0;
-  while (v) {
-    v >>= 1;
-    ++n;
-  }
-  return n;
-}
-
-static uint64_t
-max_shape_h(int ndim, const uint64_t* shape)
-{
-  uint64_t max = 0;
-  for (int d = 0; d < ndim; ++d)
-    if (shape[d] > max)
-      max = shape[d];
-  return max;
-}
 
 // Number of elements in a tile of `tile_size` starting at `start`
 // within a dimension of `dimension_size`, clamped to the boundary.
@@ -492,7 +470,7 @@ lod_build_gather_lut_launch(CUdeviceptr d_src_lut,
                                           lod_count);
 }
 
-extern "C" void
+extern "C" int
 lod_build_gather_lut(CUdeviceptr d_src_lut,
                      CUdeviceptr d_lod_shape,
                      CUdeviceptr d_lod_strides,
@@ -501,7 +479,7 @@ lod_build_gather_lut(CUdeviceptr d_src_lut,
                      uint64_t lod_count,
                      CUstream stream)
 {
-  int lod_nlod = ceil_log2_h(max_shape_h(lod_ndim, lod_shape_host));
+  int lod_nlod = ceil_log2(max_shape(lod_ndim, lod_shape_host));
 
 #define XXX(maxdim)                                                            \
   if (lod_ndim <= maxdim) {                                                    \
@@ -512,12 +490,15 @@ lod_build_gather_lut(CUdeviceptr d_src_lut,
                                         lod_nlod,                              \
                                         lod_count,                             \
                                         stream);                               \
-    return;                                                                    \
+    return 0;                                                                  \
   }
 
   XXX(4);
   XXX(8);
+  XXX(16);
+  XXX(32);
 #undef XXX
+  return 1;
 }
 
 template<int NdimMax>
@@ -543,7 +524,7 @@ lod_build_tile_scatter_lut_launch(CUdeviceptr d_tile_lut,
                                           lod_count);
 }
 
-extern "C" void
+extern "C" int
 lod_build_tile_scatter_lut(CUdeviceptr d_tile_lut,
                            CUdeviceptr d_lod_shape,
                            CUdeviceptr d_lod_tile_sizes,
@@ -553,7 +534,7 @@ lod_build_tile_scatter_lut(CUdeviceptr d_tile_lut,
                            uint64_t lod_count,
                            CUstream stream)
 {
-  int lod_nlod = ceil_log2_h(max_shape_h(lod_ndim, lod_shape_host));
+  int lod_nlod = ceil_log2(max_shape(lod_ndim, lod_shape_host));
 
 #define XXX(maxdim)                                                            \
   if (lod_ndim <= maxdim) {                                                    \
@@ -565,12 +546,13 @@ lod_build_tile_scatter_lut(CUdeviceptr d_tile_lut,
                                               lod_nlod,                        \
                                               lod_count,                       \
                                               stream);                         \
-    return;                                                                    \
+    return 0;                                                                  \
   }
 
   XXX(4);
   XXX(8);
 #undef XXX
+  return 1;
 }
 
 template<typename T>
@@ -696,7 +678,7 @@ lod_fill_ends_launch(CUdeviceptr d_ends,
                                           n_parents);
 }
 
-extern "C" void
+extern "C" int
 lod_fill_ends_gpu(CUdeviceptr d_ends,
                   int ndim,
                   CUdeviceptr d_child_shape,
@@ -706,8 +688,8 @@ lod_fill_ends_gpu(CUdeviceptr d_ends,
                   uint64_t n_parents,
                   CUstream stream)
 {
-  int parent_nlod = ceil_log2_h(max_shape_h(ndim, parent_shape_host));
-  int child_nlod = ceil_log2_h(max_shape_h(ndim, child_shape_host));
+  int parent_nlod = ceil_log2(max_shape(ndim, parent_shape_host));
+  int child_nlod = ceil_log2(max_shape(ndim, child_shape_host));
 
 #define XXX(maxdim)                                                            \
   if (ndim <= maxdim) {                                                        \
@@ -719,12 +701,13 @@ lod_fill_ends_gpu(CUdeviceptr d_ends,
                                  child_nlod,                                   \
                                  n_parents,                                    \
                                  stream);                                      \
-    return;                                                                    \
+    return 0;                                                                  \
   }
 
   XXX(4);
   XXX(8);
 #undef XXX
+  return 1;
 }
 
 // --- Accumulator emit kernel (dim0 LOD) ---

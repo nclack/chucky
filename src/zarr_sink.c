@@ -207,6 +207,7 @@ struct zarr_sink
   struct dimension dimensions[MAX_ZARR_RANK];
   enum zarr_dtype data_type;
   double fill_value;
+  enum compression_codec codec;
 };
 
 // --- Path computation ---
@@ -368,7 +369,8 @@ write_array_metadata(const char* array_dir,
                         const struct dimension* dimensions,
                         enum zarr_dtype data_type,
                         double fill_value,
-                        const uint64_t* tiles_per_shard)
+                        const uint64_t* tiles_per_shard,
+                        enum compression_codec codec)
 {
   char path[4096];
   snprintf(path, sizeof(path), "%s/zarr.json", array_dir);
@@ -446,13 +448,15 @@ write_array_metadata(const char* array_dir,
   jw_string(&jw, "little");
   jw_object_end(&jw);
   jw_object_end(&jw);
-  jw_object_begin(&jw);
-  jw_key(&jw, "name");
-  jw_string(&jw, "zstd");
-  jw_key(&jw, "configuration");
-  jw_object_begin(&jw);
-  jw_object_end(&jw);
-  jw_object_end(&jw);
+  if (codec != CODEC_NONE) {
+    jw_object_begin(&jw);
+    jw_key(&jw, "name");
+    jw_string(&jw, codec == CODEC_LZ4 ? "lz4" : "zstd");
+    jw_key(&jw, "configuration");
+    jw_object_begin(&jw);
+    jw_object_end(&jw);
+    jw_object_end(&jw);
+  }
   jw_array_end(&jw);
 
   jw_key(&jw, "index_codecs");
@@ -528,7 +532,7 @@ zarr_sink_update_dim0(struct shard_sink* self,
   zs->dimensions[0].size = dim0_size;
   if (write_array_metadata(zs->array_dir, zs->rank, zs->dimensions,
                                zs->data_type, zs->fill_value,
-                               zs->tiles_per_shard))
+                               zs->tiles_per_shard, zs->codec))
     log_error("zarr_sink_update_dim0: failed to rewrite zarr.json for %s",
               zs->array_dir);
 }
@@ -557,6 +561,7 @@ zarr_sink_create(const struct zarr_config* cfg)
   zs->rank = cfg->rank;
   zs->data_type = cfg->data_type;
   zs->fill_value = cfg->fill_value;
+  zs->codec = cfg->codec;
 
   // Store dimension config for metadata updates
   for (int d = 0; d < cfg->rank; ++d)
@@ -610,7 +615,7 @@ zarr_sink_create(const struct zarr_config* cfg)
   CHECK(Fail_alloc,
         write_array_metadata(zs->array_dir, zs->rank, zs->dimensions,
                                 zs->data_type, zs->fill_value,
-                                zs->tiles_per_shard) == 0);
+                                zs->tiles_per_shard, zs->codec) == 0);
 
   // Allocate writer pool
   zs->num_writers = zs->shard_inner_count;
@@ -967,6 +972,7 @@ zarr_multiscale_sink_create(const struct zarr_multiscale_config* cfg)
       .rank = cfg->rank,
       .dimensions = lv_dims,
       .unbuffered = cfg->unbuffered,
+      .codec = cfg->codec,
     };
 
     ms->levels[lv] = zarr_sink_create(&zcfg);

@@ -24,14 +24,14 @@ extern "C"
     lod_reduce_min_suppressed, // 2nd lowest value
   };
 
-  void lod_fill_ends_gpu(CUdeviceptr d_ends,
-                         int ndim,
-                         CUdeviceptr d_child_shape,
-                         CUdeviceptr d_parent_shape,
-                         const uint64_t* child_shape_host,
-                         const uint64_t* parent_shape_host,
-                         uint64_t n_parents,
-                         CUstream stream);
+  int lod_fill_ends_gpu(CUdeviceptr d_ends,
+                        int ndim,
+                        CUdeviceptr d_child_shape,
+                        CUdeviceptr d_parent_shape,
+                        const uint64_t* child_shape_host,
+                        const uint64_t* parent_shape_host,
+                        uint64_t n_parents,
+                        CUstream stream);
 
   // returns 0 on success, non-zero on failure
   int lod_reduce(CUdeviceptr d_values,
@@ -51,14 +51,14 @@ extern "C"
   // d_lod_tile_sizes: lod_ndim uint64_t entries (tile size per LOD dim).
   // d_lod_tile_strides: 2*lod_ndim int64_t entries (grid, within) pairs.
   // d_tile_lut: device buffer of lod_count uint32_t entries.
-  void lod_build_tile_scatter_lut(CUdeviceptr d_tile_lut,
-                                  CUdeviceptr d_lod_shape,
-                                  CUdeviceptr d_lod_tile_sizes,
-                                  CUdeviceptr d_lod_tile_strides,
-                                  int lod_ndim,
-                                  const uint64_t* lod_shape_host,
-                                  uint64_t lod_count,
-                                  CUstream stream);
+  int lod_build_tile_scatter_lut(CUdeviceptr d_tile_lut,
+                                 CUdeviceptr d_lod_shape,
+                                 CUdeviceptr d_lod_tile_sizes,
+                                 CUdeviceptr d_lod_tile_strides,
+                                 int lod_ndim,
+                                 const uint64_t* lod_shape_host,
+                                 uint64_t lod_count,
+                                 CUstream stream);
 
   // Morton-to-tile scatter using precomputed LUTs.
   // d_tile_lut: lod_count uint32_t entries (morton_pos ->
@@ -79,13 +79,13 @@ extern "C"
   //                in the full array.
   // d_src_lut: device buffer of lod_count uint32_t entries.
   // Caller must ensure all offsets fit in uint32_t.
-  void lod_build_gather_lut(CUdeviceptr d_src_lut,
-                            CUdeviceptr d_lod_shape,
-                            CUdeviceptr d_lod_strides,
-                            int lod_ndim,
-                            const uint64_t* lod_shape_host,
-                            uint64_t lod_count,
-                            CUstream stream);
+  int lod_build_gather_lut(CUdeviceptr d_src_lut,
+                           CUdeviceptr d_lod_shape,
+                           CUdeviceptr d_lod_strides,
+                           int lod_ndim,
+                           const uint64_t* lod_shape_host,
+                           uint64_t lod_count,
+                           CUstream stream);
 
   // Gather using precomputed inverse LUT: iterate in Morton output order
   // for coalesced writes, scattered reads.

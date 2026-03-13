@@ -63,9 +63,10 @@ setup_gather(const struct lod_plan* p,
                  p->lod_ndim * sizeof(uint64_t)));
 
     CU(Fail, cuMemAlloc(d_gather_lut, p->lod_counts[0] * sizeof(uint32_t)));
-    lod_build_gather_lut(*d_gather_lut, *d_lod_shape, *d_lod_strides,
-                         p->lod_ndim, p->lod_shapes[0],
-                         p->lod_counts[0], stream);
+    CHECK(Fail,
+          lod_build_gather_lut(*d_gather_lut, *d_lod_shape, *d_lod_strides,
+                               p->lod_ndim, p->lod_shapes[0],
+                               p->lod_counts[0], stream) == 0);
   } else {
     uint32_t zero = 0;
     CHECK(Fail, upload(d_gather_lut, &zero, sizeof(uint32_t)));
@@ -197,10 +198,11 @@ lod_compute_gpu(const struct lod_plan* p,
     d_ends = 0;
     CU(Fail, cuMemAlloc(&d_ends, n_parents * sizeof(uint64_t)));
 
-    lod_fill_ends_gpu(d_ends, p->lod_ndim,
-                      d_child_shape, d_parent_shape,
-                      p->lod_shapes[l], p->lod_shapes[l + 1],
-                      n_parents, stream);
+    CHECK(Fail,
+          lod_fill_ends_gpu(d_ends, p->lod_ndim,
+                            d_child_shape, d_parent_shape,
+                            p->lod_shapes[l], p->lod_shapes[l + 1],
+                            n_parents, stream) == 0);
 
     struct lod_span src_level = lod_spans_at(&p->levels, l);
     struct lod_span dst_level = lod_spans_at(&p->levels, l + 1);
@@ -530,10 +532,11 @@ lod_compute_gpu_u16(const struct lod_plan* p,
     d_ends = 0;
     CU(Fail, cuMemAlloc(&d_ends, n_parents * sizeof(uint64_t)));
 
-    lod_fill_ends_gpu(d_ends, p->lod_ndim,
-                      d_child_shape, d_parent_shape,
-                      p->lod_shapes[l], p->lod_shapes[l + 1],
-                      n_parents, stream);
+    CHECK(Fail,
+          lod_fill_ends_gpu(d_ends, p->lod_ndim,
+                            d_child_shape, d_parent_shape,
+                            p->lod_shapes[l], p->lod_shapes[l + 1],
+                            n_parents, stream) == 0);
 
     struct lod_span src_level = lod_spans_at(&p->levels, l);
     struct lod_span dst_level = lod_spans_at(&p->levels, l + 1);

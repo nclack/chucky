@@ -33,6 +33,14 @@ extern "C"
     return (x + alignment - 1) / alignment * alignment;
   }
 
+  static inline int ceil_log2(uint64_t v)
+  {
+    int p = 0;
+    while ((1ull << p) < v)
+      ++p;
+    return p;
+  }
+
 #ifdef __cplusplus
 }
 #endif

@@ -1,28 +1,10 @@
 #include "lod_plan.h"
 
 #include "index.ops.h"
+#include "prelude.h"
 
 #include <stdlib.h>
 #include <string.h>
-
-static uint64_t
-max_shape(int ndim, const uint64_t* shape)
-{
-  uint64_t m = 0;
-  for (int d = 0; d < ndim; ++d)
-    if (shape[d] > m)
-      m = shape[d];
-  return m;
-}
-
-static int
-ceil_log2(uint64_t v)
-{
-  int p = 0;
-  while ((1ull << p) < v)
-    ++p;
-  return p;
-}
 
 static uint64_t
 clamped_extent(uint64_t shape_d, uint64_t lo, uint64_t scale)

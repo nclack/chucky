@@ -35,9 +35,9 @@ dims_set_downsample_by_name(struct dimension* dims,
 // Distribute nelem across dims using power-of-2 ratios.
 //
 // ratio 0 -> tile_size = 1 (that dim doesn't contribute to tile volume).
-// For non-zero ratios: bits_per_part = floor(log2(nelem) / sum(ratios)).
+// For non-zero ratios: bits_per_part = ceil(log2(nelem) / sum(ratios)).
 // Each dim gets tile_size = 1 << (ratio[i] * bits_per_part).
-// Remainder bits go to the lowest-indexed non-zero-ratio dim.
+// Remainder bits (may be negative) go to the lowest-indexed non-zero-ratio dim.
 void
 dims_budget_tile_size(struct dimension* dims,
                       uint8_t rank,

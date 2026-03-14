@@ -111,13 +111,13 @@ pad_shard_sizes_k(size_t* __restrict__ d_permuted_sizes,
 // ---------------------------------------------------------------------------
 
 extern "C" int
-aggregate_layout_init(struct aggregate_layout* layout,
-                      uint8_t rank,
-                      const uint64_t* tile_count,
-                      const uint64_t* tiles_per_shard,
-                      uint64_t tiles_per_epoch,
-                      size_t max_chunk_bytes,
-                      size_t page_size)
+aggregate_layout_compute(struct aggregate_layout* layout,
+                         uint8_t rank,
+                         const uint64_t* tile_count,
+                         const uint64_t* tiles_per_shard,
+                         uint64_t tiles_per_epoch,
+                         size_t max_chunk_bytes,
+                         size_t page_size)
 {
   uint64_t shard_count[HALF_MAX_RANK];
   uint64_t eff_tps[HALF_MAX_RANK];
@@ -179,28 +179,53 @@ aggregate_layout_init(struct aggregate_layout* layout,
     }
   }
 
-  // Allocate device copies
-  {
-    const size_t shape_bytes = layout->lifted_rank * sizeof(uint64_t);
-    const size_t strides_bytes = layout->lifted_rank * sizeof(int64_t);
-    CU(Error, cuMemAlloc((CUdeviceptr*)&layout->d_lifted_shape, shape_bytes));
-    CU(Error,
-       cuMemAlloc((CUdeviceptr*)&layout->d_lifted_strides, strides_bytes));
-    CU(Error,
-       cuMemcpyHtoD((CUdeviceptr)layout->d_lifted_shape,
-                    layout->lifted_shape,
-                    shape_bytes));
-    CU(Error,
-       cuMemcpyHtoD((CUdeviceptr)layout->d_lifted_strides,
-                    layout->lifted_strides,
-                    strides_bytes));
-  }
-
   return 0;
 
 Error:
-  aggregate_layout_destroy(layout);
+  memset(layout, 0, sizeof(*layout));
   return 1;
+}
+
+extern "C" int
+aggregate_layout_upload(struct aggregate_layout* layout)
+{
+  const size_t shape_bytes = layout->lifted_rank * sizeof(uint64_t);
+  const size_t strides_bytes = layout->lifted_rank * sizeof(int64_t);
+  CU(Error, cuMemAlloc((CUdeviceptr*)&layout->d_lifted_shape, shape_bytes));
+  CU(Error,
+     cuMemAlloc((CUdeviceptr*)&layout->d_lifted_strides, strides_bytes));
+  CU(Error,
+     cuMemcpyHtoD((CUdeviceptr)layout->d_lifted_shape,
+                  layout->lifted_shape,
+                  shape_bytes));
+  CU(Error,
+     cuMemcpyHtoD((CUdeviceptr)layout->d_lifted_strides,
+                  layout->lifted_strides,
+                  strides_bytes));
+  return 0;
+
+Error:
+  return 1;
+}
+
+extern "C" int
+aggregate_layout_init(struct aggregate_layout* layout,
+                      uint8_t rank,
+                      const uint64_t* tile_count,
+                      const uint64_t* tiles_per_shard,
+                      uint64_t tiles_per_epoch,
+                      size_t max_chunk_bytes,
+                      size_t page_size)
+{
+  if (aggregate_layout_compute(
+        layout, rank, tile_count, tiles_per_shard, tiles_per_epoch,
+        max_chunk_bytes, page_size))
+    return 1;
+  if (aggregate_layout_upload(layout)) {
+    aggregate_layout_destroy(layout);
+    return 1;
+  }
+  return 0;
 }
 
 extern "C" void

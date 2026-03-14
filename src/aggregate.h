@@ -57,7 +57,7 @@ extern "C"
     struct io_event io_done; // tracks IO completion from this slot's data
   };
 
-  // Build the shard-permutation layout for reordering compressed tiles.
+  // Compute host-side aggregate layout fields (pure CPU, no GPU allocation).
   //
   // rank:                full dimensionality (>= 2); dims 1..rank-1 are used.
   // tile_count[d]:       number of tiles along dim d (d = 0..rank-1).
@@ -69,6 +69,20 @@ extern "C"
   // max_chunk_bytes:     upper bound on compressed size of one tile.
   //
   // Returns 0 on success. On failure, *layout is zeroed and safe to destroy.
+  int aggregate_layout_compute(struct aggregate_layout* layout,
+                               uint8_t rank,
+                               const uint64_t* tile_count,
+                               const uint64_t* tiles_per_shard,
+                               uint64_t tiles_per_epoch,
+                               size_t max_chunk_bytes,
+                               size_t page_size);
+
+  // Upload pre-computed layout arrays to GPU. Must be called after
+  // aggregate_layout_compute. Returns 0 on success.
+  int aggregate_layout_upload(struct aggregate_layout* layout);
+
+  // Compute + upload (convenience wrapper). Returns 0 on success.
+  // On failure, *layout is zeroed and safe to destroy.
   int aggregate_layout_init(struct aggregate_layout* layout,
                             uint8_t rank,
                             const uint64_t* tile_count,

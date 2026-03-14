@@ -2,15 +2,15 @@
 
 #include "stream.h"
 
-// Initialize LOD plan, shapes, gather LUT, per-level layouts, and morton LUTs.
-// Must be called BEFORE init_tile_pools. Sets levels->nlod.
+// Upload pre-computed LOD plan/layouts to GPU and build scatter LUTs.
+// Plan and level layouts must already be populated in lod->plan and
+// lod->layouts (from compute_stream_layouts). Sets levels->nlod.
 // Returns 0 on success.
 int
 lod_state_init(struct lod_state* lod,
                struct level_geometry* levels,
                const struct stream_layout* l0,
-               const struct tile_stream_configuration* config,
-               const uint8_t* storage_order);
+               const struct tile_stream_configuration* config);
 
 // Allocate d_linear, d_morton, LOD timing events.
 // Must be called AFTER lod_state_init.

@@ -351,7 +351,7 @@ Error:
 }
 
 void
-tile_stream_gpu_init_vtable(struct tile_stream_gpu* s)
+tile_stream_gpu_init_writer(struct tile_stream_gpu* s)
 {
   s->writer.append = tile_stream_gpu_append;
   s->writer.flush = tile_stream_gpu_flush;

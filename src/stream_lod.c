@@ -1,7 +1,5 @@
 #include "stream_lod.h"
 
-#include "compress.h"
-#include "index.ops.h"
 #include "lod.h"
 #include "lod_plan.h"
 #include "prelude.cuda.h"
@@ -10,48 +8,12 @@
 #include <stdlib.h>
 #include <string.h>
 
-// --- LOD init: plan, shapes, gather LUT, per-level arrays, layouts, LUTs ---
+// --- LOD init: GPU uploads and LUT building from pre-computed plan/layouts ---
 
+// Upload plan shapes to GPU. Plan must already be initialized.
 static int
-init_plan_and_shapes(struct lod_state* lod,
-                     const struct tile_stream_configuration* config)
+upload_plan_shapes(struct lod_state* lod, uint8_t rank)
 {
-  const uint8_t rank = config->rank;
-  const struct dimension* dims = config->dimensions;
-
-  uint32_t lod_mask = 0;
-  for (int d = 0; d < rank; ++d)
-    if (dims[d].downsample)
-      lod_mask |= (1u << d);
-
-  uint64_t shape[HALF_MAX_RANK];
-  uint64_t tile_shape[HALF_MAX_RANK];
-  shape[0] = dims[0].tile_size;
-  for (int d = 1; d < rank; ++d)
-    shape[d] = dims[d].size;
-  for (int d = 0; d < rank; ++d)
-    tile_shape[d] = dims[d].tile_size;
-
-  int dim0_ds = 0;
-  for (int d = 0; d < rank; ++d)
-    if (dims[d].downsample && d == 0)
-      dim0_ds = 1;
-
-  CHECK(
-    Fail,
-    lod_plan_init(
-      &lod->plan, rank, shape, tile_shape, lod_mask, LOD_MAX_LEVELS, dim0_ds) ==
-      0);
-
-  for (int k = 0; k < lod->plan.nlod; ++k) {
-    if (lod->plan.lod_counts[k] > UINT32_MAX) {
-      log_error("LOD level %d count %llu exceeds uint32_t limit",
-                k,
-                (unsigned long long)lod->plan.lod_counts[k]);
-      goto Fail;
-    }
-  }
-
   CU(Fail, cuMemAlloc(&lod->d_full_shape, rank * sizeof(uint64_t)));
   CU(Fail,
      cuMemcpyHtoD(
@@ -209,65 +171,22 @@ Fail:
   return 1;
 }
 
+// Upload pre-computed LOD level layouts to GPU.
+// Host fields in lod->layouts must already be populated.
 static int
-init_lod_level_layouts(struct lod_state* lod,
-                       const struct tile_stream_configuration* config,
-                       const uint8_t* storage_order)
+upload_lod_level_layouts(struct lod_state* lod)
 {
-  const uint8_t rank = config->rank;
-  const struct dimension* dims = config->dimensions;
-  const size_t bpe = config->bytes_per_element;
-  size_t alignment = codec_alignment(config->codec);
-
   for (int lv = 1; lv < lod->plan.nlod; ++lv) {
     struct stream_layout* lay = &lod->layouts[lv];
-    const uint64_t* lv_shape = lod->plan.shapes[lv];
-
-    lay->lifted_rank = 2 * rank;
-    lay->tile_elements = 1;
-
-    uint64_t tc[HALF_MAX_RANK];
-    for (int d = 0; d < rank; ++d) {
-      tc[d] = ceildiv(lv_shape[d], dims[d].tile_size);
-      lay->lifted_shape[2 * d] = tc[d];
-      lay->lifted_shape[2 * d + 1] = dims[d].tile_size;
-      lay->tile_elements *= dims[d].tile_size;
-    }
-
-    {
-      size_t tile_bytes = lay->tile_elements * bpe;
-      size_t padded_bytes = align_up(tile_bytes, alignment);
-      lay->tile_stride = padded_bytes / bpe;
-    }
-
-    {
-      uint64_t ts[HALF_MAX_RANK];
-      for (int d = 0; d < rank; ++d)
-        ts[d] = dims[d].tile_size;
-      compute_lifted_strides(rank,
-                             ts,
-                             tc,
-                             storage_order,
-                             (int64_t)lay->tile_stride,
-                             lay->lifted_strides);
-    }
-
-    lay->tiles_per_epoch = lay->lifted_strides[0] / lay->tile_stride;
-    lay->epoch_elements = lay->tiles_per_epoch * lay->tile_elements;
-    lay->lifted_strides[0] = 0;
-    lay->tile_pool_bytes = lay->tiles_per_epoch * lay->tile_stride * bpe;
-
-    {
-      const size_t sb = lay->lifted_rank * sizeof(uint64_t);
-      const size_t stb = lay->lifted_rank * sizeof(int64_t);
-      CU(Fail, cuMemAlloc((CUdeviceptr*)&lay->d_lifted_shape, sb));
-      CU(Fail, cuMemAlloc((CUdeviceptr*)&lay->d_lifted_strides, stb));
-      CU(Fail,
-         cuMemcpyHtoD((CUdeviceptr)lay->d_lifted_shape, lay->lifted_shape, sb));
-      CU(Fail,
-         cuMemcpyHtoD(
-           (CUdeviceptr)lay->d_lifted_strides, lay->lifted_strides, stb));
-    }
+    const size_t sb = lay->lifted_rank * sizeof(uint64_t);
+    const size_t stb = lay->lifted_rank * sizeof(int64_t);
+    CU(Fail, cuMemAlloc((CUdeviceptr*)&lay->d_lifted_shape, sb));
+    CU(Fail, cuMemAlloc((CUdeviceptr*)&lay->d_lifted_strides, stb));
+    CU(Fail,
+       cuMemcpyHtoD((CUdeviceptr)lay->d_lifted_shape, lay->lifted_shape, sb));
+    CU(Fail,
+       cuMemcpyHtoD(
+         (CUdeviceptr)lay->d_lifted_strides, lay->lifted_strides, stb));
   }
 
   return 0;
@@ -406,16 +325,27 @@ int
 lod_state_init(struct lod_state* lod,
                struct level_geometry* levels,
                const struct stream_layout* l0,
-               const struct tile_stream_configuration* config,
-               const uint8_t* storage_order)
+               const struct tile_stream_configuration* config)
 {
   if (!levels->enable_multiscale)
     return 0;
 
-  CHECK_SILENT(Fail, init_plan_and_shapes(lod, config) == 0);
+  // Plan and level layouts are already populated (moved from
+  // compute_stream_layouts). Just do GPU uploads and LUT building.
+
+  for (int k = 0; k < lod->plan.nlod; ++k) {
+    if (lod->plan.lod_counts[k] > UINT32_MAX) {
+      log_error("LOD level %d count %llu exceeds uint32_t limit",
+                k,
+                (unsigned long long)lod->plan.lod_counts[k]);
+      goto Fail;
+    }
+  }
+
+  CHECK_SILENT(Fail, upload_plan_shapes(lod, config->rank) == 0);
   CHECK_SILENT(Fail, init_gather_lut(lod, config) == 0);
   CHECK_SILENT(Fail, init_reduce_level_arrays(lod) == 0);
-  CHECK_SILENT(Fail, init_lod_level_layouts(lod, config, storage_order) == 0);
+  CHECK_SILENT(Fail, upload_lod_level_layouts(lod) == 0);
   CHECK_SILENT(Fail, init_morton_scatter_luts(lod, l0) == 0);
 
   levels->nlod = lod->plan.nlod;

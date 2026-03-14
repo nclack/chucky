@@ -29,9 +29,9 @@ static inline void*
 current_pool_epoch(struct tile_stream_gpu* s, uint32_t epoch_in_batch)
 {
   const size_t bpe = s->config.bytes_per_element;
-  return (char*)s->pools.buf[s->pools.current] +
-         (uint64_t)epoch_in_batch * s->levels.total_tiles *
-           s->layout.tile_stride * bpe;
+  return (char*)s->pools.buf[s->pools.current] + (uint64_t)epoch_in_batch *
+                                                   s->levels.total_tiles *
+                                                   s->layout.tile_stride * bpe;
 }
 
 static struct flush_context
@@ -126,7 +126,8 @@ accumulate_epoch_or_flush(struct tile_stream_gpu* s)
 
   // Record per-epoch pool-ready event
   CU(Error,
-     cuEventRecord(s->batch.pool_events[s->batch.accumulated], s->streams.compute));
+     cuEventRecord(s->batch.pool_events[s->batch.accumulated],
+                   s->streams.compute));
 
   s->batch.accumulated++;
 
@@ -153,7 +154,8 @@ accumulate_epoch_or_flush(struct tile_stream_gpu* s)
   size_t total_pool_bytes = (uint64_t)K * s->levels.total_tiles *
                             s->layout.tile_stride * s->config.bytes_per_element;
   CU(Error,
-     cuMemsetD8Async((CUdeviceptr)next, 0, total_pool_bytes, s->streams.compute));
+     cuMemsetD8Async(
+       (CUdeviceptr)next, 0, total_pool_bytes, s->streams.compute));
 
   // Reset for next batch
   s->batch.accumulated = 0;
@@ -300,7 +302,8 @@ tile_stream_gpu_flush(struct writer* self)
     if (run_lod_for_epoch(s))
       return writer_error();
     CU(Error,
-       cuEventRecord(s->batch.pool_events[s->batch.accumulated], s->streams.compute));
+       cuEventRecord(s->batch.pool_events[s->batch.accumulated],
+                     s->streams.compute));
     s->batch.accumulated++;
   }
 

@@ -36,14 +36,14 @@ platform_sleep_ns(int64_t ns)
 static int64_t
 monotonic_ns(void)
 {
-  static LARGE_INTEGER freq = {0};
+  static LARGE_INTEGER freq = { 0 };
   LARGE_INTEGER cnt;
   if (freq.QuadPart == 0)
     QueryPerformanceFrequency(&freq);
   QueryPerformanceCounter(&cnt);
   /* Convert to nanoseconds: cnt * 1e9 / freq, avoiding overflow. */
-  return (int64_t)(cnt.QuadPart / freq.QuadPart) * 1000000000LL
-       + (int64_t)(cnt.QuadPart % freq.QuadPart) * 1000000000LL / freq.QuadPart;
+  return (int64_t)(cnt.QuadPart / freq.QuadPart) * 1000000000LL +
+         (int64_t)(cnt.QuadPart % freq.QuadPart) * 1000000000LL / freq.QuadPart;
 }
 
 float

@@ -17,9 +17,7 @@
 // L0 fires every epoch; dim0-downsampled level lv fires every 2^lv epochs.
 // Returns 0 if the level doesn't fire at all in this batch.
 static uint32_t
-level_active_epochs(const struct flush_context* ctx,
-                    int lv,
-                    uint32_t n_epochs)
+level_active_epochs(const struct flush_context* ctx, int lv, uint32_t n_epochs)
 {
   uint32_t full = ctx->flush->levels[lv].batch_active_count;
   if (n_epochs >= ctx->batch->epochs_per_batch)
@@ -90,9 +88,10 @@ record_flush_metrics(struct flush_context* ctx, int fc)
       (uint64_t)fs->batch_epoch_count * ctx->levels->total_tiles *
       ctx->layout->tile_stride * ctx->config->bytes_per_element;
 
-    accumulate_metric_cu(
-      &ctx->metrics->compress, fs->t_compress_start, fs->t_compress_end,
-      pool_bytes);
+    accumulate_metric_cu(&ctx->metrics->compress,
+                         fs->t_compress_start,
+                         fs->t_compress_end,
+                         pool_bytes);
 
     // Use actual aggregated bytes from h_offsets (available after D2H sync).
     size_t agg_bytes = 0;
@@ -100,8 +99,7 @@ record_flush_metrics(struct flush_context* ctx, int fc)
     for (int lv = 0; lv < ctx->levels->nlod; ++lv) {
       if (!(fs->active_levels_mask & (1u << lv)))
         continue;
-      uint32_t active_count =
-        level_actual_active_count(ctx, fs, lv, n_epochs);
+      uint32_t active_count = level_actual_active_count(ctx, fs, lv, n_epochs);
       if (active_count == 0)
         continue;
       struct level_flush_state* lvl = &ctx->flush->levels[lv];
@@ -172,15 +170,13 @@ aggregate_epoch_level(struct flush_context* ctx,
   struct level_flush_state* lvl = &ctx->flush->levels[lv];
   struct aggregate_slot* agg = &lvl->agg[fc];
 
-  void* d_comp =
-    (char*)fs->d_compressed +
-    ((uint64_t)epoch_in_compressed * ctx->levels->total_tiles +
-     ctx->levels->tile_offset[lv]) *
-      ctx->codec->max_output_size;
-  size_t* d_sizes =
-    ctx->codec->d_comp_sizes +
-    (uint64_t)epoch_in_compressed * ctx->levels->total_tiles +
-    ctx->levels->tile_offset[lv];
+  void* d_comp = (char*)fs->d_compressed +
+                 ((uint64_t)epoch_in_compressed * ctx->levels->total_tiles +
+                  ctx->levels->tile_offset[lv]) *
+                   ctx->codec->max_output_size;
+  size_t* d_sizes = ctx->codec->d_comp_sizes +
+                    (uint64_t)epoch_in_compressed * ctx->levels->total_tiles +
+                    ctx->levels->tile_offset[lv];
 
   CHECK(Error,
         aggregate_by_shard_async(
@@ -303,8 +299,7 @@ two_phase_d2h(struct flush_context* ctx,
 
     struct level_flush_state* lvl = &ctx->flush->levels[lv];
     struct aggregate_slot* agg = &lvl->agg[fc];
-    uint64_t covering =
-      (uint64_t)active_count * lvl->agg_layout.covering_count;
+    uint64_t covering = (uint64_t)active_count * lvl->agg_layout.covering_count;
 
     CU(Error,
        cuMemcpyDtoHAsync(agg->h_offsets,
@@ -329,17 +324,17 @@ two_phase_d2h(struct flush_context* ctx,
 
     struct level_flush_state* lvl = &ctx->flush->levels[lv];
     struct aggregate_slot* agg = &lvl->agg[fc];
-    uint64_t covering =
-      (uint64_t)active_count * lvl->agg_layout.covering_count;
+    uint64_t covering = (uint64_t)active_count * lvl->agg_layout.covering_count;
 
     size_t actual = agg->h_offsets[covering];
     if (ctx->config->shard_alignment > 0)
       actual += ctx->config->shard_alignment;
-    size_t cap = agg_pool_bytes(
-      (uint64_t)active_count * ctx->levels->tile_count[lv],
-      ctx->codec->max_output_size,
-      lvl->agg_layout.covering_count, lvl->agg_layout.tps_inner,
-      lvl->agg_layout.page_size);
+    size_t cap =
+      agg_pool_bytes((uint64_t)active_count * ctx->levels->tile_count[lv],
+                     ctx->codec->max_output_size,
+                     lvl->agg_layout.covering_count,
+                     lvl->agg_layout.tps_inner,
+                     lvl->agg_layout.page_size);
     if (actual > cap)
       actual = cap;
 
@@ -374,8 +369,7 @@ flush_kick_batch(struct flush_context* ctx, int fc, uint32_t n_epochs)
     CU(Error,
        cuStreamWaitEvent(ctx->streams.compress, ctx->batch->pool_events[e], 0));
   if (ctx->levels->enable_multiscale && ctx->lod->t_end)
-    CU(Error,
-       cuStreamWaitEvent(ctx->streams.compress, ctx->lod->t_end, 0));
+    CU(Error, cuStreamWaitEvent(ctx->streams.compress, ctx->lod->t_end, 0));
 
   // Compress all epochs as one batch
   uint64_t batch_tiles = (uint64_t)n_epochs * ctx->levels->total_tiles;
@@ -438,8 +432,7 @@ flush_kick_batch(struct flush_context* ctx, int fc, uint32_t n_epochs)
 
   CU(Error, cuEventRecord(fs->t_aggregate_end, ctx->streams.compress));
 
-  CU(Error,
-     cuStreamWaitEvent(ctx->streams.d2h, fs->t_aggregate_end, 0));
+  CU(Error, cuStreamWaitEvent(ctx->streams.d2h, fs->t_aggregate_end, 0));
   CU(Error, cuEventRecord(fs->t_d2h_start, ctx->streams.d2h));
   CHECK(Error,
         two_phase_d2h(ctx, fs, fc, fs->active_levels_mask, n_epochs) == 0);
@@ -467,13 +460,12 @@ kick_and_deliver_one_epoch(struct flush_context* ctx,
      cuStreamWaitEvent(
        ctx->streams.compress, ctx->batch->pool_events[epoch_in_batch], 0));
   if (ctx->levels->enable_multiscale && ctx->lod->t_end)
-    CU(Error,
-       cuStreamWaitEvent(ctx->streams.compress, ctx->lod->t_end, 0));
+    CU(Error, cuStreamWaitEvent(ctx->streams.compress, ctx->lod->t_end, 0));
 
   // Compress single epoch
-  void* epoch_pool =
-    (char*)ctx->pools->buf[fc] +
-    (uint64_t)epoch_in_batch * ctx->levels->total_tiles * tile_bytes;
+  void* epoch_pool = (char*)ctx->pools->buf[fc] + (uint64_t)epoch_in_batch *
+                                                    ctx->levels->total_tiles *
+                                                    tile_bytes;
   CHECK(Error,
         kick_compress(ctx, fs, epoch_pool, ctx->levels->total_tiles) == 0);
 
@@ -489,8 +481,7 @@ kick_and_deliver_one_epoch(struct flush_context* ctx,
   // Wait for previous IO fences before D2H
   wait_io_fences(ctx, fc, active_mask);
 
-  CU(Error,
-     cuStreamWaitEvent(ctx->streams.d2h, fs->t_aggregate_end, 0));
+  CU(Error, cuStreamWaitEvent(ctx->streams.d2h, fs->t_aggregate_end, 0));
   CU(Error, cuEventRecord(fs->t_d2h_start, ctx->streams.d2h));
   CHECK(Error, two_phase_d2h(ctx, fs, fc, active_mask, 1) == 0);
 
@@ -632,13 +623,11 @@ flush_partial_dim0(struct flush_context* ctx)
                             ctx->streams.compute);
   }
 
-  CU(Error,
-     cuEventRecord(ctx->pools->ready[fc], ctx->streams.compute));
+  CU(Error, cuEventRecord(ctx->pools->ready[fc], ctx->streams.compute));
   if (ctx->lod->t_end)
     CU(Error, cuEventRecord(ctx->lod->t_end, ctx->streams.compute));
 
-  CU(Error,
-     cuEventRecord(ctx->batch->pool_events[0], ctx->streams.compute));
+  CU(Error, cuEventRecord(ctx->batch->pool_events[0], ctx->streams.compute));
   if (flush_kick_batch(ctx, fc, 1))
     return writer_error();
   return wait_and_deliver(ctx, fc);

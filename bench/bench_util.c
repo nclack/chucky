@@ -262,8 +262,8 @@ print_bench_report(const struct tile_stream_gpu* s,
     double flush_gib =
       ((double)flush_pending_bytes / (1024.0 * 1024.0 * 1024.0)) /
       (double)flush_s;
-    print_report("  Flush time:    %.3f s (%.2f GiB/s)", (double)flush_s,
-                 flush_gib);
+    print_report(
+      "  Flush time:    %.3f s (%.2f GiB/s)", (double)flush_s, flush_gib);
   } else {
     print_report("  Flush time:    %.3f s", (double)flush_s);
   }
@@ -376,11 +376,12 @@ run_bench(const struct bench_config* cfg)
       print_report("    lod:       %.2f MiB   codec:     %.2f MiB",
                    (double)mem.lod_bytes / (1024.0 * 1024.0),
                    (double)mem.codec_bytes / (1024.0 * 1024.0));
-      print_report("    tiles:     %llu/epoch, %llu total (%d LOD levels, batch=%u)",
-                   (unsigned long long)mem.tiles_per_epoch,
-                   (unsigned long long)mem.total_tiles,
-                   mem.nlod,
-                   mem.epochs_per_batch);
+      print_report(
+        "    tiles:     %llu/epoch, %llu total (%d LOD levels, batch=%u)",
+        (unsigned long long)mem.tiles_per_epoch,
+        (unsigned long long)mem.total_tiles,
+        mem.nlod,
+        mem.epochs_per_batch);
     }
   }
 
@@ -424,9 +425,14 @@ run_bench(const struct bench_config* cfg)
     struct sink_stats ss =
       output_path ? (struct sink_stats){ .total_bytes = meter.total_bytes }
                   : (struct sink_stats){ .total_bytes = dss.total_bytes };
-    print_bench_report(
-      &s, &ss, total_bytes, total_elements, wall_s, init_s, flush_s,
-      pending_bytes);
+    print_bench_report(&s,
+                       &ss,
+                       total_bytes,
+                       total_elements,
+                       wall_s,
+                       init_s,
+                       flush_s,
+                       pending_bytes);
   }
 
   print_report("  PASS");

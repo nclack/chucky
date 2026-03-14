@@ -42,10 +42,7 @@ uint64_t
 lod_span_len(struct lod_span s);
 
 uint64_t
-morton_rank(int ndim,
-            const uint64_t* shape,
-            const uint64_t* coords,
-            int depth);
+morton_rank(int ndim, const uint64_t* shape, const uint64_t* coords, int depth);
 
 struct lod_span
 lod_spans_at(const struct lod_spans* s, uint64_t i);
@@ -81,4 +78,3 @@ lod_plan_init_shapes(struct lod_plan* p,
 
 void
 lod_plan_free(struct lod_plan* p);
-

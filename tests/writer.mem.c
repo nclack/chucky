@@ -10,10 +10,8 @@ mem_writer_append(struct writer* self, struct slice data)
   struct mem_writer* w = (struct mem_writer*)self;
   size_t n = (const uint8_t*)data.end - (const uint8_t*)data.beg;
   if (w->cursor + n > w->capacity) {
-    log_error("mem_writer: overflow (%zu + %zu > %zu)",
-              w->cursor,
-              n,
-              w->capacity);
+    log_error(
+      "mem_writer: overflow (%zu + %zu > %zu)", w->cursor, n, w->capacity);
     return (struct writer_result){ .error = 1, .rest = data };
   }
   memcpy(w->buf + w->cursor, data.beg, n);

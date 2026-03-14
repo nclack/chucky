@@ -1,9 +1,9 @@
+#include "platform.h"
 #include "prelude.cuda.h"
 #include "prelude.h"
 #include "stream.h"
 #include "test_platform.h"
 #include "zarr_sink.h"
-#include "platform.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -63,9 +63,21 @@ test_metadata(const char* tmpdir)
   log_info("=== test_metadata ===");
 
   struct dimension dims[] = {
-    { .size = 12, .tile_size = 2, .tiles_per_shard = 3, .name = "z", .storage_position = 0 },
-    { .size = 8, .tile_size = 4, .tiles_per_shard = 2, .name = "y", .storage_position = 1 },
-    { .size = 12, .tile_size = 3, .tiles_per_shard = 2, .name = "x", .storage_position = 2 },
+    { .size = 12,
+      .tile_size = 2,
+      .tiles_per_shard = 3,
+      .name = "z",
+      .storage_position = 0 },
+    { .size = 8,
+      .tile_size = 4,
+      .tiles_per_shard = 2,
+      .name = "y",
+      .storage_position = 1 },
+    { .size = 12,
+      .tile_size = 3,
+      .tiles_per_shard = 2,
+      .name = "x",
+      .storage_position = 2 },
   };
 
   struct zarr_config cfg = {
@@ -181,9 +193,21 @@ test_pipeline(const char* tmpdir)
 
   // Create zarr sink
   const struct dimension dims[] = {
-    { .size = 12, .tile_size = 2, .tiles_per_shard = 3, .name = "z", .storage_position = 0 },
-    { .size = 8, .tile_size = 4, .tiles_per_shard = 2, .name = "y", .storage_position = 1 },
-    { .size = 12, .tile_size = 3, .tiles_per_shard = 2, .name = "x", .storage_position = 2 },
+    { .size = 12,
+      .tile_size = 2,
+      .tiles_per_shard = 3,
+      .name = "z",
+      .storage_position = 0 },
+    { .size = 8,
+      .tile_size = 4,
+      .tiles_per_shard = 2,
+      .name = "y",
+      .storage_position = 1 },
+    { .size = 12,
+      .tile_size = 3,
+      .tiles_per_shard = 2,
+      .name = "x",
+      .storage_position = 2 },
   };
 
   struct zarr_config zcfg = {
@@ -365,9 +389,23 @@ test_multiscale_metadata(const char* tmpdir)
   log_info("=== test_multiscale_metadata ===");
 
   struct dimension dims[] = {
-    { .size = 64, .tile_size = 8, .tiles_per_shard = 4, .name = "z", .downsample = 1, .storage_position = 0 },
-    { .size = 32, .tile_size = 8, .tiles_per_shard = 2, .name = "y", .storage_position = 1 },
-    { .size = 64, .tile_size = 8, .tiles_per_shard = 4, .name = "x", .downsample = 1, .storage_position = 2 },
+    { .size = 64,
+      .tile_size = 8,
+      .tiles_per_shard = 4,
+      .name = "z",
+      .downsample = 1,
+      .storage_position = 0 },
+    { .size = 32,
+      .tile_size = 8,
+      .tiles_per_shard = 2,
+      .name = "y",
+      .storage_position = 1 },
+    { .size = 64,
+      .tile_size = 8,
+      .tiles_per_shard = 4,
+      .name = "x",
+      .downsample = 1,
+      .storage_position = 2 },
   };
 
   struct zarr_multiscale_config cfg = {
@@ -455,9 +493,21 @@ test_unbounded_metadata_update(const char* tmpdir)
 
   // dim0 unbounded (size=0), tiles_per_shard must be > 0
   struct dimension dims[] = {
-    { .size = 0, .tile_size = 2, .tiles_per_shard = 3, .name = "z", .storage_position = 0 },
-    { .size = 8, .tile_size = 4, .tiles_per_shard = 2, .name = "y", .storage_position = 1 },
-    { .size = 12, .tile_size = 3, .tiles_per_shard = 2, .name = "x", .storage_position = 2 },
+    { .size = 0,
+      .tile_size = 2,
+      .tiles_per_shard = 3,
+      .name = "z",
+      .storage_position = 0 },
+    { .size = 8,
+      .tile_size = 4,
+      .tiles_per_shard = 2,
+      .name = "y",
+      .storage_position = 1 },
+    { .size = 12,
+      .tile_size = 3,
+      .tiles_per_shard = 2,
+      .name = "x",
+      .storage_position = 2 },
   };
 
   struct zarr_config cfg = {
@@ -540,7 +590,7 @@ test_unbounded_metadata_update(const char* tmpdir)
     free(data);
 
     CHECK(Fail4, is_array);
-    CHECK(Fail4, has_shape);  // 4 epochs * tile_size 2 = 8
+    CHECK(Fail4, has_shape); // 4 epochs * tile_size 2 = 8
   }
 
   free(src);
@@ -568,9 +618,23 @@ test_multiscale_unbounded(const char* tmpdir)
   log_info("=== test_multiscale_unbounded ===");
 
   struct dimension dims[] = {
-    { .size = 0, .tile_size = 8, .tiles_per_shard = 4, .name = "z", .downsample = 1, .storage_position = 0 },
-    { .size = 32, .tile_size = 8, .tiles_per_shard = 2, .name = "y", .storage_position = 1 },
-    { .size = 64, .tile_size = 8, .tiles_per_shard = 4, .name = "x", .downsample = 1, .storage_position = 2 },
+    { .size = 0,
+      .tile_size = 8,
+      .tiles_per_shard = 4,
+      .name = "z",
+      .downsample = 1,
+      .storage_position = 0 },
+    { .size = 32,
+      .tile_size = 8,
+      .tiles_per_shard = 2,
+      .name = "y",
+      .storage_position = 1 },
+    { .size = 64,
+      .tile_size = 8,
+      .tiles_per_shard = 4,
+      .name = "x",
+      .downsample = 1,
+      .storage_position = 2 },
   };
 
   struct zarr_multiscale_config cfg = {
@@ -656,9 +720,21 @@ test_midstream_metadata_update(const char* tmpdir)
 
   // dim0 unbounded (size=0)
   struct dimension dims[] = {
-    { .size = 0, .tile_size = 2, .tiles_per_shard = 3, .name = "z", .storage_position = 0 },
-    { .size = 8, .tile_size = 4, .tiles_per_shard = 2, .name = "y", .storage_position = 1 },
-    { .size = 12, .tile_size = 3, .tiles_per_shard = 2, .name = "x", .storage_position = 2 },
+    { .size = 0,
+      .tile_size = 2,
+      .tiles_per_shard = 3,
+      .name = "z",
+      .storage_position = 0 },
+    { .size = 8,
+      .tile_size = 4,
+      .tiles_per_shard = 2,
+      .name = "y",
+      .storage_position = 1 },
+    { .size = 12,
+      .tile_size = 3,
+      .tiles_per_shard = 2,
+      .name = "x",
+      .storage_position = 2 },
   };
 
   struct zarr_config cfg = {
@@ -696,7 +772,8 @@ test_midstream_metadata_update(const char* tmpdir)
   for (size_t i = 0; i < total; ++i)
     src[i] = (uint16_t)(i % 65536);
 
-  // Feed in two batches; the 1e-9 interval fires the timer on every wait_and_deliver
+  // Feed in two batches; the 1e-9 interval fires the timer on every
+  // wait_and_deliver
   size_t half = 3 * s.layout.epoch_elements;
   {
     struct slice input = { .beg = src, .end = src + half };
@@ -782,13 +859,25 @@ test_unbuffered_pipeline(const char* tmpdir)
   // Simple 3D: 2 epochs, 1 shard
   // dim0=4 (epoch dim), dim1=4, dim2=4, tile=2x2x2, tps=2x2x2 → 1 shard
   const struct dimension dims[] = {
-    { .size = 4, .tile_size = 2, .tiles_per_shard = 2, .name = "z", .storage_position = 0 },
-    { .size = 4, .tile_size = 2, .tiles_per_shard = 2, .name = "y", .storage_position = 1 },
-    { .size = 4, .tile_size = 2, .tiles_per_shard = 2, .name = "x", .storage_position = 2 },
+    { .size = 4,
+      .tile_size = 2,
+      .tiles_per_shard = 2,
+      .name = "z",
+      .storage_position = 0 },
+    { .size = 4,
+      .tile_size = 2,
+      .tiles_per_shard = 2,
+      .name = "y",
+      .storage_position = 1 },
+    { .size = 4,
+      .tile_size = 2,
+      .tiles_per_shard = 2,
+      .name = "x",
+      .storage_position = 2 },
   };
 
   const int total_elements = 4 * 4 * 4;
-  const int voxels_per_tile = 2 * 2 * 2; // 8
+  const int voxels_per_tile = 2 * 2 * 2;       // 8
   const int tiles_per_shard_total = 2 * 2 * 2; // 8
 
   uint32_t src[64];
@@ -856,8 +945,7 @@ test_unbuffered_pipeline(const char* tmpdir)
     uint64_t tile_offsets[8], tile_nbytes[8];
     for (int i = 0; i < tiles_per_shard_total; ++i) {
       memcpy(&tile_offsets[i], index_ptr + (size_t)i * 16, sizeof(uint64_t));
-      memcpy(
-        &tile_nbytes[i], index_ptr + (size_t)i * 16 + 8, sizeof(uint64_t));
+      memcpy(&tile_nbytes[i], index_ptr + (size_t)i * 16 + 8, sizeof(uint64_t));
     }
 
     size_t tile_stride_bytes = s.layout.tile_stride * sizeof(uint32_t);
@@ -881,9 +969,7 @@ test_unbuffered_pipeline(const char* tmpdir)
                                       shard_data + tile_offsets[i_tile],
                                       (size_t)tile_nbytes[i_tile]);
       if (ZSTD_isError(result)) {
-        log_error("tile %d: ZSTD error: %s",
-                  i_tile,
-                  ZSTD_getErrorName(result));
+        log_error("tile %d: ZSTD error: %s", i_tile, ZSTD_getErrorName(result));
         free(decomp);
         errors++;
         continue;
@@ -985,9 +1071,21 @@ test_unbuffered_pipeline_multishard(const char* tmpdir)
 
   // Create zarr sink with unbuffered IO
   const struct dimension dims[] = {
-    { .size = 12, .tile_size = 2, .tiles_per_shard = 3, .name = "z", .storage_position = 0 },
-    { .size = 8, .tile_size = 4, .tiles_per_shard = 2, .name = "y", .storage_position = 1 },
-    { .size = 12, .tile_size = 3, .tiles_per_shard = 2, .name = "x", .storage_position = 2 },
+    { .size = 12,
+      .tile_size = 2,
+      .tiles_per_shard = 3,
+      .name = "z",
+      .storage_position = 0 },
+    { .size = 8,
+      .tile_size = 4,
+      .tiles_per_shard = 2,
+      .name = "y",
+      .storage_position = 1 },
+    { .size = 12,
+      .tile_size = 3,
+      .tiles_per_shard = 2,
+      .name = "x",
+      .storage_position = 2 },
   };
 
   struct zarr_config zcfg = {
@@ -1175,11 +1273,20 @@ test_storage_order_validation(const char* tmpdir)
   // storage_position[0] != 0 → should fail
   {
     struct dimension bad_dims[] = {
-      { .size = 4, .tile_size = 2, .tiles_per_shard = 2, .name = "z",
+      { .size = 4,
+        .tile_size = 2,
+        .tiles_per_shard = 2,
+        .name = "z",
         .storage_position = 1 },
-      { .size = 4, .tile_size = 2, .tiles_per_shard = 2, .name = "y",
+      { .size = 4,
+        .tile_size = 2,
+        .tiles_per_shard = 2,
+        .name = "y",
         .storage_position = 0 },
-      { .size = 6, .tile_size = 3, .tiles_per_shard = 2, .name = "x",
+      { .size = 6,
+        .tile_size = 3,
+        .tiles_per_shard = 2,
+        .name = "x",
         .storage_position = 2 },
     };
     struct tile_stream_memory_info info;
@@ -1196,11 +1303,20 @@ test_storage_order_validation(const char* tmpdir)
   // Duplicate values → should fail
   {
     struct dimension bad_dims[] = {
-      { .size = 4, .tile_size = 2, .tiles_per_shard = 2, .name = "z",
+      { .size = 4,
+        .tile_size = 2,
+        .tiles_per_shard = 2,
+        .name = "z",
         .storage_position = 0 },
-      { .size = 4, .tile_size = 2, .tiles_per_shard = 2, .name = "y",
+      { .size = 4,
+        .tile_size = 2,
+        .tiles_per_shard = 2,
+        .name = "y",
         .storage_position = 2 },
-      { .size = 6, .tile_size = 3, .tiles_per_shard = 2, .name = "x",
+      { .size = 6,
+        .tile_size = 3,
+        .tiles_per_shard = 2,
+        .name = "x",
         .storage_position = 2 },
     };
     struct tile_stream_memory_info info;
@@ -1217,11 +1333,20 @@ test_storage_order_validation(const char* tmpdir)
   // Out-of-range values → should fail
   {
     struct dimension bad_dims[] = {
-      { .size = 4, .tile_size = 2, .tiles_per_shard = 2, .name = "z",
+      { .size = 4,
+        .tile_size = 2,
+        .tiles_per_shard = 2,
+        .name = "z",
         .storage_position = 0 },
-      { .size = 4, .tile_size = 2, .tiles_per_shard = 2, .name = "y",
+      { .size = 4,
+        .tile_size = 2,
+        .tiles_per_shard = 2,
+        .name = "y",
         .storage_position = 5 },
-      { .size = 6, .tile_size = 3, .tiles_per_shard = 2, .name = "x",
+      { .size = 6,
+        .tile_size = 3,
+        .tiles_per_shard = 2,
+        .name = "x",
         .storage_position = 1 },
     };
     struct tile_stream_memory_info info;
@@ -1251,11 +1376,20 @@ test_storage_order_validation(const char* tmpdir)
   // Explicit identity → should succeed
   {
     struct dimension id_dims[] = {
-      { .size = 4, .tile_size = 2, .tiles_per_shard = 2, .name = "z",
+      { .size = 4,
+        .tile_size = 2,
+        .tiles_per_shard = 2,
+        .name = "z",
         .storage_position = 0 },
-      { .size = 4, .tile_size = 2, .tiles_per_shard = 2, .name = "y",
+      { .size = 4,
+        .tile_size = 2,
+        .tiles_per_shard = 2,
+        .name = "y",
         .storage_position = 1 },
-      { .size = 6, .tile_size = 3, .tiles_per_shard = 2, .name = "x",
+      { .size = 6,
+        .tile_size = 3,
+        .tiles_per_shard = 2,
+        .name = "x",
         .storage_position = 2 },
     };
     struct tile_stream_memory_info info;
@@ -1272,11 +1406,20 @@ test_storage_order_validation(const char* tmpdir)
   // Valid permutation: dim1→pos2, dim2→pos1 (forward={0,2,1}) → should succeed
   {
     struct dimension perm_dims[] = {
-      { .size = 4, .tile_size = 2, .tiles_per_shard = 2, .name = "z",
+      { .size = 4,
+        .tile_size = 2,
+        .tiles_per_shard = 2,
+        .name = "z",
         .storage_position = 0 },
-      { .size = 4, .tile_size = 2, .tiles_per_shard = 2, .name = "y",
+      { .size = 4,
+        .tile_size = 2,
+        .tiles_per_shard = 2,
+        .name = "y",
         .storage_position = 2 },
-      { .size = 6, .tile_size = 3, .tiles_per_shard = 2, .name = "x",
+      { .size = 6,
+        .tile_size = 3,
+        .tiles_per_shard = 2,
+        .name = "x",
         .storage_position = 1 },
     };
     struct tile_stream_memory_info info;
@@ -1355,22 +1498,40 @@ test_pipeline_storage_order(const char* tmpdir)
   // Single dims array: acquisition order with storage_position.
   // z→pos0, y→pos2, x→pos1  ⇒  storage order is [z, x, y]
   const struct dimension dims[] = {
-    { .size = 4, .tile_size = 2, .tiles_per_shard = 1, .name = "z",
+    { .size = 4,
+      .tile_size = 2,
+      .tiles_per_shard = 1,
+      .name = "z",
       .storage_position = 0 },
-    { .size = 4, .tile_size = 2, .tiles_per_shard = 2, .name = "y",
+    { .size = 4,
+      .tile_size = 2,
+      .tiles_per_shard = 2,
+      .name = "y",
       .storage_position = 2 },
-    { .size = 6, .tile_size = 3, .tiles_per_shard = 2, .name = "x",
+    { .size = 6,
+      .tile_size = 3,
+      .tiles_per_shard = 2,
+      .name = "x",
       .storage_position = 1 },
   };
 
   // Zarr_sink receives storage-ordered dims (permuted from above).
   // forward = {0, 2, 1}: storage pos 0→dim0(z), pos 1→dim2(x), pos 2→dim1(y)
   const struct dimension sto_dims[] = {
-    { .size = 4, .tile_size = 2, .tiles_per_shard = 1, .name = "z",
+    { .size = 4,
+      .tile_size = 2,
+      .tiles_per_shard = 1,
+      .name = "z",
       .storage_position = 0 },
-    { .size = 6, .tile_size = 3, .tiles_per_shard = 2, .name = "x",
+    { .size = 6,
+      .tile_size = 3,
+      .tiles_per_shard = 2,
+      .name = "x",
       .storage_position = 1 },
-    { .size = 4, .tile_size = 2, .tiles_per_shard = 2, .name = "y",
+    { .size = 4,
+      .tile_size = 2,
+      .tiles_per_shard = 2,
+      .name = "y",
       .storage_position = 2 },
   };
 

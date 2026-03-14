@@ -958,10 +958,10 @@ test_stream_bounded_dim0(void)
 
   // rest should point to unconsumed data
   size_t consumed = (size_t)((const uint16_t*)r.rest.beg - src);
-  size_t unconsumed = (size_t)((const uint16_t*)r.rest.end -
-                               (const uint16_t*)r.rest.beg);
-  log_info("  consumed=%zu elements, unconsumed=%zu elements",
-           consumed, unconsumed);
+  size_t unconsumed =
+    (size_t)((const uint16_t*)r.rest.end - (const uint16_t*)r.rest.beg);
+  log_info(
+    "  consumed=%zu elements, unconsumed=%zu elements", consumed, unconsumed);
   CHECK(Fail, consumed == 96);
   CHECK(Fail, unconsumed == 54);
 

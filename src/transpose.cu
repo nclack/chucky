@@ -82,14 +82,13 @@ transpose_indices(CUdeviceptr d_beg,
 //     all vectorized loads are in-bounds. Padding values are ignored (filtered
 //     on store by src_size).
 template<typename T>
-__global__ void __launch_bounds__(256, 4)
-transpose_v0_k(T* d_dst,
-               const T* d_src,
-               uint64_t src_size,
-               uint64_t i_offset,
-               uint8_t rank,
-               const uint64_t* shape,
-               const int64_t* strides)
+__global__ void __launch_bounds__(256, 4) transpose_v0_k(T* d_dst,
+                                                         const T* d_src,
+                                                         uint64_t src_size,
+                                                         uint64_t i_offset,
+                                                         uint8_t rank,
+                                                         const uint64_t* shape,
+                                                         const int64_t* strides)
 {
   constexpr int ELEMENTS_PER_BLOCK = (1 << 12) / sizeof(T); // 4KB
 
@@ -156,19 +155,14 @@ transpose_launch(CUdeviceptr d_dst_beg,
   const int block_size = 256;
   const int elements_per_block = (1 << 12) / (int)sizeof(T);
 
-  assert(d_src_beg % (sizeof(T) < sizeof(uint32_t) ? sizeof(uint32_t)
-                                                    : sizeof(T)) == 0);
+  assert(d_src_beg %
+           (sizeof(T) < sizeof(uint32_t) ? sizeof(uint32_t) : sizeof(T)) ==
+         0);
   const int grid_size =
     (int)((src_size + elements_per_block - 1) / elements_per_block);
 
-  transpose_v0_k<T>
-    <<<grid_size, block_size, 0, cuda_stream>>>((T*)d_dst_beg,
-                                                (T*)d_src_beg,
-                                                src_size,
-                                                i_offset,
-                                                rank,
-                                                d_shape,
-                                                d_strides);
+  transpose_v0_k<T><<<grid_size, block_size, 0, cuda_stream>>>(
+    (T*)d_dst_beg, (T*)d_src_beg, src_size, i_offset, rank, d_shape, d_strides);
 }
 
 extern "C" void
@@ -184,20 +178,44 @@ transpose(CUdeviceptr d_dst_beg,
 {
   switch (bpe) {
     case 1:
-      transpose_launch<uint8_t>(
-        d_dst_beg, d_src_beg, src_bytes, i_offset, rank, d_shape, d_strides, stream);
+      transpose_launch<uint8_t>(d_dst_beg,
+                                d_src_beg,
+                                src_bytes,
+                                i_offset,
+                                rank,
+                                d_shape,
+                                d_strides,
+                                stream);
       break;
     case 2:
-      transpose_launch<uint16_t>(
-        d_dst_beg, d_src_beg, src_bytes, i_offset, rank, d_shape, d_strides, stream);
+      transpose_launch<uint16_t>(d_dst_beg,
+                                 d_src_beg,
+                                 src_bytes,
+                                 i_offset,
+                                 rank,
+                                 d_shape,
+                                 d_strides,
+                                 stream);
       break;
     case 4:
-      transpose_launch<uint32_t>(
-        d_dst_beg, d_src_beg, src_bytes, i_offset, rank, d_shape, d_strides, stream);
+      transpose_launch<uint32_t>(d_dst_beg,
+                                 d_src_beg,
+                                 src_bytes,
+                                 i_offset,
+                                 rank,
+                                 d_shape,
+                                 d_strides,
+                                 stream);
       break;
     case 8:
-      transpose_launch<uint64_t>(
-        d_dst_beg, d_src_beg, src_bytes, i_offset, rank, d_shape, d_strides, stream);
+      transpose_launch<uint64_t>(d_dst_beg,
+                                 d_src_beg,
+                                 src_bytes,
+                                 i_offset,
+                                 rank,
+                                 d_shape,
+                                 d_strides,
+                                 stream);
       break;
     default:
       assert(!"transpose: unsupported bpe");

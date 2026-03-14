@@ -127,7 +127,8 @@ test_dims_set_shard_counts(void)
   uint8_t ratios[] = { 1, 0, 2, 2 };
   dims_budget_tile_size(dims, 4, 1ULL << 19, ratios);
   // tile_sizes: 8, 1, 256, 256
-  // tile_counts: ceil(1000/8)=125, ceil(2/1)=2, ceil(2048/256)=8, ceil(2304/256)=9
+  // tile_counts: ceil(1000/8)=125, ceil(2/1)=2, ceil(2048/256)=8,
+  // ceil(2304/256)=9
 
   uint64_t shard_counts[] = { 1, 1, 4, 4 };
   dims_set_shard_counts(dims, 4, shard_counts);

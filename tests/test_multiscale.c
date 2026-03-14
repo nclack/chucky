@@ -9,7 +9,8 @@
 #include <string.h>
 #include <zstd.h>
 
-// --- L0 collecting sink (captures only level 0, discards others; for testing) ---
+// --- L0 collecting sink (captures only level 0, discards others; for testing)
+// ---
 
 #define L0_MAX_SHARDS 16
 
@@ -143,14 +144,38 @@ test_multiscale_l0_correctness(void)
   // 5D: t, z, y, x, c. LOD on z, y, x.
   // Small enough for fast testing, large enough to exercise multiple epochs.
   const struct dimension dims[] = {
-    { .size = 8, .tile_size = 2, .tiles_per_shard = 2, .name = "t", .storage_position = 0 },
-    { .size = 16, .tile_size = 8, .tiles_per_shard = 2, .name = "z", .storage_position = 1 },
-    { .size = 16, .tile_size = 8, .tiles_per_shard = 2, .name = "y", .storage_position = 2 },
-    { .size = 16, .tile_size = 8, .tiles_per_shard = 2, .name = "x", .storage_position = 3 },
-    { .size = 1, .tile_size = 1, .tiles_per_shard = 1, .name = "c", .storage_position = 4 },
+    { .size = 8,
+      .tile_size = 2,
+      .tiles_per_shard = 2,
+      .name = "t",
+      .storage_position = 0 },
+    { .size = 16,
+      .tile_size = 8,
+      .tiles_per_shard = 2,
+      .name = "z",
+      .storage_position = 1 },
+    { .size = 16,
+      .tile_size = 8,
+      .tiles_per_shard = 2,
+      .name = "y",
+      .storage_position = 2 },
+    { .size = 16,
+      .tile_size = 8,
+      .tiles_per_shard = 2,
+      .name = "x",
+      .storage_position = 3 },
+    { .size = 1,
+      .tile_size = 1,
+      .tiles_per_shard = 1,
+      .name = "c",
+      .storage_position = 4 },
   };
   const struct dimension dims_ms[] = {
-    { .size = 8, .tile_size = 2, .tiles_per_shard = 2, .name = "t", .storage_position = 0 },
+    { .size = 8,
+      .tile_size = 2,
+      .tiles_per_shard = 2,
+      .name = "t",
+      .storage_position = 0 },
     { .size = 16,
       .tile_size = 8,
       .tiles_per_shard = 2,
@@ -169,7 +194,11 @@ test_multiscale_l0_correctness(void)
       .name = "x",
       .downsample = 1,
       .storage_position = 3 },
-    { .size = 1, .tile_size = 1, .tiles_per_shard = 1, .name = "c", .storage_position = 4 },
+    { .size = 1,
+      .tile_size = 1,
+      .tiles_per_shard = 1,
+      .name = "c",
+      .storage_position = 4 },
   };
   const uint8_t rank = 5;
   const size_t total_elements = dim_total_elements(dims, rank);
@@ -380,7 +409,8 @@ test_multiscale_zarr_visual(const char* output_path)
   };
 
   CHECK(Fail2, tile_stream_gpu_create(&config, &s) == 0);
-  log_info("  total: %zu elements, LOD levels: %d", total_elements, s.lod.plan.nlod);
+  log_info(
+    "  total: %zu elements, LOD levels: %d", total_elements, s.lod.plan.nlod);
 
   xor_pattern_init(dims, rank, 2);
   CHECK(Fail3, pump_data(&s.writer, total_elements, fill_xor) == 0);
@@ -413,7 +443,11 @@ test_dim0_l0_correctness(void)
   // 5D: t, z, y, x, c. Spatial LOD on z, y, x.
   // 8 epochs along t so dim0 levels 1+ accumulate and emit.
   const struct dimension dims_spatial[] = {
-    { .size = 8, .tile_size = 2, .tiles_per_shard = 2, .name = "t", .storage_position = 0 },
+    { .size = 8,
+      .tile_size = 2,
+      .tiles_per_shard = 2,
+      .name = "t",
+      .storage_position = 0 },
     { .size = 16,
       .tile_size = 8,
       .tiles_per_shard = 2,
@@ -432,7 +466,11 @@ test_dim0_l0_correctness(void)
       .name = "x",
       .downsample = 1,
       .storage_position = 3 },
-    { .size = 1, .tile_size = 1, .tiles_per_shard = 1, .name = "c", .storage_position = 4 },
+    { .size = 1,
+      .tile_size = 1,
+      .tiles_per_shard = 1,
+      .name = "c",
+      .storage_position = 4 },
   };
   const struct dimension dims_dim0[] = {
     { .size = 8,
@@ -459,7 +497,11 @@ test_dim0_l0_correctness(void)
       .name = "x",
       .downsample = 1,
       .storage_position = 3 },
-    { .size = 1, .tile_size = 1, .tiles_per_shard = 1, .name = "c", .storage_position = 4 },
+    { .size = 1,
+      .tile_size = 1,
+      .tiles_per_shard = 1,
+      .name = "c",
+      .storage_position = 4 },
   };
   const uint8_t rank = 5;
   const size_t total_elements = dim_total_elements(dims_spatial, rank);
@@ -522,7 +564,8 @@ Run2d:
     };
     CHECK(Fail2b, tile_stream_gpu_create(&config, &s) == 0);
     log_info("  dim0 enabled: nlod=%d, dim0_downsample=%d",
-             s.levels.nlod, s.levels.dim0_downsample);
+             s.levels.nlod,
+             s.levels.dim0_downsample);
     xor_pattern_init(dims_dim0, rank, 2);
     CHECK(Fail2c, pump_data(&s.writer, total_elements, fill_xor) == 0);
     CHECK(Fail2c, s.cursor == total_elements);
@@ -545,13 +588,17 @@ Compared:
 
       if (!b->finalized || !m->finalized) {
         log_error("  shard %d: not finalized (baseline=%d, dim0=%d)",
-                  i, b->finalized, m->finalized);
+                  i,
+                  b->finalized,
+                  m->finalized);
         errors++;
         continue;
       }
       if (b->size != m->size) {
         log_error("  shard %d: size mismatch (baseline=%zu, dim0=%zu)",
-                  i, b->size, m->size);
+                  i,
+                  b->size,
+                  m->size);
         errors++;
         continue;
       }
@@ -564,7 +611,9 @@ Compared:
           }
         }
         log_error("  shard %d: data mismatch at byte %zu (of %zu)",
-                  i, diff_off, b->size);
+                  i,
+                  diff_off,
+                  b->size);
         errors++;
       }
     }
@@ -738,7 +787,11 @@ test_dim0_multi_epoch_levels(void)
       .name = "x",
       .downsample = 1,
       .storage_position = 3 },
-    { .size = 1, .tile_size = 1, .tiles_per_shard = 1, .name = "c", .storage_position = 4 },
+    { .size = 1,
+      .tile_size = 1,
+      .tiles_per_shard = 1,
+      .name = "c",
+      .storage_position = 4 },
   };
   const uint8_t rank = 5;
   const size_t total_elements = dim_total_elements(dims, rank);
@@ -754,8 +807,9 @@ test_dim0_multi_epoch_levels(void)
       if (dims[i].downsample)
         lod_mask |= (1u << i);
     }
-    CHECK(Fail, lod_plan_init_shapes(&plan, rank, shape, tile_shape,
-                                      lod_mask, LOD_MAX_LEVELS, 0) == 0);
+    CHECK(Fail,
+          lod_plan_init_shapes(
+            &plan, rank, shape, tile_shape, lod_mask, LOD_MAX_LEVELS, 0) == 0);
   }
 
   int nlod = plan.nlod;
@@ -772,7 +826,8 @@ test_dim0_multi_epoch_levels(void)
       for (int d = 0; d < rank; ++d) {
         uint64_t tc = ceildiv(dims[d].size, dims[d].tile_size);
         uint64_t tps = dims[d].tiles_per_shard;
-        if (tps == 0) tps = tc;
+        if (tps == 0)
+          tps = tc;
         uint64_t sc = ceildiv(tc, tps);
         ns *= (int)sc;
       }
@@ -831,9 +886,8 @@ test_dim0_multi_epoch_levels(void)
       if (sink.writers[0][i].finalized && sink.writers[0][i].size > 0)
         l0_finalized++;
     }
-    log_info("  L0: %d/%d shards finalized",
-             l0_finalized,
-             num_shards_per_level[0]);
+    log_info(
+      "  L0: %d/%d shards finalized", l0_finalized, num_shards_per_level[0]);
     CHECK(Fail2, l0_finalized > 0);
   }
 

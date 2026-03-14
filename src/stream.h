@@ -61,8 +61,9 @@ struct tile_stream_configuration
   enum compression_codec codec;  // compression codec for tiles
   enum lod_reduce_method reduce_method;      // epoch LOD reduction method
   enum lod_reduce_method dim0_reduce_method; // dim0 LOD reduction
-  uint8_t epochs_per_batch;    // K: 0 = auto (target_batch_tiles), must be pow2
-  uint32_t target_batch_tiles; // minimum tiles per compress batch (default 1024)
+  uint8_t epochs_per_batch; // K: 0 = auto (target_batch_tiles), must be pow2
+  uint32_t
+    target_batch_tiles; // minimum tiles per compress batch (default 1024)
   float metadata_update_interval_s; // seconds between metadata updates
   size_t
     shard_alignment; // 0 = no padding; platform_page_size() for unbuffered IO
@@ -106,8 +107,8 @@ struct stream_layout
 // flush[0] is used for A-pool epochs, flush[1] for B-pool epochs.
 struct flush_slot_gpu
 {
-  CUdeviceptr d_compressed;    // device: K * total_tiles * max_output_size
-  CUevent t_compress_end;      // signals compress finished
+  CUdeviceptr d_compressed; // device: K * total_tiles * max_output_size
+  CUevent t_compress_end;   // signals compress finished
   CUevent t_compress_start;
   CUevent t_aggregate_end;
   CUevent t_d2h_start;
@@ -229,10 +230,10 @@ struct batch_state
 // Flush pipeline: double-buffered compress->D2H->deliver
 struct flush_pipeline
 {
-  struct flush_slot_gpu slot[2]; // [0]=A pool, [1]=B pool
+  struct flush_slot_gpu slot[2];                   // [0]=A pool, [1]=B pool
   struct level_flush_state levels[LOD_MAX_LEVELS]; // per-level agg+shard
-  int current;                   // mutable: which slot is active
-  int pending;                   // mutable: has unkicked work
+  int current; // mutable: which slot is active
+  int pending; // mutable: has unkicked work
 };
 
 struct tile_stream_gpu

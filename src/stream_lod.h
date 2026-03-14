@@ -31,10 +31,10 @@ lod_state_init_accumulators(struct lod_state* lod,
 void
 lod_state_destroy(struct lod_state* lod);
 
-// Run LOD pipeline for one epoch: gather → reduce → dim0 fold → morton-to-tiles.
-// pool_epoch: pointer to this epoch's tile pool region (all levels).
-// *out_active_mask: set to bitmask of active LOD levels for this epoch.
-// Returns 0 on success, non-zero on error.
+// Run LOD pipeline for one epoch: gather → reduce → dim0 fold →
+// morton-to-tiles. pool_epoch: pointer to this epoch's tile pool region (all
+// levels). *out_active_mask: set to bitmask of active LOD levels for this
+// epoch. Returns 0 on success, non-zero on error.
 int
 lod_run_epoch(struct lod_state* lod,
               const struct level_geometry* levels,

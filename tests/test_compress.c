@@ -1,6 +1,6 @@
 #include "compress.h"
-#include "prelude.h"
 #include "prelude.cuda.h"
+#include "prelude.h"
 #include <nvcomp/lz4.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -85,8 +85,9 @@ test_compress_roundtrip(void)
     CU(Fail, cuStreamSynchronize(stream));
     CU(Fail, cuMemcpyDtoH(h_compressed, (CUdeviceptr)d_compressed, comp_pool));
     CU(Fail,
-       cuMemcpyDtoH(
-         h_comp_sizes, (CUdeviceptr)c.d_comp_sizes, num_tiles * sizeof(size_t)));
+       cuMemcpyDtoH(h_comp_sizes,
+                    (CUdeviceptr)c.d_comp_sizes,
+                    num_tiles * sizeof(size_t)));
 
     // Verify: decompress each tile and compare
     int round_errors = 0;
@@ -232,8 +233,9 @@ test_compress_lz4_roundtrip(void)
     size_t* h_uncomp_sizes = (size_t*)malloc(num_tiles * sizeof(size_t));
     size_t* h_actual_uncomp_sizes = (size_t*)malloc(num_tiles * sizeof(size_t));
     int* h_statuses = (int*)calloc(num_tiles, sizeof(int));
-    CHECK(Fail, h_comp_ptrs && h_decomp_ptrs && h_uncomp_sizes &&
-                  h_actual_uncomp_sizes && h_statuses);
+    CHECK(Fail,
+          h_comp_ptrs && h_decomp_ptrs && h_uncomp_sizes &&
+            h_actual_uncomp_sizes && h_statuses);
 
     for (size_t t = 0; t < num_tiles; ++t) {
       h_comp_ptrs[t] = (uint8_t*)d_compressed + t * c.max_output_size;
@@ -254,8 +256,7 @@ test_compress_lz4_roundtrip(void)
     CU(Fail2,
        cuMemAlloc((CUdeviceptr*)&d_decomp_ptrs, num_tiles * sizeof(void*)));
     CU(Fail2,
-       cuMemAlloc((CUdeviceptr*)&d_comp_sizes_arr,
-                  num_tiles * sizeof(size_t)));
+       cuMemAlloc((CUdeviceptr*)&d_comp_sizes_arr, num_tiles * sizeof(size_t)));
     CU(Fail2,
        cuMemAlloc((CUdeviceptr*)&d_uncomp_sizes, num_tiles * sizeof(size_t)));
     CU(Fail2,
@@ -267,9 +268,8 @@ test_compress_lz4_roundtrip(void)
        cuMemcpyHtoD(
          (CUdeviceptr)d_comp_ptrs, h_comp_ptrs, num_tiles * sizeof(void*)));
     CU(Fail2,
-       cuMemcpyHtoD((CUdeviceptr)d_decomp_ptrs,
-                    h_decomp_ptrs,
-                    num_tiles * sizeof(void*)));
+       cuMemcpyHtoD(
+         (CUdeviceptr)d_decomp_ptrs, h_decomp_ptrs, num_tiles * sizeof(void*)));
     CU(Fail2,
        cuMemcpyHtoD((CUdeviceptr)d_comp_sizes_arr,
                     h_comp_sizes,
@@ -284,9 +284,12 @@ test_compress_lz4_roundtrip(void)
     nvcompBatchedLZ4DecompressOpts_t decomp_opts =
       nvcompBatchedLZ4DecompressDefaultOpts;
     {
-      nvcompStatus_t status = nvcompBatchedLZ4DecompressGetTempSizeAsync(
-        num_tiles, tile_bytes, decomp_opts, &temp_bytes,
-        num_tiles * tile_bytes);
+      nvcompStatus_t status =
+        nvcompBatchedLZ4DecompressGetTempSizeAsync(num_tiles,
+                                                   tile_bytes,
+                                                   decomp_opts,
+                                                   &temp_bytes,
+                                                   num_tiles * tile_bytes);
       CHECK(Fail2, status == nvcompSuccess);
     }
 
@@ -296,18 +299,18 @@ test_compress_lz4_roundtrip(void)
 
     // Run LZ4 decompress
     {
-      nvcompStatus_t status = nvcompBatchedLZ4DecompressAsync(
-        (const void* const*)d_comp_ptrs,
-        d_comp_sizes_arr,
-        d_uncomp_sizes,
-        d_actual_uncomp_sizes,
-        num_tiles,
-        d_temp,
-        temp_bytes,
-        (void* const*)d_decomp_ptrs,
-        decomp_opts,
-        (nvcompStatus_t*)d_statuses,
-        (cudaStream_t)stream);
+      nvcompStatus_t status =
+        nvcompBatchedLZ4DecompressAsync((const void* const*)d_comp_ptrs,
+                                        d_comp_sizes_arr,
+                                        d_uncomp_sizes,
+                                        d_actual_uncomp_sizes,
+                                        num_tiles,
+                                        d_temp,
+                                        temp_bytes,
+                                        (void* const*)d_decomp_ptrs,
+                                        decomp_opts,
+                                        (nvcompStatus_t*)d_statuses,
+                                        (cudaStream_t)stream);
       CHECK(Fail2, status == nvcompSuccess);
     }
 
@@ -324,8 +327,8 @@ test_compress_lz4_roundtrip(void)
     for (size_t i = 0; i < total_elems; ++i) {
       if (original[i] != result[i]) {
         if (errors < 5)
-          log_error("  elem %zu: expected %u got %u", i, original[i],
-                    result[i]);
+          log_error(
+            "  elem %zu: expected %u got %u", i, original[i], result[i]);
         errors++;
       }
     }

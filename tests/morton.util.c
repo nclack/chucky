@@ -109,12 +109,20 @@ reduce_window_f32(const float* src,
       float top1 = src[start], top2 = src[start];
       if (len > 1) {
         float v = src[start + 1];
-        if (v >= top1) { top2 = top1; top1 = v; }
-        else           { top2 = v; }
+        if (v >= top1) {
+          top2 = top1;
+          top1 = v;
+        } else {
+          top2 = v;
+        }
         for (uint64_t j = start + 2; j < end; ++j) {
           v = src[j];
-          if (v >= top1)      { top2 = top1; top1 = v; }
-          else if (v > top2)  { top2 = v; }
+          if (v >= top1) {
+            top2 = top1;
+            top1 = v;
+          } else if (v > top2) {
+            top2 = v;
+          }
         }
       }
       return top2;
@@ -123,12 +131,20 @@ reduce_window_f32(const float* src,
       float bot1 = src[start], bot2 = src[start];
       if (len > 1) {
         float v = src[start + 1];
-        if (v <= bot1) { bot2 = bot1; bot1 = v; }
-        else           { bot2 = v; }
+        if (v <= bot1) {
+          bot2 = bot1;
+          bot1 = v;
+        } else {
+          bot2 = v;
+        }
         for (uint64_t j = start + 2; j < end; ++j) {
           v = src[j];
-          if (v <= bot1)      { bot2 = bot1; bot1 = v; }
-          else if (v < bot2)  { bot2 = v; }
+          if (v <= bot1) {
+            bot2 = bot1;
+            bot1 = v;
+          } else if (v < bot2) {
+            bot2 = v;
+          }
         }
       }
       return bot2;

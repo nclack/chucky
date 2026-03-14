@@ -38,7 +38,8 @@ test_unravel_basic(void)
   }
 
   // 3D: shape (2, 3, 4), index 13
-  // coords[0] = 13%2=1, idx=13/2=6, coords[1] = 6%3=0, idx=6/3=2, coords[2] = 2%4=2
+  // coords[0] = 13%2=1, idx=13/2=6, coords[1] = 6%3=0, idx=6/3=2, coords[2] =
+  // 2%4=2
   {
     uint64_t shape[] = { 2, 3, 4 };
     uint64_t coords[3];
@@ -62,7 +63,8 @@ test_unravel_ravel_roundtrip(void)
 
   // For identity strides (row-major), ravel(unravel(idx)) should return idx.
   // ravel iterates d=rank-1..0: coord = idx % shape[d], o += coord * strides[d]
-  // With identity strides: strides[rank-1]=1, strides[d] = shape[d+1]*strides[d+1]
+  // With identity strides: strides[rank-1]=1, strides[d] =
+  // shape[d+1]*strides[d+1]
 
   // 2D: shape (3, 4)
   {
@@ -77,12 +79,12 @@ test_unravel_ravel_roundtrip(void)
       unravel(2, shape, idx, coords);
       // Reconstruct using ravel with identity strides
       // ravel does: for d=1..0: coord = idx % shape[d], o += coord * strides[d]
-      // But ravel takes the flat index and decomposes it differently (high-d first).
-      // So we need to compute manually:
+      // But ravel takes the flat index and decomposes it differently (high-d
+      // first). So we need to compute manually:
       uint64_t reconstructed = coords[0] * strides[0] + coords[1] * strides[1];
-      // unravel produces coords in low-d-first order matching its shape decomposition.
-      // But ravel uses the same shape to re-decompose, so ravel(idx) with identity
-      // strides should return idx.
+      // unravel produces coords in low-d-first order matching its shape
+      // decomposition. But ravel uses the same shape to re-decompose, so
+      // ravel(idx) with identity strides should return idx.
       uint64_t raveled = ravel(2, shape, strides, idx);
       CHECK(Fail, raveled == idx);
       (void)reconstructed;
@@ -128,16 +130,16 @@ test_ravel_transpose(void)
   // 2D: shape (3, 4) with transposed strides (column-major: strides = {1, 3})
   // ravel(idx) with these strides should scatter to column-major positions.
   // For idx=0: coord=(0,0) → 0*1 + 0*3 = 0
-  // For idx=1: ravel decomposes high d first: d=1: 1%4=1, d=0: 0%3=0 → 0*1 + 1*3 = 3
-  // For idx=4: d=1: 4%4=0, d=0: 1%3=1 → 1*1 + 0*3 = 1
+  // For idx=1: ravel decomposes high d first: d=1: 1%4=1, d=0: 0%3=0 → 0*1 +
+  // 1*3 = 3 For idx=4: d=1: 4%4=0, d=0: 1%3=1 → 1*1 + 0*3 = 1
   {
     uint64_t shape[] = { 3, 4 };
     int64_t strides[] = { 1, 3 }; // column-major (transposed)
 
-    CHECK(Fail, ravel(2, shape, strides, 0) == 0);  // (0,0) → 0
-    CHECK(Fail, ravel(2, shape, strides, 1) == 3);  // (0,1) → 3
-    CHECK(Fail, ravel(2, shape, strides, 4) == 1);  // (1,0) → 1
-    CHECK(Fail, ravel(2, shape, strides, 5) == 4);  // (1,1) → 4
+    CHECK(Fail, ravel(2, shape, strides, 0) == 0);   // (0,0) → 0
+    CHECK(Fail, ravel(2, shape, strides, 1) == 3);   // (0,1) → 3
+    CHECK(Fail, ravel(2, shape, strides, 4) == 1);   // (1,0) → 1
+    CHECK(Fail, ravel(2, shape, strides, 5) == 4);   // (1,1) → 4
     CHECK(Fail, ravel(2, shape, strides, 11) == 11); // (2,3) → 2+9=11
   }
 

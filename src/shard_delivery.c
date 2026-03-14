@@ -85,7 +85,8 @@ deliver_to_shards_batch(uint8_t level,
   // Writing all epochs in a run with one write_direct call reduces syscalls.
   uint32_t a = 0;
   while (a < n_active) {
-    uint32_t remaining_in_shard = (uint32_t)(ss->tiles_per_shard_0 - ss->epoch_in_shard);
+    uint32_t remaining_in_shard =
+      (uint32_t)(ss->tiles_per_shard_0 - ss->epoch_in_shard);
     uint32_t remaining_in_batch = n_active - a;
     uint32_t run_len = remaining_in_shard < remaining_in_batch
                          ? remaining_in_shard
@@ -107,8 +108,8 @@ deliver_to_shards_batch(uint8_t level,
       size_t run_bytes =
         agg_slot->h_offsets[j_run_end] - agg_slot->h_offsets[j_run_start];
       if (run_bytes > 0) {
-        const void* src =
-          (const char*)agg_slot->h_aggregated + agg_slot->h_offsets[j_run_start];
+        const void* src = (const char*)agg_slot->h_aggregated +
+                          agg_slot->h_offsets[j_run_start];
         // Unbuffered IO: round write size up to alignment. The padding
         // region in h_aggregated is safe to read (buffer is oversized).
         size_t write_bytes = sa > 0 ? align_up(run_bytes, sa) : run_bytes;
@@ -139,8 +140,9 @@ deliver_to_shards_batch(uint8_t level,
           if (tile_size > 0) {
             uint64_t within_inner = j - j_start;
             uint64_t slot_idx = eis * tps_inner + within_inner;
-            size_t tile_off = sh->data_cursor + (agg_slot->h_offsets[j] -
-                                                 agg_slot->h_offsets[j_run_start]);
+            size_t tile_off =
+              sh->data_cursor +
+              (agg_slot->h_offsets[j] - agg_slot->h_offsets[j_run_start]);
             sh->index[2 * slot_idx] = tile_off;
             sh->index[2 * slot_idx + 1] = tile_size;
           }

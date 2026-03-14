@@ -441,7 +441,6 @@ Fail0:
   return 1;
 }
 
-
 // Verify shard index structure: monotonic offsets, size sum, CRC.
 // Tests with both even (all tiles present) and uneven (padded) cases.
 static int
@@ -469,8 +468,7 @@ test_shard_index_structure(void)
     };
 
     const int total_elements = size[0] * size[1] * size[2];
-    const int num_shards =
-      shard_count[0] * shard_count[1] * shard_count[2];
+    const int num_shards = shard_count[0] * shard_count[1] * shard_count[2];
     const int tiles_per_shard_total =
       tiles_per_shard[0] * tiles_per_shard[1] * tiles_per_shard[2];
 
@@ -482,25 +480,33 @@ test_shard_index_structure(void)
       for (int x1 = 0; x1 < size[1]; ++x1)
         for (int x2 = 0; x2 < size[2]; ++x2) {
           int gi = x0 * size[1] * size[2] + x1 * size[2] + x2;
-          src[gi] = encode_voxel(
-            x0 / (tile_size[0] * tiles_per_shard[0]),
-            x1 / (tile_size[1] * tiles_per_shard[1]),
-            x2 / (tile_size[2] * tiles_per_shard[2]),
-            (x0 / tile_size[0]) % tiles_per_shard[0],
-            (x1 / tile_size[1]) % tiles_per_shard[1],
-            (x2 / tile_size[2]) % tiles_per_shard[2],
-            x0 % tile_size[0],
-            x1 % tile_size[1],
-            x2 % tile_size[2]);
+          src[gi] = encode_voxel(x0 / (tile_size[0] * tiles_per_shard[0]),
+                                 x1 / (tile_size[1] * tiles_per_shard[1]),
+                                 x2 / (tile_size[2] * tiles_per_shard[2]),
+                                 (x0 / tile_size[0]) % tiles_per_shard[0],
+                                 (x1 / tile_size[1]) % tiles_per_shard[1],
+                                 (x2 / tile_size[2]) % tiles_per_shard[2],
+                                 x0 % tile_size[0],
+                                 x1 % tile_size[1],
+                                 x2 % tile_size[2]);
         }
 
     struct collecting_shard_sink css;
     CHECK(Fail1, collecting_sink_init(&css, num_shards, 256 * 1024) == 0);
 
     const struct dimension dims[] = {
-      { .size = 12, .tile_size = 2, .tiles_per_shard = 3, .storage_position = 0 },
-      { .size = 8, .tile_size = 4, .tiles_per_shard = 2, .storage_position = 1 },
-      { .size = 12, .tile_size = 3, .tiles_per_shard = 2, .storage_position = 2 },
+      { .size = 12,
+        .tile_size = 2,
+        .tiles_per_shard = 3,
+        .storage_position = 0 },
+      { .size = 8,
+        .tile_size = 4,
+        .tiles_per_shard = 2,
+        .storage_position = 1 },
+      { .size = 12,
+        .tile_size = 3,
+        .tiles_per_shard = 2,
+        .storage_position = 2 },
     };
 
     const struct tile_stream_configuration config = {
@@ -563,12 +569,11 @@ test_shard_index_structure(void)
         tile_data_sum += tile_nbytes[i];
 
       if (tile_data_sum + index_total_bytes != w->size) {
-        log_error(
-          "  shard %d: tile_data_sum=%zu + index=%zu != shard_size=%zu",
-          si,
-          tile_data_sum,
-          index_total_bytes,
-          w->size);
+        log_error("  shard %d: tile_data_sum=%zu + index=%zu != shard_size=%zu",
+                  si,
+                  tile_data_sum,
+                  index_total_bytes,
+                  w->size);
         errors++;
       }
 

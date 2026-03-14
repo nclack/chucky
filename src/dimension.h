@@ -10,9 +10,7 @@ struct dimension;
 //       tiles_per_shard=0, downsample=0.
 // Returns rank. 0 on error.
 uint8_t
-dims_create(struct dimension* dims,
-            const char* names,
-            const uint64_t* sizes);
+dims_create(struct dimension* dims, const char* names, const uint64_t* sizes);
 
 // Set storage order from a string of dimension names.
 // Each character in order names a dimension; its position is the storage
@@ -21,9 +19,7 @@ dims_create(struct dimension* dims,
 // Pass NULL for identity (0,1,2,...).
 // Returns 0 on success, non-zero on error.
 int
-dims_set_storage_order(struct dimension* dims,
-                       uint8_t rank,
-                       const char* order);
+dims_set_storage_order(struct dimension* dims, uint8_t rank, const char* order);
 
 // Sets downsample=1 on dims whose name character appears in names.
 // Other dims set to downsample=0.

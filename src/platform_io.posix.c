@@ -51,7 +51,8 @@ platform_pwrite(platform_fd fd, const void* buf, size_t nbytes, uint64_t offset)
   const char* p = (const char*)buf;
   size_t remaining = nbytes;
   while (remaining > 0) {
-    ssize_t n = pwrite(fd, p, remaining, (off_t)(offset + (nbytes - remaining)));
+    ssize_t n =
+      pwrite(fd, p, remaining, (off_t)(offset + (nbytes - remaining)));
     if (n < 0)
       return -1;
     p += n;

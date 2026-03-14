@@ -75,8 +75,7 @@ test_string_escaping(void)
 
   jw_string(&jw, "hello \"world\"\nnew\tline\\back\x01");
 
-  const char* expected =
-    "\"hello \\\"world\\\"\\nnew\\tline\\\\back\\u0001\"";
+  const char* expected = "\"hello \\\"world\\\"\\nnew\\tline\\\\back\\u0001\"";
   CHECK(Fail, !jw_error(&jw));
   CHECK(Fail, jw_length(&jw) == strlen(expected));
   CHECK(Fail, memcmp(buf, expected, jw_length(&jw)) == 0);
@@ -209,16 +208,14 @@ int
 main(void)
 {
   int rc = 0;
-  struct {
+  struct
+  {
     const char* name;
     int (*fn)(void);
   } tests[] = {
-    { "simple_object", test_simple_object },
-    { "nested", test_nested },
-    { "string_escaping", test_string_escaping },
-    { "overflow", test_overflow },
-    { "array_commas", test_array_commas },
-    { "uint", test_uint },
+    { "simple_object", test_simple_object },     { "nested", test_nested },
+    { "string_escaping", test_string_escaping }, { "overflow", test_overflow },
+    { "array_commas", test_array_commas },       { "uint", test_uint },
     { "zarr_metadata", test_zarr_metadata },
   };
   for (size_t i = 0; i < sizeof(tests) / sizeof(tests[0]); ++i) {

@@ -12,7 +12,6 @@
 
 #define MAX_ZARR_RANK 8
 
-
 // --- Writer for a single shard file ---
 
 struct zarr_shard_writer
@@ -22,7 +21,7 @@ struct zarr_shard_writer
   struct io_queue* queue;
   size_t alignment; // 0 = normal malloc, >0 = page-aligned allocation
   _Atomic uint64_t* retired_bytes; // points to zarr_sink.retired_bytes
-  uint64_t* queued_bytes;  // points to zarr_sink.queued_bytes
+  uint64_t* queued_bytes;          // points to zarr_sink.queued_bytes
 };
 
 struct pwrite_job
@@ -30,9 +29,9 @@ struct pwrite_job
   platform_fd fd;
   uint64_t offset;
   size_t nbytes;
-  size_t data_off; // byte offset from start of struct to data
+  size_t data_off;                 // byte offset from start of struct to data
   _Atomic uint64_t* retired_bytes; // written by io worker after pwrite
-  uint8_t data[];  // used when data_off == sizeof(struct pwrite_job)
+  uint8_t data[]; // used when data_off == sizeof(struct pwrite_job)
 };
 
 static void
@@ -60,7 +59,8 @@ zarr_shard_write(struct shard_writer* self,
     if (w->alignment > 0) {
       // Unbuffered IO: buffer must be page-aligned.
       size_t hdr = align_up(sizeof(struct pwrite_job), w->alignment);
-      j = (struct pwrite_job*)platform_aligned_alloc(w->alignment, hdr + nbytes);
+      j =
+        (struct pwrite_job*)platform_aligned_alloc(w->alignment, hdr + nbytes);
       CHECK(Error, j);
       j->data_off = hdr; // data lives at aligned offset
       job_free = platform_aligned_free;
@@ -94,7 +94,7 @@ struct pwrite_ref_job
   platform_fd fd;
   uint64_t offset;
   size_t nbytes;
-  const void* data; // NOT owned — points into pinned memory
+  const void* data;                // NOT owned — points into pinned memory
   _Atomic uint64_t* retired_bytes; // written by io worker after pwrite
 };
 
@@ -186,7 +186,7 @@ struct zarr_sink
   struct shard_sink base;
   struct io_queue* queue;
   int unbuffered;
-  uint64_t queued_bytes;  // written by main thread only
+  uint64_t queued_bytes;          // written by main thread only
   _Atomic uint64_t retired_bytes; // written by io worker (atomic)
 
   // Geometry
@@ -239,8 +239,8 @@ shard_path(char* buf,
   }
 
   for (int d = 0; d < rank; ++d) {
-    int n = snprintf(buf + pos, cap - (size_t)pos, "/%llu",
-                     (unsigned long long)coords[d]);
+    int n = snprintf(
+      buf + pos, cap - (size_t)pos, "/%llu", (unsigned long long)coords[d]);
     if (n < 0 || (size_t)(pos + n) >= cap)
       return -1;
     pos += n;
@@ -281,9 +281,12 @@ zarr_sink_open(struct shard_sink* self, uint8_t level, uint64_t shard_index)
 
   // Build path
   char path[4096];
-  if (shard_path(
-        path, sizeof(path), zs->array_dir, zs->rank, zs->shard_count,
-        shard_index) != 0) {
+  if (shard_path(path,
+                 sizeof(path),
+                 zs->array_dir,
+                 zs->rank,
+                 zs->shard_count,
+                 shard_index) != 0) {
     log_error("zarr_sink_open: path too long for shard %llu",
               (unsigned long long)shard_index);
     return NULL;
@@ -349,28 +352,38 @@ static const char*
 zarr_dtype_string(enum zarr_dtype dt)
 {
   switch (dt) {
-    case zarr_dtype_uint8:   return "uint8";
-    case zarr_dtype_uint16:  return "uint16";
-    case zarr_dtype_uint32:  return "uint32";
-    case zarr_dtype_uint64:  return "uint64";
-    case zarr_dtype_int8:    return "int8";
-    case zarr_dtype_int16:   return "int16";
-    case zarr_dtype_int32:   return "int32";
-    case zarr_dtype_int64:   return "int64";
-    case zarr_dtype_float32: return "float32";
-    case zarr_dtype_float64: return "float64";
+    case zarr_dtype_uint8:
+      return "uint8";
+    case zarr_dtype_uint16:
+      return "uint16";
+    case zarr_dtype_uint32:
+      return "uint32";
+    case zarr_dtype_uint64:
+      return "uint64";
+    case zarr_dtype_int8:
+      return "int8";
+    case zarr_dtype_int16:
+      return "int16";
+    case zarr_dtype_int32:
+      return "int32";
+    case zarr_dtype_int64:
+      return "int64";
+    case zarr_dtype_float32:
+      return "float32";
+    case zarr_dtype_float64:
+      return "float64";
   }
   return "unknown";
 }
 
 static int
 write_array_metadata(const char* array_dir,
-                        uint8_t rank,
-                        const struct dimension* dimensions,
-                        enum zarr_dtype data_type,
-                        double fill_value,
-                        const uint64_t* tiles_per_shard,
-                        enum compression_codec codec)
+                     uint8_t rank,
+                     const struct dimension* dimensions,
+                     enum zarr_dtype data_type,
+                     double fill_value,
+                     const uint64_t* tiles_per_shard,
+                     enum compression_codec codec)
 {
   char path[4096];
   snprintf(path, sizeof(path), "%s/zarr.json", array_dir);
@@ -530,9 +543,13 @@ zarr_sink_update_dim0(struct shard_sink* self,
   if (zs->dimensions[0].size == dim0_size)
     return;
   zs->dimensions[0].size = dim0_size;
-  if (write_array_metadata(zs->array_dir, zs->rank, zs->dimensions,
-                               zs->data_type, zs->fill_value,
-                               zs->tiles_per_shard, zs->codec))
+  if (write_array_metadata(zs->array_dir,
+                           zs->rank,
+                           zs->dimensions,
+                           zs->data_type,
+                           zs->fill_value,
+                           zs->tiles_per_shard,
+                           zs->codec))
     log_error("zarr_sink_update_dim0: failed to rewrite zarr.json for %s",
               zs->array_dir);
 }
@@ -570,9 +587,10 @@ zarr_sink_create(const struct zarr_config* cfg)
   // Compute geometry
   zs->shard_inner_count = 1;
   for (int d = 0; d < cfg->rank; ++d) {
-    zs->tile_count[d] = (cfg->dimensions[d].size == 0) ? 1
-                        : ceildiv(cfg->dimensions[d].size,
-                                  cfg->dimensions[d].tile_size);
+    zs->tile_count[d] =
+      (cfg->dimensions[d].size == 0)
+        ? 1
+        : ceildiv(cfg->dimensions[d].size, cfg->dimensions[d].tile_size);
     uint64_t tps = cfg->dimensions[d].tiles_per_shard;
     zs->tiles_per_shard[d] = (tps == 0) ? zs->tile_count[d] : tps;
     zs->shard_count[d] = ceildiv(zs->tile_count[d], zs->tiles_per_shard[d]);
@@ -581,8 +599,11 @@ zarr_sink_create(const struct zarr_config* cfg)
   }
 
   // Build array directory path
-  snprintf(zs->array_dir, sizeof(zs->array_dir), "%s/%s",
-           cfg->store_path, cfg->array_name);
+  snprintf(zs->array_dir,
+           sizeof(zs->array_dir),
+           "%s/%s",
+           cfg->store_path,
+           cfg->array_name);
 
   // Create directory tree: ensure shard directories exist.
   // When dim0 is unbounded (size=0), only pre-create spatial dirs for
@@ -594,8 +615,12 @@ zarr_sink_create(const struct zarr_config* cfg)
 
     for (uint64_t flat = 0; flat < total_shards; ++flat) {
       char path[4096];
-      if (shard_path(path, sizeof(path), zs->array_dir, zs->rank,
-                     zs->shard_count, flat) != 0)
+      if (shard_path(path,
+                     sizeof(path),
+                     zs->array_dir,
+                     zs->rank,
+                     zs->shard_count,
+                     flat) != 0)
         goto Fail_alloc;
 
       // Get the directory portion (everything up to last '/')
@@ -613,9 +638,13 @@ zarr_sink_create(const struct zarr_config* cfg)
   // Write metadata
   CHECK(Fail_alloc, write_root_metadata(cfg->store_path) == 0);
   CHECK(Fail_alloc,
-        write_array_metadata(zs->array_dir, zs->rank, zs->dimensions,
-                                zs->data_type, zs->fill_value,
-                                zs->tiles_per_shard, zs->codec) == 0);
+        write_array_metadata(zs->array_dir,
+                             zs->rank,
+                             zs->dimensions,
+                             zs->data_type,
+                             zs->fill_value,
+                             zs->tiles_per_shard,
+                             zs->codec) == 0);
 
   // Allocate writer pool
   zs->num_writers = zs->shard_inner_count;
@@ -697,7 +726,8 @@ struct zarr_multiscale_sink
   // For group metadata regeneration
   char group_path[4096];
   uint8_t rank;
-  struct dimension dimensions[MAX_ZARR_RANK]; // L0 dims (names, downsample flags)
+  struct dimension
+    dimensions[MAX_ZARR_RANK]; // L0 dims (names, downsample flags)
 };
 
 static struct io_event
@@ -726,8 +756,8 @@ zarr_multiscale_open(struct shard_sink* self,
 {
   struct zarr_multiscale_sink* ms = (struct zarr_multiscale_sink*)self;
   CHECK(Fail, level < ms->nlod);
-  return ms->levels[level]->base.open(&ms->levels[level]->base,
-                                       level, shard_index);
+  return ms->levels[level]->base.open(
+    &ms->levels[level]->base, level, shard_index);
 Fail:
   return NULL;
 }
@@ -893,8 +923,11 @@ zarr_multiscale_sink_create(const struct zarr_multiscale_config* cfg)
   // Build group path: store_path/array_name when array_name is set
   char group_path[4096];
   if (cfg->array_name)
-    snprintf(group_path, sizeof(group_path), "%s/%s",
-             cfg->store_path, cfg->array_name);
+    snprintf(group_path,
+             sizeof(group_path),
+             "%s/%s",
+             cfg->store_path,
+             cfg->array_name);
   else
     snprintf(group_path, sizeof(group_path), "%s", cfg->store_path);
 
@@ -906,7 +939,7 @@ zarr_multiscale_sink_create(const struct zarr_multiscale_config* cfg)
   uint64_t tile_shape[MAX_ZARR_RANK];
   for (int d = 0; d < cfg->rank; ++d) {
     shape[d] = (cfg->dimensions[d].size == 0) ? cfg->dimensions[d].tile_size
-                                               : cfg->dimensions[d].size;
+                                              : cfg->dimensions[d].size;
     tile_shape[d] = cfg->dimensions[d].tile_size;
   }
 
@@ -917,8 +950,12 @@ zarr_multiscale_sink_create(const struct zarr_multiscale_config* cfg)
 
   int max_lev = cfg->nlod > 0 ? cfg->nlod : LOD_MAX_LEVELS;
   CHECK(Fail,
-        lod_plan_init_shapes(&plan, cfg->rank, shape, tile_shape,
-                             lod_mask, max_lev,
+        lod_plan_init_shapes(&plan,
+                             cfg->rank,
+                             shape,
+                             tile_shape,
+                             lod_mask,
+                             max_lev,
                              cfg->exclude_dim0) == 0);
 
   struct zarr_multiscale_sink* ms =

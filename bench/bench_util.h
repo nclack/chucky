@@ -12,7 +12,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
-double gb_per_s(double bytes, double ms);
+double
+gb_per_s(double bytes, double ms);
 
 #define print_report(...) fprintf(stderr, __VA_ARGS__), fprintf(stderr, "\n")
 
@@ -32,7 +33,8 @@ struct discard_shard_sink
   size_t shards_finalized;
 };
 
-void discard_shard_sink_init(struct discard_shard_sink* s);
+void
+discard_shard_sink_init(struct discard_shard_sink* s);
 
 // --- Metering shard_sink wrapper ---
 
@@ -56,7 +58,8 @@ struct metering_sink
   struct platform_clock clock;
 };
 
-void metering_sink_init(struct metering_sink* ms, struct shard_sink* inner);
+void
+metering_sink_init(struct metering_sink* ms, struct shard_sink* inner);
 
 // --- Report + pipeline helpers ---
 
@@ -65,18 +68,21 @@ struct sink_stats
   size_t total_bytes;
 };
 
-void print_metric_row(const struct stream_metric* m);
-void log_bench_header(const struct tile_stream_gpu* s,
-                      size_t total_bytes,
-                      size_t total_elements);
-void print_bench_report(const struct tile_stream_gpu* s,
-                        const struct sink_stats* ss,
-                        size_t total_bytes,
-                        size_t total_elements,
-                        float wall_s,
-                        float init_s,
-                        float flush_s,
-                        size_t flush_pending_bytes);
+void
+print_metric_row(const struct stream_metric* m);
+void
+log_bench_header(const struct tile_stream_gpu* s,
+                 size_t total_bytes,
+                 size_t total_elements);
+void
+print_bench_report(const struct tile_stream_gpu* s,
+                   const struct sink_stats* ss,
+                   size_t total_bytes,
+                   size_t total_elements,
+                   float wall_s,
+                   float init_s,
+                   float flush_s,
+                   size_t flush_pending_bytes);
 
 struct bench_config
 {
@@ -91,12 +97,14 @@ struct bench_config
   enum lod_reduce_method dim0_reduce_method;
 };
 
-int run_bench(const struct bench_config* cfg);
+int
+run_bench(const struct bench_config* cfg);
 
 // CLI driver: parses --fill, --codec, --reduce, -o flags, inits CUDA,
 // calls run_bench, handles xor_pattern_init/free.
-int bench_stream_main(int ac,
-                      char* av[],
-                      const char* label,
-                      struct dimension* dims,
-                      uint8_t rank);
+int
+bench_stream_main(int ac,
+                  char* av[],
+                  const char* label,
+                  struct dimension* dims,
+                  uint8_t rank);

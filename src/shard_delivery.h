@@ -8,7 +8,7 @@
 struct active_shard
 {
   size_t data_cursor;
-  uint64_t* index;              // 2 * tiles_per_shard_total entries
+  uint64_t* index;             // 2 * tiles_per_shard_total entries
   struct shard_writer* writer; // from sink->open, NULL until first use
 };
 

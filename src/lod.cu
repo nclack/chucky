@@ -1,5 +1,5 @@
-#include "lod.h"
 #include "index.ops.h"
+#include "lod.h"
 #include "prelude.h"
 
 #include <assert.h>

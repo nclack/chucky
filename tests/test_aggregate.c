@@ -1,6 +1,6 @@
 #include "aggregate.h"
-#include "prelude.h"
 #include "prelude.cuda.h"
+#include "prelude.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -51,8 +51,9 @@ test_aggregate_even(void)
   uint8_t* h_input = NULL;
   uint8_t* h_agg = NULL;
 
-  CHECK(Fail, aggregate_layout_init(&layout, rank, tile_count, tiles_per_shard,
-                                     M, max_comp, 0) == 0);
+  CHECK(Fail,
+        aggregate_layout_init(
+          &layout, rank, tile_count, tiles_per_shard, M, max_comp, 0) == 0);
 
   const uint64_t C = layout.covering_count;
   printf("  M=%llu C=%llu lifted_rank=%u\n",
@@ -83,19 +84,19 @@ test_aggregate_even(void)
   CU(Fail, cuMemcpyHtoD(d_comp_sizes, h_sizes, M * sizeof(size_t)));
 
   CHECK(Fail,
-        aggregate_by_shard_async(&layout, (void*)d_compressed,
-                                  (size_t*)d_comp_sizes, &slot, stream) == 0);
+        aggregate_by_shard_async(
+          &layout, (void*)d_compressed, (size_t*)d_comp_sizes, &slot, stream) ==
+          0);
   CU(Fail, cuStreamSynchronize(stream));
 
   // D2H aggregated buffer and offsets
   h_agg = (uint8_t*)malloc(pool_bytes);
   CHECK(Fail, h_agg);
 
+  CU(Fail, cuMemcpyDtoH(h_agg, (CUdeviceptr)slot.d_aggregated, pool_bytes));
   CU(Fail,
-     cuMemcpyDtoH(h_agg, (CUdeviceptr)slot.d_aggregated, pool_bytes));
-  CU(Fail,
-     cuMemcpyDtoH(slot.h_offsets, (CUdeviceptr)slot.d_offsets,
-                  (C + 1) * sizeof(size_t)));
+     cuMemcpyDtoH(
+       slot.h_offsets, (CUdeviceptr)slot.d_offsets, (C + 1) * sizeof(size_t)));
 
   // Verify: compute CPU reference permutation and check
   {
@@ -104,8 +105,8 @@ test_aggregate_even(void)
     CHECK(Fail, permuted_sizes);
 
     for (uint64_t i = 0; i < M; ++i) {
-      uint32_t pi = cpu_perm(i, layout.lifted_rank, layout.lifted_shape,
-                              layout.lifted_strides);
+      uint32_t pi = cpu_perm(
+        i, layout.lifted_rank, layout.lifted_shape, layout.lifted_strides);
       CHECK(Fail, pi < C);
       permuted_sizes[pi] = h_sizes[i];
     }
@@ -121,16 +122,19 @@ test_aggregate_even(void)
 
     // Verify byte contents
     for (uint64_t i = 0; i < M; ++i) {
-      uint32_t pi = cpu_perm(i, layout.lifted_rank, layout.lifted_shape,
-                              layout.lifted_strides);
+      uint32_t pi = cpu_perm(
+        i, layout.lifted_rank, layout.lifted_shape, layout.lifted_strides);
       size_t off = slot.h_offsets[pi];
       uint8_t expected_val = (uint8_t)(i + 1);
       for (size_t b = 0; b < h_sizes[i]; ++b) {
         if (h_agg[off + b] != expected_val) {
           fprintf(stderr,
                   "  MISMATCH tile %llu P[i]=%u byte %zu: got %u want %u\n",
-                  (unsigned long long)i, pi, b,
-                  (unsigned)h_agg[off + b], (unsigned)expected_val);
+                  (unsigned long long)i,
+                  pi,
+                  b,
+                  (unsigned)h_agg[off + b],
+                  (unsigned)expected_val);
           free(permuted_sizes);
           goto Fail;
         }
@@ -183,8 +187,9 @@ test_aggregate_uneven(void)
   uint8_t* h_input = NULL;
   uint8_t* h_agg = NULL;
 
-  CHECK(Fail, aggregate_layout_init(&layout, rank, tile_count, tiles_per_shard,
-                                     M, max_comp, 0) == 0);
+  CHECK(Fail,
+        aggregate_layout_init(
+          &layout, rank, tile_count, tiles_per_shard, M, max_comp, 0) == 0);
 
   const uint64_t C = layout.covering_count;
   printf("  M=%llu C=%llu lifted_rank=%u\n",
@@ -215,18 +220,18 @@ test_aggregate_uneven(void)
   CU(Fail, cuMemcpyHtoD(d_comp_sizes, h_sizes, M * sizeof(size_t)));
 
   CHECK(Fail,
-        aggregate_by_shard_async(&layout, (void*)d_compressed,
-                                  (size_t*)d_comp_sizes, &slot, stream) == 0);
+        aggregate_by_shard_async(
+          &layout, (void*)d_compressed, (size_t*)d_comp_sizes, &slot, stream) ==
+          0);
   CU(Fail, cuStreamSynchronize(stream));
 
   h_agg = (uint8_t*)malloc(pool_bytes);
   CHECK(Fail, h_agg);
 
+  CU(Fail, cuMemcpyDtoH(h_agg, (CUdeviceptr)slot.d_aggregated, pool_bytes));
   CU(Fail,
-     cuMemcpyDtoH(h_agg, (CUdeviceptr)slot.d_aggregated, pool_bytes));
-  CU(Fail,
-     cuMemcpyDtoH(slot.h_offsets, (CUdeviceptr)slot.d_offsets,
-                  (C + 1) * sizeof(size_t)));
+     cuMemcpyDtoH(
+       slot.h_offsets, (CUdeviceptr)slot.d_offsets, (C + 1) * sizeof(size_t)));
 
   // Verify
   {
@@ -234,8 +239,8 @@ test_aggregate_uneven(void)
     CHECK(Fail, permuted_sizes);
 
     for (uint64_t i = 0; i < M; ++i) {
-      uint32_t pi = cpu_perm(i, layout.lifted_rank, layout.lifted_shape,
-                              layout.lifted_strides);
+      uint32_t pi = cpu_perm(
+        i, layout.lifted_rank, layout.lifted_shape, layout.lifted_strides);
       CHECK(Fail, pi < C);
       permuted_sizes[pi] = h_sizes[i];
     }
@@ -251,21 +256,24 @@ test_aggregate_uneven(void)
     }
     CHECK(Fail, slot.h_offsets[C] == expected_total);
     CHECK(Fail, zero_count == (int)(C - M));
-    printf("  total bytes: %zu, padding slots: %d\n", expected_total,
-           zero_count);
+    printf(
+      "  total bytes: %zu, padding slots: %d\n", expected_total, zero_count);
 
     // Verify byte contents
     for (uint64_t i = 0; i < M; ++i) {
-      uint32_t pi = cpu_perm(i, layout.lifted_rank, layout.lifted_shape,
-                              layout.lifted_strides);
+      uint32_t pi = cpu_perm(
+        i, layout.lifted_rank, layout.lifted_shape, layout.lifted_strides);
       size_t off = slot.h_offsets[pi];
       uint8_t expected_val = (uint8_t)(i + 1);
       for (size_t b = 0; b < h_sizes[i]; ++b) {
         if (h_agg[off + b] != expected_val) {
           fprintf(stderr,
                   "  MISMATCH tile %llu P[i]=%u byte %zu: got %u want %u\n",
-                  (unsigned long long)i, pi, b,
-                  (unsigned)h_agg[off + b], (unsigned)expected_val);
+                  (unsigned long long)i,
+                  pi,
+                  b,
+                  (unsigned)h_agg[off + b],
+                  (unsigned)expected_val);
           free(permuted_sizes);
           goto Fail;
         }

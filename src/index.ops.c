@@ -1,10 +1,7 @@
 #include "index.ops.h"
 
 void
-unravel(int rank,
-        const uint64_t* shape,
-        uint64_t idx,
-        uint64_t* coords)
+unravel(int rank, const uint64_t* shape, uint64_t idx, uint64_t* coords)
 {
   for (int d = 0; d < rank; ++d) {
     coords[d] = idx % shape[d];
@@ -13,10 +10,7 @@ unravel(int rank,
 }
 
 uint64_t
-ravel(int rank,
-      const uint64_t* shape,
-      const int64_t* strides,
-      uint64_t idx)
+ravel(int rank, const uint64_t* shape, const int64_t* strides, uint64_t idx)
 {
   uint64_t o = 0;
   uint64_t rest = idx;

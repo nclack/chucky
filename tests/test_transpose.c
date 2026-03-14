@@ -37,9 +37,12 @@ build_lifted_layout(int rank,
   uint64_t tile_stride = tile_bytes / bpe;
   (void)tile_bytes;
 
-  compute_lifted_strides(
-    rank, tile_sizes, tile_count, storage_order, (int64_t)tile_stride,
-    lifted_strides);
+  compute_lifted_strides(rank,
+                         tile_sizes,
+                         tile_count,
+                         storage_order,
+                         (int64_t)tile_stride,
+                         lifted_strides);
 
   *out_tiles_per_epoch = (uint64_t)lifted_strides[0] / tile_stride;
   lifted_strides[0] = 0; // collapse epoch dim

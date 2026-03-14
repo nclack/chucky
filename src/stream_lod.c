@@ -743,13 +743,11 @@ lod_run_epoch(struct lod_state* lod,
 
   uint32_t active_levels_mask = 1; // L0 always active
   if (levels->dim0_downsample && lod->dim0.total_elements > 0) {
-    CHECK_SILENT(Error,
-                 run_dim0_fold_emit(lod,
-                                    bpe,
-                                    dtype,
-                                    dim0_reduce_method,
-                                    compute,
-                                    &active_levels_mask) == 0);
+    CHECK_SILENT(
+      Error,
+      run_dim0_fold_emit(
+        lod, bpe, dtype, dim0_reduce_method, compute, &active_levels_mask) ==
+        0);
   }
 
   CU(Error, cuEventRecord(lod->t_dim0_end, compute));

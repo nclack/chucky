@@ -248,10 +248,10 @@ lod_plan_init_shapes(struct lod_plan* p,
     lod_tile[k] = tile_shape ? tile_shape[p->lod_map[k]] : 1;
 
   p->nlod = 1;
-  while (p->nlod < max_levels &&
-         !is_all_ones(p->lod_ndim, p->lod_shapes[p->nlod - 1]) &&
-         !next_level_below_tile(
-           p->lod_ndim, p->lod_shapes[p->nlod - 1], lod_tile)) {
+  while (
+    p->nlod < max_levels &&
+    !is_all_ones(p->lod_ndim, p->lod_shapes[p->nlod - 1]) &&
+    !next_level_below_tile(p->lod_ndim, p->lod_shapes[p->nlod - 1], lod_tile)) {
     for (int k = 0; k < p->lod_ndim; ++k)
       p->lod_shapes[p->nlod][k] = (p->lod_shapes[p->nlod - 1][k] + 1) / 2;
     memcpy(p->shapes[p->nlod],
@@ -275,4 +275,3 @@ lod_plan_free(struct lod_plan* p)
   free(p->ends);
   memset(p, 0, sizeof(*p));
 }
-

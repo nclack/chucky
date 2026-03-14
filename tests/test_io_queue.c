@@ -173,7 +173,8 @@ int
 main(void)
 {
   int rc = 0;
-  struct {
+  struct
+  {
     const char* name;
     int (*fn)(void);
   } tests[] = {

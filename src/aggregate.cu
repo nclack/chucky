@@ -1,6 +1,6 @@
 #include "aggregate.h"
-#include "prelude.h"
 #include "prelude.cuda.h"
+#include "prelude.h"
 
 #pragma nv_diag_suppress 221
 #include <cub/cub.cuh>
@@ -410,17 +410,16 @@ Error:
 // ---------------------------------------------------------------------------
 
 extern "C" int
-aggregate_batch_by_shard_async(
-  void* d_compressed,
-  size_t* d_comp_sizes,
-  const uint32_t* d_batch_gather,
-  const uint32_t* d_batch_perm,
-  uint64_t batch_tile_count,
-  uint64_t batch_covering_count,
-  size_t max_chunk_bytes,
-  const struct aggregate_layout* layout,
-  struct aggregate_slot* slot,
-  CUstream stream)
+aggregate_batch_by_shard_async(void* d_compressed,
+                               size_t* d_comp_sizes,
+                               const uint32_t* d_batch_gather,
+                               const uint32_t* d_batch_perm,
+                               uint64_t batch_tile_count,
+                               uint64_t batch_covering_count,
+                               size_t max_chunk_bytes,
+                               const struct aggregate_layout* layout,
+                               struct aggregate_slot* slot,
+                               CUstream stream)
 {
   const uint64_t N = batch_tile_count;
   const uint64_t C = batch_covering_count;
@@ -479,12 +478,12 @@ aggregate_batch_by_shard_async(
     const int block = 256;
     const int grid = (int)N;
     gather_batch_k<<<grid, block, 0, cuda_stream>>>(d_compressed,
-                                                     slot->d_aggregated,
-                                                     d_comp_sizes,
-                                                     slot->d_offsets,
-                                                     d_batch_gather,
-                                                     d_batch_perm,
-                                                     max_chunk_bytes);
+                                                    slot->d_aggregated,
+                                                    d_comp_sizes,
+                                                    slot->d_offsets,
+                                                    d_batch_gather,
+                                                    d_batch_perm,
+                                                    max_chunk_bytes);
   }
 
   return 0;

@@ -28,8 +28,7 @@ ingest_dispatch_scatter(struct staging_state* stage,
   // H2D — wait for prior scatter to finish reading d_in before overwriting
   CU(Error, cuStreamWaitEvent(h2d, ss->t_scatter_end, 0));
   CU(Error, cuEventRecord(ss->t_h2d_start, h2d));
-  CU(Error,
-     cuMemcpyHtoDAsync(ss->d_in, ss->h_in, stage->bytes_written, h2d));
+  CU(Error, cuMemcpyHtoDAsync(ss->d_in, ss->h_in, stage->bytes_written, h2d));
   CU(Error, cuEventRecord(ss->t_h2d_end, h2d));
 
   // Scatter into tile pool
@@ -80,8 +79,7 @@ ingest_dispatch_multiscale(struct staging_state* stage,
   // H2D — wait for prior d_linear copy to finish reading d_in
   CU(Error, cuStreamWaitEvent(h2d, ss->t_scatter_end, 0));
   CU(Error, cuEventRecord(ss->t_h2d_start, h2d));
-  CU(Error,
-     cuMemcpyHtoDAsync(ss->d_in, ss->h_in, stage->bytes_written, h2d));
+  CU(Error, cuMemcpyHtoDAsync(ss->d_in, ss->h_in, stage->bytes_written, h2d));
   CU(Error, cuEventRecord(ss->t_h2d_end, h2d));
 
   // Copy raw input to linear epoch buffer for LOD downsampling

@@ -1,43 +1,16 @@
 #include "metric.h"
 #include "stream_internal.h"
 
-#include "aggregate.h"
 #include "compress.h"
-#include "crc32c.h"
 #include "index.ops.h"
 #include "lod.h"
 #include "lod_plan.h"
 #include "platform.h"
 #include "prelude.cuda.h"
 #include "prelude.h"
-#include "shard_delivery.h"
 
 #include <stdlib.h>
 #include <string.h>
-
-static inline CUresult
-cu_event_destroy(CUevent e)
-{
-  return e ? cuEventDestroy(e) : CUDA_SUCCESS;
-}
-
-static inline CUresult
-cu_stream_destroy(CUstream s)
-{
-  return s ? cuStreamDestroy(s) : CUDA_SUCCESS;
-}
-
-static inline CUresult
-cu_mem_free(CUdeviceptr p)
-{
-  return p ? cuMemFree(p) : CUDA_SUCCESS;
-}
-
-static inline CUresult
-cu_mem_free_host(void* p)
-{
-  return p ? cuMemFreeHost(p) : CUDA_SUCCESS;
-}
 
 static inline uint32_t
 next_pow2_u32(uint32_t v)
@@ -73,95 +46,37 @@ compute_epochs_per_batch(const struct tile_stream_configuration* config,
 }
 
 static void
-destroy_level_state(struct level_flush_state* lls)
-{
-  aggregate_layout_destroy(&lls->agg_layout);
-  for (int i = 0; i < 2; ++i)
-    aggregate_slot_destroy(&lls->agg[i]);
-  CUWARN(cu_mem_free(lls->d_batch_gather));
-  CUWARN(cu_mem_free(lls->d_batch_perm));
-  if (lls->shard.shards) {
-    for (uint64_t i = 0; i < lls->shard.shard_inner_count; ++i)
-      free(lls->shard.shards[i].index);
-    free(lls->shard.shards);
-  }
-}
-
-static void
 destroy_cuda_streams_and_events(struct gpu_streams* streams,
-                                struct staging_state* stage,
-                                struct pool_state* pools,
-                                struct flush_pipeline* flush)
+                                struct pool_state* pools)
 {
-  CUWARN(cu_stream_destroy(streams->h2d));
-  CUWARN(cu_stream_destroy(streams->compute));
-  CUWARN(cu_stream_destroy(streams->compress));
-  CUWARN(cu_stream_destroy(streams->d2h));
-
-  for (int i = 0; i < 2; ++i) {
-    struct staging_slot* ss = &stage->slot[i];
-    CUWARN(cu_event_destroy(ss->t_h2d_end));
-    CUWARN(cu_event_destroy(ss->t_h2d_start));
-    CUWARN(cu_event_destroy(ss->t_scatter_start));
-    CUWARN(cu_event_destroy(ss->t_scatter_end));
-  }
+  cu_stream_destroy(streams->h2d);
+  cu_stream_destroy(streams->compute);
+  cu_stream_destroy(streams->compress);
+  cu_stream_destroy(streams->d2h);
 
   for (int i = 0; i < 2; ++i)
-    CUWARN(cu_event_destroy(pools->ready[i]));
-
-  for (int i = 0; i < 2; ++i) {
-    struct flush_slot_gpu* fs = &flush->slot[i];
-    CUWARN(cu_event_destroy(fs->t_compress_end));
-    CUWARN(cu_event_destroy(fs->t_compress_start));
-    CUWARN(cu_event_destroy(fs->t_aggregate_end));
-    CUWARN(cu_event_destroy(fs->t_d2h_start));
-    CUWARN(cu_event_destroy(fs->ready));
-  }
+    cu_event_destroy(pools->ready[i]);
 }
 
 static void
 destroy_l0_layout(struct stream_layout* layout)
 {
-  CUWARN(cu_mem_free((CUdeviceptr)layout->d_lifted_shape));
-  CUWARN(cu_mem_free((CUdeviceptr)layout->d_lifted_strides));
-}
-
-static void
-destroy_staging_buffers(struct staging_state* stage)
-{
-  for (int i = 0; i < 2; ++i) {
-    CUWARN(cu_mem_free_host(stage->slot[i].h_in));
-    CUWARN(cu_mem_free(stage->slot[i].d_in));
-  }
+  cu_mem_free((CUdeviceptr)layout->d_lifted_shape);
+  cu_mem_free((CUdeviceptr)layout->d_lifted_strides);
 }
 
 static void
 destroy_tile_pools(struct pool_state* pools)
 {
   for (int i = 0; i < 2; ++i)
-    CUWARN(cu_mem_free(pools->buf[i]));
-}
-
-static void
-destroy_compression(struct codec* c, struct flush_pipeline* flush)
-{
-  codec_free(c);
-  for (int i = 0; i < 2; ++i)
-    CUWARN(cu_mem_free(flush->slot[i].d_compressed));
-}
-
-static void
-destroy_aggregate_and_shards(struct flush_pipeline* flush, int nlod)
-{
-  for (int lv = 0; lv < nlod; ++lv)
-    destroy_level_state(&flush->levels[lv]);
+    cu_mem_free(pools->buf[i]);
 }
 
 static void
 destroy_batch_events(struct batch_state* batch)
 {
   for (uint32_t i = 0; i < batch->epochs_per_batch; ++i)
-    CUWARN(cu_event_destroy(batch->pool_events[i]));
+    cu_event_destroy(batch->pool_events[i]);
 }
 
 void
@@ -170,13 +85,13 @@ tile_stream_gpu_destroy(struct tile_stream_gpu* s)
   if (!s)
     return;
   destroy_batch_events(&s->batch);
-  destroy_aggregate_and_shards(&s->flush, s->levels.nlod);
-  destroy_compression(&s->codec, &s->flush);
+  d2h_deliver_destroy(&s->d2h_deliver);
+  compress_agg_destroy(&s->compress_agg, s->levels.nlod);
   destroy_tile_pools(&s->pools);
   lod_state_destroy(&s->lod);
-  destroy_staging_buffers(&s->stage);
+  ingest_destroy(&s->stage);
   destroy_l0_layout(&s->layout);
-  destroy_cuda_streams_and_events(&s->streams, &s->stage, &s->pools, &s->flush);
+  destroy_cuda_streams_and_events(&s->streams, &s->pools);
   free(s);
 }
 
@@ -218,9 +133,7 @@ resolve_storage_order(uint8_t rank,
 
 static int
 init_cuda_streams_and_events(struct gpu_streams* streams,
-                             struct staging_state* stage,
-                             struct pool_state* pools,
-                             struct flush_pipeline* flush)
+                             struct pool_state* pools)
 {
   CU(Fail, cuStreamCreate(&streams->h2d, CU_STREAM_NON_BLOCKING));
   CU(Fail, cuStreamCreate(&streams->compute, CU_STREAM_NON_BLOCKING));
@@ -228,22 +141,7 @@ init_cuda_streams_and_events(struct gpu_streams* streams,
   CU(Fail, cuStreamCreate(&streams->d2h, CU_STREAM_NON_BLOCKING));
 
   for (int i = 0; i < 2; ++i) {
-    CU(Fail, cuEventCreate(&stage->slot[i].t_h2d_end, CU_EVENT_DEFAULT));
-    CU(Fail, cuEventCreate(&stage->slot[i].t_h2d_start, CU_EVENT_DEFAULT));
-    CU(Fail, cuEventCreate(&stage->slot[i].t_scatter_start, CU_EVENT_DEFAULT));
-    CU(Fail, cuEventCreate(&stage->slot[i].t_scatter_end, CU_EVENT_DEFAULT));
-  }
-
-  for (int i = 0; i < 2; ++i) {
     CU(Fail, cuEventCreate(&pools->ready[i], CU_EVENT_DEFAULT));
-  }
-
-  for (int i = 0; i < 2; ++i) {
-    CU(Fail, cuEventCreate(&flush->slot[i].t_compress_end, CU_EVENT_DEFAULT));
-    CU(Fail, cuEventCreate(&flush->slot[i].t_compress_start, CU_EVENT_DEFAULT));
-    CU(Fail, cuEventCreate(&flush->slot[i].t_aggregate_end, CU_EVENT_DEFAULT));
-    CU(Fail, cuEventCreate(&flush->slot[i].t_d2h_start, CU_EVENT_DEFAULT));
-    CU(Fail, cuEventCreate(&flush->slot[i].ready, CU_EVENT_DEFAULT));
   }
 
   return 0;
@@ -252,8 +150,6 @@ Fail:
 }
 
 // Compute host-side stream_layout fields for a single level (no GPU).
-// level_shape[d] is the full shape for this level (dims[d].size for L0,
-// plan.shapes[lv][d] for LOD levels).
 static void
 compute_level_layout(struct stream_layout* layout,
                      uint8_t rank,
@@ -324,19 +220,6 @@ Fail:
 }
 
 static int
-init_staging_buffers(struct staging_state* stage, size_t buffer_capacity_bytes)
-{
-  for (int i = 0; i < 2; ++i) {
-    CU(Fail, cuMemHostAlloc(&stage->slot[i].h_in, buffer_capacity_bytes, 0));
-    CU(Fail, cuMemAlloc(&stage->slot[i].d_in, buffer_capacity_bytes));
-  }
-
-  return 0;
-Fail:
-  return 1;
-}
-
-static int
 init_tile_pools(struct pool_state* pools,
                 const struct level_geometry* levels,
                 uint64_t tile_stride,
@@ -344,195 +227,12 @@ init_tile_pools(struct pool_state* pools,
                 uint32_t epochs_per_batch,
                 CUstream compute)
 {
-  // Level geometry is already computed. Pool holds K epochs worth of tiles.
   const size_t pool_bytes =
     (uint64_t)epochs_per_batch * levels->total_tiles * tile_stride * bpe;
 
   for (int i = 0; i < 2; ++i) {
     CU(Fail, cuMemAlloc(&pools->buf[i], pool_bytes));
     CU(Fail, cuMemsetD8Async(pools->buf[i], 0, pool_bytes, compute));
-  }
-
-  return 0;
-Fail:
-  return 1;
-}
-
-static int
-init_compression(struct codec* c,
-                 struct flush_pipeline* flush,
-                 enum compression_codec codec_type,
-                 size_t bpe,
-                 uint32_t K,
-                 uint64_t total_tiles,
-                 uint64_t tile_stride)
-{
-  const uint64_t M = (uint64_t)K * total_tiles;
-  const size_t tile_bytes = tile_stride * bpe;
-
-  CHECK(Fail, codec_init(c, codec_type, tile_bytes, M) == 0);
-
-  for (int fc = 0; fc < 2; ++fc) {
-    struct flush_slot_gpu* fs = &flush->slot[fc];
-    CU(Fail, cuMemAlloc(&fs->d_compressed, M * c->max_output_size));
-  }
-
-  return 0;
-Fail:
-  return 1;
-}
-
-static int
-init_aggregate_and_shards(struct flush_pipeline* flush,
-                          const struct computed_stream_layouts* cl,
-                          CUstream compute)
-{
-  crc32c_init();
-
-  for (int lv = 0; lv < cl->levels.nlod; ++lv) {
-    const struct level_layout_info* li = &cl->per_level[lv];
-
-    // Copy pre-computed aggregate layout and upload to GPU.
-    flush->levels[lv].agg_layout = li->agg_layout;
-    CHECK(Fail, aggregate_layout_upload(&flush->levels[lv].agg_layout) == 0);
-
-    flush->levels[lv].batch_active_count = li->batch_active_count;
-
-    // Aggregate slots sized for batch (at least 1 for infrequent dim0 levels).
-    uint32_t slot_count =
-      li->batch_active_count > 0 ? li->batch_active_count : 1;
-    uint64_t tiles_lv = cl->levels.tile_count[lv];
-    uint64_t batch_tiles = (uint64_t)slot_count * tiles_lv;
-    uint64_t batch_covering =
-      (uint64_t)slot_count * li->agg_layout.covering_count;
-    size_t batch_agg_bytes = agg_pool_bytes(batch_tiles,
-                                            cl->max_output_size,
-                                            li->agg_layout.covering_count,
-                                            li->agg_layout.tps_inner,
-                                            li->agg_layout.page_size);
-
-    for (int i = 0; i < 2; ++i) {
-      CHECK(Fail,
-            aggregate_batch_slot_init(&flush->levels[lv].agg[i],
-                                      batch_tiles,
-                                      batch_covering,
-                                      batch_agg_bytes) == 0);
-      CU(Fail, cuEventRecord(flush->levels[lv].agg[i].ready, compute));
-    }
-
-    // Shard state from pre-computed geometry.
-    struct shard_state* ss = &flush->levels[lv].shard;
-    ss->tiles_per_shard_0 = li->tiles_per_shard_0;
-    ss->tiles_per_shard_inner = li->tiles_per_shard_inner;
-    ss->tiles_per_shard_total = li->tiles_per_shard_total;
-    ss->shard_inner_count = li->shard_inner_count;
-
-    ss->shards = (struct active_shard*)calloc(ss->shard_inner_count,
-                                              sizeof(struct active_shard));
-    CHECK(Fail, ss->shards);
-
-    size_t index_bytes = 2 * ss->tiles_per_shard_total * sizeof(uint64_t);
-    for (uint64_t i = 0; i < ss->shard_inner_count; ++i) {
-      ss->shards[i].index = (uint64_t*)malloc(index_bytes);
-      CHECK(Fail, ss->shards[i].index);
-      memset(ss->shards[i].index, 0xFF, index_bytes);
-    }
-
-    ss->epoch_in_shard = 0;
-    ss->shard_epoch = 0;
-  }
-
-  return 0;
-Fail:
-  return 1;
-}
-
-// Build gather and permutation LUTs for a single level.
-// Owns h_gather and h_perm — freed in both success and failure paths.
-static int
-build_level_batch_lut(struct level_flush_state* lvl,
-                       const struct level_geometry* levels,
-                       int lv)
-{
-  uint32_t batch_count = lvl->batch_active_count;
-  uint64_t tiles_lv = levels->tile_count[lv];
-  uint64_t lut_len = (uint64_t)batch_count * tiles_lv;
-
-  uint32_t* h_gather = NULL;
-  uint32_t* h_perm = NULL;
-
-  if (lut_len == 0)
-    return 0;
-
-  h_gather = (uint32_t*)malloc(lut_len * sizeof(uint32_t));
-  h_perm = (uint32_t*)malloc(lut_len * sizeof(uint32_t));
-  CHECK(Fail, h_gather && h_perm);
-
-  const struct aggregate_layout* al = &lvl->agg_layout;
-
-  for (uint32_t a = 0; a < batch_count; ++a) {
-    // Level lv fires at pool epochs period-1, 2*period-1, etc.
-    uint32_t period = 1;
-    if (levels->dim0_downsample && lv > 0)
-      period = 1u << lv;
-    uint32_t pool_epoch = (a + 1) * period - 1;
-
-    for (uint64_t j = 0; j < tiles_lv; ++j) {
-      uint64_t idx = (uint64_t)a * tiles_lv + j;
-
-      // gather: map batch-tile to compressed buffer position
-      h_gather[idx] = (uint32_t)(pool_epoch * levels->total_tiles +
-                                 levels->tile_offset[lv] + j);
-
-      // perm: shard-order position via lifted strides, interleaved by epoch
-      uint64_t perm_pos = 0;
-      uint64_t rest = j;
-      for (int d = al->lifted_rank - 1; d >= 0; --d) {
-        uint64_t coord = rest % al->lifted_shape[d];
-        rest /= al->lifted_shape[d];
-        perm_pos += coord * (uint64_t)al->lifted_strides[d];
-      }
-      h_perm[idx] = (uint32_t)(perm_pos * batch_count + a);
-    }
-  }
-
-  CU(Fail, cuMemAlloc(&lvl->d_batch_gather, lut_len * sizeof(uint32_t)));
-  CU(Fail,
-     cuMemcpyHtoD(lvl->d_batch_gather, h_gather, lut_len * sizeof(uint32_t)));
-
-  CU(Fail, cuMemAlloc(&lvl->d_batch_perm, lut_len * sizeof(uint32_t)));
-  CU(Fail,
-     cuMemcpyHtoD(lvl->d_batch_perm, h_perm, lut_len * sizeof(uint32_t)));
-
-  free(h_gather);
-  free(h_perm);
-  return 0;
-Fail:
-  free(h_gather);
-  free(h_perm);
-  return 1;
-}
-
-// Precompute per-level gather and permutation LUTs for batch aggregate.
-//
-// gather[a * tiles_lv + j] maps batch-tile (a, j) to its position in the
-// compressed buffer: pool_epoch(a) * total_tiles + level_offset + j.
-//
-// perm[a * tiles_lv + j] maps batch-tile (a, j) to the shard-ordered
-// output position: shard_perm(j) * batch_count + a.  This interleaves
-// epochs within each shard so tiles appear in epoch order.
-//
-// Must be called AFTER init_aggregate_and_shards (needs agg_layout).
-static int
-init_batch_luts(struct flush_pipeline* flush,
-                const struct level_geometry* levels,
-                uint32_t K)
-{
-  if (K <= 1)
-    return 0;
-
-  for (int lv = 0; lv < levels->nlod; ++lv) {
-    CHECK(Fail, build_level_batch_lut(&flush->levels[lv], levels, lv) == 0);
   }
 
   return 0;
@@ -555,27 +255,12 @@ Fail:
 }
 
 static int
-seed_events(const struct staging_state* stage,
-            const struct pool_state* pools,
-            const struct flush_pipeline* flush,
+seed_events(const struct pool_state* pools,
             const struct lod_state* lod,
             CUstream compute)
 {
-  for (int i = 0; i < 2; ++i) {
-    CU(Fail, cuEventRecord(stage->slot[i].t_h2d_end, compute));
-    CU(Fail, cuEventRecord(stage->slot[i].t_h2d_start, compute));
-    CU(Fail, cuEventRecord(stage->slot[i].t_scatter_start, compute));
-    CU(Fail, cuEventRecord(stage->slot[i].t_scatter_end, compute));
-  }
   CU(Fail, cuEventRecord(pools->ready[0], compute));
   CU(Fail, cuEventRecord(pools->ready[1], compute));
-  for (int i = 0; i < 2; ++i) {
-    CU(Fail, cuEventRecord(flush->slot[i].t_compress_end, compute));
-    CU(Fail, cuEventRecord(flush->slot[i].t_compress_start, compute));
-    CU(Fail, cuEventRecord(flush->slot[i].t_aggregate_end, compute));
-    CU(Fail, cuEventRecord(flush->slot[i].t_d2h_start, compute));
-    CU(Fail, cuEventRecord(flush->slot[i].ready, compute));
-  }
 
   if (lod->t_start) {
     CU(Fail, cuEventRecord(lod->t_start, compute));
@@ -630,7 +315,6 @@ validate_config(const struct tile_stream_configuration* config)
   }
 
   {
-    // Validate dim0 reduce method if dim0 is downsampled
     int dim0_ds = 0;
     uint32_t lod_mask = 0;
     for (int d = 0; d < config->rank; ++d) {
@@ -676,7 +360,6 @@ compute_stream_layouts(const struct tile_stream_configuration* config,
   const size_t bpe = config->bytes_per_element;
   const struct dimension* dims = config->dimensions;
 
-  // Resolve storage order and multiscale flags from config.
   uint8_t storage_order[HALF_MAX_RANK];
   CHECK(Fail, resolve_storage_order(rank, dims, storage_order) == 0);
 
@@ -731,7 +414,6 @@ compute_stream_layouts(const struct tile_stream_configuration* config,
 
     out->levels.nlod = out->plan.nlod;
 
-    // Per-level LOD layouts
     for (int lv = 1; lv < out->plan.nlod; ++lv)
       compute_level_layout(&out->lod_layouts[lv],
                            rank,
@@ -788,7 +470,6 @@ compute_stream_layouts(const struct tile_stream_configuration* config,
 
     uint64_t tiles_lv = out->levels.tile_count[lv];
 
-    // Batch active count
     uint32_t batch_count = out->epochs_per_batch;
     if (dim0_downsample && lv > 0) {
       uint32_t period = 1u << lv;
@@ -797,14 +478,12 @@ compute_stream_layouts(const struct tile_stream_configuration* config,
     }
     out->per_level[lv].batch_active_count = batch_count;
 
-    // Permute tile_count and tiles_per_shard into storage order
     uint64_t so_tile_count[HALF_MAX_RANK], so_tiles_per_shard[HALF_MAX_RANK];
     for (int j = 0; j < rank; ++j) {
       so_tile_count[j] = tile_count[storage_order[j]];
       so_tiles_per_shard[j] = tiles_per_shard[storage_order[j]];
     }
 
-    // Aggregate layout (CPU only)
     CHECK(Fail,
           aggregate_layout_compute(&out->per_level[lv].agg_layout,
                                    rank,
@@ -814,7 +493,6 @@ compute_stream_layouts(const struct tile_stream_configuration* config,
                                    out->max_output_size,
                                    config->shard_alignment) == 0);
 
-    // Shard geometry
     {
       uint64_t tps0 = tiles_per_shard[0];
       if (dim0_downsample && lv > 0) {
@@ -879,7 +557,8 @@ tile_stream_gpu_create(const struct tile_stream_configuration* config)
   CHECK(FailPhase1, compute_stream_layouts(config, &cl) == 0);
 
   // Phase 2: Allocate and initialize tile_stream_gpu.
-  struct tile_stream_gpu* out = (struct tile_stream_gpu*)calloc(1, sizeof(*out));
+  struct tile_stream_gpu* out =
+    (struct tile_stream_gpu*)calloc(1, sizeof(*out));
   CHECK(FailPhase1b, out);
 
   out->config = *config;
@@ -907,12 +586,12 @@ tile_stream_gpu_create(const struct tile_stream_configuration* config)
 
   // GPU allocation and init.
   CHECK(FailPhase2,
-        init_cuda_streams_and_events(
-          &out->streams, &out->stage, &out->pools, &out->flush) == 0);
+        init_cuda_streams_and_events(&out->streams, &out->pools) == 0);
   CHECK(FailPhase2, upload_stream_layout(&out->layout) == 0);
   CHECK(FailPhase2,
-        init_staging_buffers(&out->stage, out->config.buffer_capacity_bytes) ==
-          0);
+        ingest_init(&out->stage,
+                    out->config.buffer_capacity_bytes,
+                    out->streams.compute) == 0);
   CHECK(FailPhase2,
         lod_state_init(&out->lod, &out->levels, &out->layout, &out->config) ==
           0);
@@ -923,19 +602,17 @@ tile_stream_gpu_create(const struct tile_stream_configuration* config)
                         config->bytes_per_element,
                         out->batch.epochs_per_batch,
                         out->streams.compute) == 0);
+
+  // Initialize the two pipeline stages.
   CHECK(FailPhase2,
-        init_compression(&out->codec,
-                         &out->flush,
-                         config->codec,
-                         config->bytes_per_element,
-                         out->batch.epochs_per_batch,
-                         out->levels.total_tiles,
-                         out->layout.tile_stride) == 0);
+        compress_agg_init(
+          &out->compress_agg, &cl, config, out->streams.compute) == 0);
   CHECK(FailPhase2,
-        init_aggregate_and_shards(&out->flush, &cl, out->streams.compute) == 0);
-  CHECK(FailPhase2,
-        init_batch_luts(
-          &out->flush, &out->levels, out->batch.epochs_per_batch) == 0);
+        d2h_deliver_init(&out->d2h_deliver,
+                         out->compress_agg.levels,
+                         out->levels.nlod,
+                         out->streams.compute) == 0);
+
   CHECK(FailPhase2, init_batch_events(&out->batch, out->streams.compute) == 0);
   if (out->levels.enable_multiscale) {
     CHECK(FailPhase2,
@@ -945,11 +622,8 @@ tile_stream_gpu_create(const struct tile_stream_configuration* config)
       CHECK(FailPhase2,
             lod_state_init_accumulators(&out->lod, &out->config) == 0);
   }
-  CHECK(
-    FailPhase2,
-    seed_events(
-      &out->stage, &out->pools, &out->flush, &out->lod, out->streams.compute) ==
-      0);
+  CHECK(FailPhase2,
+        seed_events(&out->pools, &out->lod, out->streams.compute) == 0);
 
   CU(FailPhase2, cuStreamSynchronize(out->streams.compute));
 
@@ -997,10 +671,10 @@ tile_stream_gpu_status(const struct tile_stream_gpu* s)
     .nlod = s->levels.nlod,
     .dim0_downsample = s->levels.dim0_downsample,
     .epochs_per_batch = s->batch.epochs_per_batch,
-    .max_compressed_size = s->codec.max_output_size,
+    .max_compressed_size = s->compress_agg.codec.max_output_size,
     .bytes_per_element = s->config.bytes_per_element,
     .codec = s->config.codec,
-    .codec_batch_size = s->codec.batch_size,
+    .codec_batch_size = s->compress_agg.codec.batch_size,
   };
 }
 
@@ -1032,38 +706,26 @@ tile_stream_gpu_memory_estimate(const struct tile_stream_configuration* config,
   const int nlod = cl.levels.nlod;
   const size_t max_output_size = cl.max_output_size;
 
-  // --- Codec workspace ---
-
   const size_t chunk_bytes = tile_stride * bpe;
   const uint64_t codec_batch = (uint64_t)K * total_tiles;
   const size_t nvcomp_temp =
     codec_temp_bytes(config->codec, chunk_bytes, codec_batch);
 
-  // --- Tally: staging (device + host pinned) ---
-
   const size_t staging_bytes = 2 * buffer_capacity_bytes;
   const size_t staging_host = 2 * buffer_capacity_bytes;
-
-  // --- Tally: tile pools (device) ---
 
   const size_t tile_pool_bytes =
     2 * (uint64_t)K * total_tiles * tile_stride * bpe;
 
-  // --- Tally: compressed pool in flush slots (device) ---
-
   const size_t compressed_pool_bytes =
     2 * (uint64_t)K * total_tiles * max_output_size;
-
-  // --- Tally: codec device arrays ---
 
   size_t codec_bytes = 0;
   codec_bytes += codec_batch * sizeof(size_t); // d_comp_sizes
   codec_bytes += codec_batch * sizeof(size_t); // d_uncomp_sizes
   if (config->codec != CODEC_NONE)
     codec_bytes += 2 * codec_batch * sizeof(void*); // d_ptrs
-  codec_bytes += nvcomp_temp;                       // d_temp
-
-  // --- Tally: aggregate (device + host pinned) ---
+  codec_bytes += nvcomp_temp;
 
   size_t aggregate_device = 0;
   size_t aggregate_host = 0;
@@ -1075,7 +737,7 @@ tile_stream_gpu_memory_estimate(const struct tile_stream_configuration* config,
 
     uint32_t batch_count = li->batch_active_count;
     if (batch_count == 0)
-      batch_count = 1; // infrequent dim0 levels still size for 1
+      batch_count = 1;
 
     uint64_t batch_tiles = (uint64_t)batch_count * cl.levels.tile_count[lv];
     uint64_t batch_covering = (uint64_t)batch_count * covering_count;
@@ -1085,86 +747,71 @@ tile_stream_gpu_memory_estimate(const struct tile_stream_configuration* config,
                                             tps_inner_lv,
                                             config->shard_alignment);
 
-    // aggregate_layout: device lifted shape + strides
     size_t agg_layout_dev =
       2 * (rank - 1) * sizeof(uint64_t) + 2 * (rank - 1) * sizeof(int64_t);
 
-    // aggregate_slot x 2: device arrays (batch-sized)
-    size_t slot_dev = (batch_covering + 1) * sizeof(size_t) // d_permuted_sizes
-                      + (batch_covering + 1) * sizeof(size_t) // d_offsets
-                      + batch_tiles * sizeof(uint32_t)        // d_perm
-                      + batch_agg_bytes;                      // d_aggregated
+    size_t slot_dev = (batch_covering + 1) * sizeof(size_t)
+                      + (batch_covering + 1) * sizeof(size_t)
+                      + batch_tiles * sizeof(uint32_t)
+                      + batch_agg_bytes;
 
-    // aggregate_slot x 2: host pinned (batch-sized)
-    size_t slot_host = batch_agg_bytes                         // h_aggregated
-                       + (batch_covering + 1) * sizeof(size_t) // h_offsets
-                       + batch_covering * sizeof(size_t); // h_permuted_sizes
+    size_t slot_host = batch_agg_bytes
+                       + (batch_covering + 1) * sizeof(size_t)
+                       + batch_covering * sizeof(size_t);
 
-    // Batch LUTs (per level, if K > 1)
     size_t lut_dev = 0;
     if (K > 1)
-      lut_dev = batch_tiles * sizeof(uint32_t) * 2; // gather + perm
+      lut_dev = batch_tiles * sizeof(uint32_t) * 2;
 
     aggregate_device += agg_layout_dev + 2 * slot_dev + lut_dev;
     aggregate_host += 2 * slot_host;
   }
 
-  // --- Tally: LOD buffers + shape arrays (device) ---
-
   size_t lod_device = 0;
 
-  // L0 layout arrays (always present)
-  lod_device += 2 * rank * sizeof(uint64_t); // d_lifted_shape
-  lod_device += 2 * rank * sizeof(int64_t);  // d_lifted_strides
+  lod_device += 2 * rank * sizeof(uint64_t);
+  lod_device += 2 * rank * sizeof(int64_t);
 
   if (cl.levels.enable_multiscale) {
     const struct lod_plan* plan = &cl.plan;
 
-    // d_linear + d_morton
     lod_device += cl.l0.epoch_elements * bpe;
     uint64_t total_lod_vals = plan->levels.ends[plan->nlod - 1];
     lod_device += total_lod_vals * bpe;
 
-    // Global shape arrays
-    lod_device += rank * sizeof(uint64_t); // d_full_shape
+    lod_device += rank * sizeof(uint64_t);
     if (plan->lod_ndim > 0)
-      lod_device += plan->lod_ndim * sizeof(uint64_t); // d_lod_shape
+      lod_device += plan->lod_ndim * sizeof(uint64_t);
 
-    // Gather LUT + batch offsets
     if (plan->lod_ndim > 0) {
-      lod_device += plan->lod_counts[0] * sizeof(uint32_t); // d_gather_lut
-      lod_device += plan->batch_count * sizeof(uint32_t);   // d_batch_offsets
+      lod_device += plan->lod_counts[0] * sizeof(uint32_t);
+      lod_device += plan->batch_count * sizeof(uint32_t);
     }
 
-    // Per reduce-level arrays (0..nlod-2)
     for (int l = 0; l < plan->nlod - 1; ++l) {
-      lod_device += plan->lod_ndim * sizeof(uint64_t); // d_child_shapes
-      lod_device += plan->lod_ndim * sizeof(uint64_t); // d_parent_shapes
+      lod_device += plan->lod_ndim * sizeof(uint64_t);
+      lod_device += plan->lod_ndim * sizeof(uint64_t);
 
       struct lod_span seg = lod_segment(plan, l);
       uint64_t n_parents = lod_span_len(seg);
-      lod_device += n_parents * sizeof(uint64_t); // d_level_ends
+      lod_device += n_parents * sizeof(uint64_t);
     }
 
-    // Per LOD level (1..nlod-1): layout + shape arrays
     for (int lv = 1; lv < plan->nlod; ++lv) {
-      lod_device += 2 * rank * sizeof(uint64_t); // d_lifted_shape
-      lod_device += 2 * rank * sizeof(int64_t);  // d_lifted_strides
+      lod_device += 2 * rank * sizeof(uint64_t);
+      lod_device += 2 * rank * sizeof(int64_t);
     }
 
-    // Dim0 accumulator: single buffer + level-ID LUT + counts
     if (cl.levels.dim0_downsample) {
       size_t accum_bpe = lod_accum_bpe(bpe, config->dim0_reduce_method);
       uint64_t total_elems = 0;
       for (int lv = 1; lv < plan->nlod; ++lv)
         total_elems += plan->batch_count * plan->lod_counts[lv];
-      lod_device += total_elems * accum_bpe;                 // d_accum
-      lod_device += total_elems;                             // d_level_ids (u8)
-      lod_device += (uint64_t)plan->nlod * sizeof(uint32_t); // d_counts
+      lod_device += total_elems * accum_bpe;
+      lod_device += total_elems;
+      lod_device += (uint64_t)plan->nlod * sizeof(uint32_t);
     }
   }
-
-  // --- Sum totals ---
 
   info->staging_bytes = staging_bytes;
   info->tile_pool_bytes = tile_pool_bytes;

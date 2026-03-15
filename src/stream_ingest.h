@@ -2,6 +2,16 @@
 
 // Included via stream_internal.h — all internal types available above.
 
+// Allocate double-buffered staging buffers and events. Returns 0 on success.
+int
+ingest_init(struct staging_state* stage,
+            size_t buffer_capacity_bytes,
+            CUstream compute);
+
+// Free staging buffers and events.
+void
+ingest_destroy(struct staging_state* stage);
+
 // H2D transfer + scatter into tile pool.
 // pool_epoch: pointer to the target epoch's tile region in the pool.
 // pool_ready: event to record after scatter completes.

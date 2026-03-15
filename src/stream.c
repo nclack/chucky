@@ -32,8 +32,9 @@ make_flush_context(struct tile_stream_gpu* s)
 {
   return (struct flush_context){
     .flush = &s->flush,
+    .compress_agg = &s->compress_agg,
+    .d2h_deliver = &s->d2h_deliver,
     .levels = &s->levels,
-    .codec = &s->codec,
     .batch = &s->batch,
     .pools = &s->pools,
     .lod = &s->lod,
@@ -68,108 +69,6 @@ dispatch_ingest(struct tile_stream_gpu* s)
                                    s->streams.h2d,
                                    s->streams.compute);
   }
-}
-
-// --- LOD ---
-
-// Run LOD pipeline for the current epoch, or handle non-multiscale case.
-// Updates flush slot batch_active_masks and active_levels_mask.
-static int
-run_lod_for_epoch(struct tile_stream_gpu* s)
-{
-  struct flush_slot_gpu* fs = &s->flush.slot[s->pools.current];
-  uint32_t active_mask;
-
-  if (!s->levels.enable_multiscale || !s->lod.d_linear) {
-    // Non-multiscale: all levels (just L0) are active
-    active_mask = 1;
-  } else {
-    CHECK(Error,
-          lod_run_epoch(&s->lod,
-                        &s->levels,
-                        &s->layout,
-                        current_pool_epoch(s, s->batch.accumulated),
-                        s->config.bytes_per_element,
-                        s->config.reduce_method,
-                        s->config.dim0_reduce_method,
-                        s->streams.compute,
-                        &active_mask) == 0);
-  }
-
-  fs->batch_active_masks[s->batch.accumulated] = active_mask;
-  fs->active_levels_mask |= active_mask;
-  return 0;
-
-Error:
-  return 1;
-}
-
-// --- Orchestrator ---
-
-// Drain previous flush, kick async pipeline on completed pool,
-// swap to fresh pool, reset batch state.
-static struct writer_result
-drain_kick_and_swap(struct tile_stream_gpu* s)
-{
-  const uint32_t K = s->batch.epochs_per_batch;
-  const int completed_pool = s->pools.current;
-  struct flush_slot_gpu* fs = &s->flush.slot[completed_pool];
-  struct flush_context fctx = make_flush_context(s);
-
-  // Wait for any previous flush to finish delivery
-  struct writer_result r = flush_drain_pending(&fctx);
-  if (r.error)
-    return r;
-
-  // Launch async compress->aggregate->D2H on completed pool
-  fs->batch_epoch_count = (int)s->batch.accumulated;
-  if (flush_kick_batch(&fctx, completed_pool, s->batch.accumulated))
-    return writer_error();
-
-  // Swap to fresh pool and zero it for next batch
-  s->pools.current ^= 1;
-  size_t pool_bytes = (uint64_t)K * s->levels.total_tiles *
-                      s->layout.tile_stride * s->config.bytes_per_element;
-  CU(Error,
-     cuMemsetD8Async(
-       s->pools.buf[s->pools.current], 0, pool_bytes, s->streams.compute));
-
-  // Reset batch accumulation
-  s->batch.accumulated = 0;
-  s->flush.slot[s->pools.current].active_levels_mask = 0;
-  memset(s->flush.slot[s->pools.current].batch_active_masks,
-         0,
-         sizeof(s->flush.slot[s->pools.current].batch_active_masks));
-
-  // Mark completed pool as pending delivery
-  s->flush.pending = 1;
-  s->flush.current = completed_pool;
-  return writer_ok();
-
-Error:
-  return writer_error();
-}
-
-// Accumulate one epoch into the current batch, or flush when batch is full.
-// Called at each epoch boundary.
-static struct writer_result
-accumulate_epoch_or_flush(struct tile_stream_gpu* s)
-{
-  if (run_lod_for_epoch(s))
-    return writer_error();
-
-  CU(Error,
-     cuEventRecord(s->batch.pool_events[s->batch.accumulated],
-                   s->streams.compute));
-  s->batch.accumulated++;
-
-  if (s->batch.accumulated < s->batch.epochs_per_batch)
-    return writer_ok();
-
-  return drain_kick_and_swap(s);
-
-Error:
-  return writer_error();
 }
 
 struct stream_metrics
@@ -265,7 +164,8 @@ tile_stream_gpu_append(struct writer* self, struct slice input)
     src += bytes_this_pass;
 
     if (s->cursor % s->layout.epoch_elements == 0 && s->cursor > 0) {
-      struct writer_result fr = accumulate_epoch_or_flush(s);
+      struct flush_context fctx = make_flush_context(s);
+      struct writer_result fr = flush_accumulate_epoch(&fctx);
       if (fr.error)
         return writer_error_at(src, end);
     }
@@ -299,12 +199,12 @@ tile_stream_gpu_flush(struct writer* self)
   // Flush any partial epoch first (sub-epoch data)
   if (s->cursor % s->layout.epoch_elements != 0) {
     // run_lod + record pool event + increment epochs_accumulated
-    if (run_lod_for_epoch(s))
+    if (flush_run_epoch_lod(&fctx))
       return writer_error();
     CU(Error,
-       cuEventRecord(s->batch.pool_events[s->batch.accumulated],
-                     s->streams.compute));
-    s->batch.accumulated++;
+       cuEventRecord(fctx.batch->pool_events[fctx.batch->accumulated],
+                     fctx.streams.compute));
+    fctx.batch->accumulated++;
   }
 
   // Flush any accumulated epochs (partial batch)
@@ -321,15 +221,15 @@ tile_stream_gpu_flush(struct writer* self)
   // since emit_shards resets epoch_in_shard and increments shard_epoch.
   uint64_t dim0_tiles[LOD_MAX_LEVELS];
   for (int lv = 0; lv < s->levels.nlod; ++lv) {
-    struct shard_state* ss = &s->flush.levels[lv].shard;
+    struct shard_state* ss = &s->compress_agg.levels[lv].shard;
     dim0_tiles[lv] =
       ss->shard_epoch * ss->tiles_per_shard_0 + ss->epoch_in_shard;
   }
 
   // Emit partial shards for all levels
   for (int lv = 0; lv < s->levels.nlod; ++lv) {
-    if (s->flush.levels[lv].shard.epoch_in_shard > 0) {
-      if (emit_shards(&s->flush.levels[lv].shard, s->config.shard_alignment))
+    if (s->compress_agg.levels[lv].shard.epoch_in_shard > 0) {
+      if (emit_shards(&s->compress_agg.levels[lv].shard, s->config.shard_alignment))
         return writer_error();
     }
   }

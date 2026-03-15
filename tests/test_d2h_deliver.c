@@ -1,0 +1,794 @@
+#include "stream_internal.h"
+
+#include "prelude.cuda.h"
+#include "prelude.h"
+
+#include <stdlib.h>
+#include <string.h>
+#include <zstd.h>
+
+// ---------------------------------------------------------------------------
+// Test shard sink: counting + memory sink
+// ---------------------------------------------------------------------------
+
+struct test_shard_sink
+{
+  struct shard_sink base;
+  struct
+  {
+    struct shard_writer base;
+    uint8_t* buf;
+    size_t capacity;
+    size_t size;
+  } writer;
+  int open_count;
+  int finalize_count;
+};
+
+static int
+test_sink_write(struct shard_writer* self,
+                uint64_t offset,
+                const void* beg,
+                const void* end)
+{
+  struct test_shard_sink* sink =
+    (struct test_shard_sink*)((char*)self -
+                              offsetof(struct test_shard_sink, writer));
+  size_t nbytes = (size_t)((const char*)end - (const char*)beg);
+  if (offset + nbytes > sink->writer.capacity)
+    return 1;
+  memcpy(sink->writer.buf + offset, beg, nbytes);
+  if (offset + nbytes > sink->writer.size)
+    sink->writer.size = offset + nbytes;
+  return 0;
+}
+
+static int
+test_sink_finalize(struct shard_writer* self)
+{
+  struct test_shard_sink* sink =
+    (struct test_shard_sink*)((char*)self -
+                              offsetof(struct test_shard_sink, writer));
+  sink->finalize_count++;
+  return 0;
+}
+
+static struct shard_writer*
+test_sink_open(struct shard_sink* self, uint8_t level, uint64_t shard_index)
+{
+  (void)level;
+  (void)shard_index;
+  struct test_shard_sink* s = (struct test_shard_sink*)self;
+  s->open_count++;
+  return &s->writer.base;
+}
+
+static void
+test_sink_init(struct test_shard_sink* s, size_t capacity)
+{
+  memset(s, 0, sizeof(*s));
+  s->base.open = test_sink_open;
+  s->writer.base.write = test_sink_write;
+  s->writer.base.finalize = test_sink_finalize;
+  s->writer.buf = (uint8_t*)calloc(1, capacity);
+  s->writer.capacity = capacity;
+}
+
+static void
+test_sink_free(struct test_shard_sink* s)
+{
+  free(s->writer.buf);
+  memset(s, 0, sizeof(*s));
+}
+
+// ---------------------------------------------------------------------------
+// Helpers (from test_compress_agg.c)
+// ---------------------------------------------------------------------------
+
+static int
+make_test_config(struct tile_stream_configuration* config,
+                 struct dimension* dims,
+                 enum compression_codec codec,
+                 uint8_t epochs_per_batch)
+{
+  dims[0] = (struct dimension){
+    .size = 4, .tile_size = 2, .tiles_per_shard = 2, .storage_position = 0
+  };
+  dims[1] = (struct dimension){
+    .size = 4, .tile_size = 2, .tiles_per_shard = 2, .storage_position = 1
+  };
+  dims[2] = (struct dimension){
+    .size = 6, .tile_size = 3, .tiles_per_shard = 2, .storage_position = 2
+  };
+
+  memset(config, 0, sizeof(*config));
+  config->rank = 3;
+  config->dimensions = dims;
+  config->bytes_per_element = 2;
+  config->buffer_capacity_bytes = 4096;
+  config->codec = codec;
+  config->shard_alignment = 0;
+  config->epochs_per_batch = epochs_per_batch;
+  return 0;
+}
+
+static int
+fill_pool_epoch(CUdeviceptr pool_buf,
+                uint64_t tiles,
+                uint64_t tile_stride,
+                size_t bpe,
+                uint16_t (*fill_fn)(uint64_t tile))
+{
+  size_t epoch_bytes = tiles * tile_stride * bpe;
+  uint16_t* h = (uint16_t*)malloc(epoch_bytes);
+  CHECK(Fail, h);
+  memset(h, 0, epoch_bytes);
+
+  for (uint64_t t = 0; t < tiles; ++t) {
+    uint16_t val = fill_fn(t);
+    uint16_t* tile_data = h + t * tile_stride;
+    for (uint64_t e = 0; e < tile_stride; ++e)
+      tile_data[e] = val;
+  }
+
+  CU(Fail, cuMemcpyHtoD(pool_buf, h, epoch_bytes));
+  free(h);
+  return 0;
+
+Fail:
+  free(h);
+  return 1;
+}
+
+static uint16_t
+fill_epoch0(uint64_t t)
+{
+  return (uint16_t)(t + 1);
+}
+
+static uint16_t
+fill_epoch1(uint64_t t)
+{
+  return (uint16_t)(t + 100);
+}
+
+// CPU reference permutation (same as GPU kernel).
+static uint32_t
+cpu_perm(uint64_t i,
+         uint8_t lifted_rank,
+         const uint64_t* shape,
+         const int64_t* strides)
+{
+  uint64_t out = 0;
+  uint64_t rest = i;
+  for (int d = lifted_rank - 1; d >= 0; --d) {
+    uint64_t coord = rest % shape[d];
+    rest /= shape[d];
+    out += coord * (uint64_t)strides[d];
+  }
+  return (uint32_t)out;
+}
+
+// ---------------------------------------------------------------------------
+// Common setup: compress_agg + d2h_deliver stages, tile pool, fill, kick both.
+// Returns 0 on success, populates out_handoff.
+// ---------------------------------------------------------------------------
+
+struct test_ctx
+{
+  struct computed_stream_layouts cl;
+  struct compress_agg_stage ca;
+  struct d2h_deliver_stage d2h;
+  CUstream compute;
+  CUstream d2h_stream;
+  CUdeviceptr d_pool;
+  CUevent epoch_events[2];
+  struct batch_state batch;
+  struct stream_metrics metrics;
+  struct lod_state lod;
+  struct platform_clock metadata_clock;
+  int ca_inited;
+  int d2h_inited;
+};
+
+static void
+test_ctx_init(struct test_ctx* c)
+{
+  memset(c, 0, sizeof(*c));
+}
+
+static void
+test_ctx_destroy(struct test_ctx* c)
+{
+  if (c->d2h_inited)
+    d2h_deliver_destroy(&c->d2h);
+  if (c->ca_inited)
+    compress_agg_destroy(&c->ca, c->cl.levels.nlod);
+  computed_stream_layouts_free(&c->cl);
+  cu_mem_free(c->d_pool);
+  for (int i = 0; i < 2; ++i)
+    cu_event_destroy(c->epoch_events[i]);
+  cu_stream_destroy(c->compute);
+  cu_stream_destroy(c->d2h_stream);
+}
+
+// Setup: compute layouts, init compress_agg + d2h_deliver, allocate pool.
+// n_pool_epochs: how many epochs of tile pool to allocate.
+static int
+test_ctx_setup(struct test_ctx* c,
+               struct tile_stream_configuration* config,
+               int n_pool_epochs)
+{
+  CHECK(Fail, compute_stream_layouts(config, &c->cl) == 0);
+
+  CU(Fail, cuStreamCreate(&c->compute, CU_STREAM_NON_BLOCKING));
+  CU(Fail, cuStreamCreate(&c->d2h_stream, CU_STREAM_NON_BLOCKING));
+
+  CHECK(Fail, compress_agg_init(&c->ca, &c->cl, config, c->compute) == 0);
+  c->ca_inited = 1;
+
+  CHECK(Fail,
+        d2h_deliver_init(
+          &c->d2h, c->ca.levels, c->cl.levels.nlod, c->compute) == 0);
+  c->d2h_inited = 1;
+
+  size_t pool_bytes = (uint64_t)n_pool_epochs * c->cl.levels.total_tiles *
+                      c->cl.l0.tile_stride * config->bytes_per_element;
+  CU(Fail, cuMemAlloc(&c->d_pool, pool_bytes));
+
+  c->batch = (struct batch_state){
+    .epochs_per_batch = c->cl.epochs_per_batch,
+    .accumulated = 0,
+  };
+
+  memset(&c->metrics, 0, sizeof(c->metrics));
+  c->metrics.compress.best_ms = 1e30f;
+  c->metrics.aggregate.best_ms = 1e30f;
+  c->metrics.d2h.best_ms = 1e30f;
+  c->metrics.sink.best_ms = 1e30f;
+  c->metrics.lod_gather.best_ms = 1e30f;
+
+  memset(&c->lod, 0, sizeof(c->lod));
+  memset(&c->metadata_clock, 0, sizeof(c->metadata_clock));
+
+  return 0;
+
+Fail:
+  return 1;
+}
+
+// Run compress_agg_kick + d2h_deliver_kick + d2h_deliver_drain for a batch.
+static int
+test_ctx_kick_and_drain(struct test_ctx* c,
+                        const struct tile_stream_configuration* config,
+                        int fc,
+                        uint32_t n_epochs,
+                        struct flush_handoff* handoff)
+{
+  struct compress_agg_input in = {
+    .fc = fc,
+    .n_epochs = n_epochs,
+    .active_levels_mask = 0x1,
+    .pool_buf = c->d_pool,
+    .epochs_per_batch = c->cl.epochs_per_batch,
+    .lod_done = 0,
+  };
+  for (uint32_t i = 0; i < n_epochs; ++i) {
+    in.batch_active_masks[i] = 0x1;
+    in.epoch_events[i] = c->epoch_events[i];
+  }
+
+  memset(handoff, 0, sizeof(*handoff));
+
+  CHECK(Fail,
+        compress_agg_kick(
+          &c->ca, &in, &c->cl.levels, &c->batch, c->compute, handoff) == 0);
+
+  CHECK(Fail,
+        d2h_deliver_kick(
+          &c->d2h, handoff, &c->cl.levels, &c->batch, config,
+          c->d2h_stream) == 0);
+
+  struct writer_result r = d2h_deliver_drain(
+    &c->d2h, handoff, &c->cl.levels, &c->batch, &c->cl.l0, config, &c->lod,
+    &c->metrics, &c->metadata_clock);
+  CHECK(Fail, r.error == 0);
+
+  return 0;
+
+Fail:
+  return 1;
+}
+
+// ---------------------------------------------------------------------------
+// Test 1: CODEC_NONE, K=1, single epoch — data arrives in sink
+// ---------------------------------------------------------------------------
+static int
+test_d2h_single_epoch_none(void)
+{
+  log_info("=== test_d2h_single_epoch_none ===");
+
+  struct dimension dims[3];
+  struct tile_stream_configuration config;
+  make_test_config(&config, dims, CODEC_NONE, 1);
+
+  struct test_shard_sink sink;
+  test_sink_init(&sink, 512 * 1024);
+  config.shard_sink = &sink.base;
+
+  struct test_ctx c;
+  test_ctx_init(&c);
+  int ok = 0;
+
+  CHECK(Fail, test_ctx_setup(&c, &config, 1) == 0);
+
+  const uint64_t total_tiles = c.cl.levels.total_tiles;
+  const uint64_t tile_stride = c.cl.l0.tile_stride;
+  const size_t bpe = config.bytes_per_element;
+  const size_t tile_bytes = tile_stride * bpe;
+
+  log_info("  total_tiles=%lu tile_stride=%lu tile_bytes=%zu",
+           (unsigned long)total_tiles, (unsigned long)tile_stride, tile_bytes);
+
+  // Fill pool with epoch 0 data
+  CHECK(Fail, fill_pool_epoch(c.d_pool, total_tiles, tile_stride, bpe,
+                              fill_epoch0) == 0);
+
+  // Create and record epoch event
+  CU(Fail, cuEventCreate(&c.epoch_events[0], CU_EVENT_DEFAULT));
+  CU(Fail, cuEventRecord(c.epoch_events[0], c.compute));
+
+  // Kick compress_agg + D2H + drain
+  struct flush_handoff handoff;
+  CHECK(Fail, test_ctx_kick_and_drain(&c, &config, 0, 1, &handoff) == 0);
+
+  // Verify sink state
+  CHECK(Fail, sink.open_count == 1); // shard_inner_count=1
+  CHECK(Fail, sink.finalize_count == 0); // tps_0=2, need 2 epochs
+
+  // Verify metrics
+  CHECK(Fail, c.metrics.d2h.count == 1);
+  CHECK(Fail, c.metrics.compress.count == 1);
+  CHECK(Fail, c.metrics.aggregate.count == 1);
+  CHECK(Fail, c.metrics.sink.count == 1);
+  CHECK(Fail, c.metrics.lod_gather.count == 0);
+
+  // Verify tile data via shard index entries
+  {
+    struct shard_state* ss = &c.ca.levels[0].shard;
+    struct active_shard* sh = &ss->shards[0];
+    const struct aggregate_layout* al = &c.ca.levels[0].agg_layout;
+
+    int errors = 0;
+    for (uint64_t t = 0; t < total_tiles; ++t) {
+      uint32_t pi = cpu_perm(t, al->lifted_rank, al->lifted_shape,
+                             al->lifted_strides);
+      uint64_t tile_off = sh->index[2 * pi];
+      uint64_t tile_sz = sh->index[2 * pi + 1];
+
+      if (tile_sz != tile_bytes) {
+        if (errors < 5)
+          log_error("  tile %lu: size=%lu expected=%zu", (unsigned long)t,
+                    (unsigned long)tile_sz, tile_bytes);
+        errors++;
+        continue;
+      }
+
+      uint16_t expected_val = fill_epoch0(t);
+      const uint16_t* got = (const uint16_t*)(sink.writer.buf + tile_off);
+      for (uint64_t e = 0; e < tile_stride; ++e) {
+        if (got[e] != expected_val) {
+          if (errors < 5)
+            log_error("  tile %lu elem %lu: expected %u got %u",
+                      (unsigned long)t, (unsigned long)e, expected_val,
+                      got[e]);
+          errors++;
+        }
+      }
+    }
+    CHECK(Fail, errors == 0);
+  }
+
+  ok = 1;
+
+Fail:
+  test_ctx_destroy(&c);
+  test_sink_free(&sink);
+  log_info("  %s", ok ? "PASS" : "FAIL");
+  return ok ? 0 : 1;
+}
+
+// ---------------------------------------------------------------------------
+// Test 2: CODEC_NONE, K=2, full batch → shard finalized
+// ---------------------------------------------------------------------------
+static int
+test_d2h_batch_none(void)
+{
+  log_info("=== test_d2h_batch_none ===");
+
+  struct dimension dims[3];
+  struct tile_stream_configuration config;
+  make_test_config(&config, dims, CODEC_NONE, 2);
+
+  struct test_shard_sink sink;
+  test_sink_init(&sink, 512 * 1024);
+  config.shard_sink = &sink.base;
+
+  struct test_ctx c;
+  test_ctx_init(&c);
+  int ok = 0;
+
+  CHECK(Fail, test_ctx_setup(&c, &config, 2) == 0);
+  CHECK(Fail, c.cl.epochs_per_batch == 2);
+
+  const uint64_t total_tiles = c.cl.levels.total_tiles;
+  const uint64_t tile_stride = c.cl.l0.tile_stride;
+  const size_t bpe = config.bytes_per_element;
+  const size_t tile_bytes = tile_stride * bpe;
+
+  // Fill pool: epoch 0 and epoch 1
+  size_t epoch_pool_bytes = total_tiles * tile_stride * bpe;
+  CHECK(Fail, fill_pool_epoch(c.d_pool, total_tiles, tile_stride, bpe,
+                              fill_epoch0) == 0);
+  CHECK(Fail, fill_pool_epoch(c.d_pool + epoch_pool_bytes, total_tiles,
+                              tile_stride, bpe, fill_epoch1) == 0);
+
+  for (int i = 0; i < 2; ++i) {
+    CU(Fail, cuEventCreate(&c.epoch_events[i], CU_EVENT_DEFAULT));
+    CU(Fail, cuEventRecord(c.epoch_events[i], c.compute));
+  }
+
+  // Kick with 2 epochs
+  struct flush_handoff handoff;
+  CHECK(Fail, test_ctx_kick_and_drain(&c, &config, 0, 2, &handoff) == 0);
+
+  // tps_0=2, 2 epochs → shard complete
+  CHECK(Fail, sink.finalize_count == 1);
+  CHECK(Fail, c.metrics.d2h.count == 1);
+
+  // Parse finalized shard: index block at end
+  // tiles_per_shard_total = 8, index = 8 * 16 bytes + 4 byte CRC
+  {
+    struct shard_state* ss = &c.ca.levels[0].shard;
+    uint64_t tps_total = ss->tiles_per_shard_total;
+    size_t index_data_bytes = tps_total * 2 * sizeof(uint64_t);
+    size_t index_total_bytes = index_data_bytes + 4;
+
+    CHECK(Fail, sink.writer.size >= index_total_bytes);
+    size_t index_start = sink.writer.size - index_total_bytes;
+
+    const uint64_t* idx =
+      (const uint64_t*)(sink.writer.buf + index_start);
+
+    // The batch LUT aggregate interleaves epochs: output position =
+    // perm_pos * batch_count + epoch. deliver_to_shards_batch reads
+    // them linearly, so shard index slot_idx maps as:
+    //   perm_pos = slot_idx / batch_count
+    //   epoch    = slot_idx % batch_count
+    const struct aggregate_layout* al = &c.ca.levels[0].agg_layout;
+    uint32_t batch_count = c.ca.levels[0].batch_active_count;
+    uint64_t tiles_lv = c.cl.levels.tile_count[0];
+
+    // Build inverse perm: inv_perm[perm_pos] = original tile j
+    uint32_t* inv_perm = (uint32_t*)malloc(tiles_lv * sizeof(uint32_t));
+    CHECK(Fail, inv_perm);
+    for (uint64_t j = 0; j < tiles_lv; ++j) {
+      uint32_t pp = cpu_perm(j, al->lifted_rank, al->lifted_shape,
+                             al->lifted_strides);
+      inv_perm[pp] = (uint32_t)j;
+    }
+
+    int errors = 0;
+    for (uint64_t slot = 0; slot < tps_total; ++slot) {
+      uint64_t perm_pos = slot / batch_count;
+      uint32_t epoch = (uint32_t)(slot % batch_count);
+      uint16_t (*fill_fn)(uint64_t) =
+        (epoch == 0) ? fill_epoch0 : fill_epoch1;
+      uint32_t orig_tile = inv_perm[perm_pos];
+
+      uint64_t tile_off = idx[2 * slot];
+      uint64_t tile_sz = idx[2 * slot + 1];
+
+      if (tile_sz != tile_bytes) {
+        if (errors < 5)
+          log_error("  slot %lu (epoch %u tile %u): size=%lu expected=%zu",
+                    (unsigned long)slot, epoch, orig_tile,
+                    (unsigned long)tile_sz, tile_bytes);
+        errors++;
+        continue;
+      }
+
+      uint16_t expected_val = fill_fn(orig_tile);
+      const uint16_t* got = (const uint16_t*)(sink.writer.buf + tile_off);
+      for (uint64_t e = 0; e < tile_stride; ++e) {
+        if (got[e] != expected_val) {
+          if (errors < 5)
+            log_error(
+              "  slot %lu (epoch %u tile %u) elem %lu: expected %u got %u",
+              (unsigned long)slot, epoch, orig_tile, (unsigned long)e,
+              expected_val, got[e]);
+          errors++;
+        }
+      }
+    }
+    free(inv_perm);
+    CHECK(Fail, errors == 0);
+  }
+
+  ok = 1;
+
+Fail:
+  test_ctx_destroy(&c);
+  test_sink_free(&sink);
+  log_info("  %s", ok ? "PASS" : "FAIL");
+  return ok ? 0 : 1;
+}
+
+// ---------------------------------------------------------------------------
+// Test 3: CODEC_ZSTD, K=1, single epoch — compressed data arrives
+// ---------------------------------------------------------------------------
+static int
+test_d2h_zstd_single_epoch(void)
+{
+  log_info("=== test_d2h_zstd_single_epoch ===");
+
+  struct dimension dims[3];
+  struct tile_stream_configuration config;
+  make_test_config(&config, dims, CODEC_ZSTD, 1);
+
+  struct test_shard_sink sink;
+  test_sink_init(&sink, 512 * 1024);
+  config.shard_sink = &sink.base;
+
+  struct test_ctx c;
+  test_ctx_init(&c);
+  uint8_t* decomp_buf = NULL;
+  int ok = 0;
+
+  CHECK(Fail, test_ctx_setup(&c, &config, 1) == 0);
+
+  const uint64_t total_tiles = c.cl.levels.total_tiles;
+  const uint64_t tile_stride = c.cl.l0.tile_stride;
+  const size_t bpe = config.bytes_per_element;
+  const size_t tile_bytes = tile_stride * bpe;
+
+  CHECK(Fail, fill_pool_epoch(c.d_pool, total_tiles, tile_stride, bpe,
+                              fill_epoch0) == 0);
+
+  CU(Fail, cuEventCreate(&c.epoch_events[0], CU_EVENT_DEFAULT));
+  CU(Fail, cuEventRecord(c.epoch_events[0], c.compute));
+
+  struct flush_handoff handoff;
+  CHECK(Fail, test_ctx_kick_and_drain(&c, &config, 0, 1, &handoff) == 0);
+
+  CHECK(Fail, sink.writer.size > 0);
+  CHECK(Fail, c.metrics.compress.count == 1);
+  CHECK(Fail, c.metrics.d2h.count == 1);
+
+  // Decompress and verify tile data
+  {
+    struct shard_state* ss = &c.ca.levels[0].shard;
+    struct active_shard* sh = &ss->shards[0];
+    const struct aggregate_layout* al = &c.ca.levels[0].agg_layout;
+
+    decomp_buf = (uint8_t*)malloc(tile_bytes);
+    CHECK(Fail, decomp_buf);
+
+    int errors = 0;
+    for (uint64_t t = 0; t < total_tiles; ++t) {
+      uint32_t pi = cpu_perm(t, al->lifted_rank, al->lifted_shape,
+                             al->lifted_strides);
+      uint64_t tile_off = sh->index[2 * pi];
+      uint64_t tile_sz = sh->index[2 * pi + 1];
+
+      CHECK(Fail, tile_sz > 0);
+      CHECK(Fail, tile_off + tile_sz <= sink.writer.size);
+
+      size_t result = ZSTD_decompress(decomp_buf, tile_bytes,
+                                      sink.writer.buf + tile_off, tile_sz);
+      if (ZSTD_isError(result)) {
+        log_error("  tile %lu: ZSTD_decompress failed: %s",
+                  (unsigned long)t, ZSTD_getErrorName(result));
+        errors++;
+        continue;
+      }
+      CHECK(Fail, result == tile_bytes);
+
+      uint16_t expected_val = fill_epoch0(t);
+      const uint16_t* got = (const uint16_t*)decomp_buf;
+      for (uint64_t e = 0; e < tile_stride; ++e) {
+        if (got[e] != expected_val) {
+          if (errors < 5)
+            log_error("  tile %lu elem %lu: expected %u got %u",
+                      (unsigned long)t, (unsigned long)e, expected_val,
+                      got[e]);
+          errors++;
+        }
+      }
+    }
+    CHECK(Fail, errors == 0);
+  }
+
+  ok = 1;
+
+Fail:
+  free(decomp_buf);
+  test_ctx_destroy(&c);
+  test_sink_free(&sink);
+  log_info("  %s", ok ? "PASS" : "FAIL");
+  return ok ? 0 : 1;
+}
+
+// ---------------------------------------------------------------------------
+// Test 4: Two consecutive kick+drain cycles (double buffer, fc=0 then fc=1)
+// ---------------------------------------------------------------------------
+static int
+test_d2h_double_buffer(void)
+{
+  log_info("=== test_d2h_double_buffer ===");
+
+  struct dimension dims[3];
+  struct tile_stream_configuration config;
+  make_test_config(&config, dims, CODEC_NONE, 1);
+
+  struct test_shard_sink sink;
+  test_sink_init(&sink, 512 * 1024);
+  config.shard_sink = &sink.base;
+
+  struct test_ctx c;
+  test_ctx_init(&c);
+  int ok = 0;
+
+  CHECK(Fail, test_ctx_setup(&c, &config, 2) == 0);
+
+  const uint64_t total_tiles = c.cl.levels.total_tiles;
+  const uint64_t tile_stride = c.cl.l0.tile_stride;
+  const size_t bpe = config.bytes_per_element;
+  const size_t tile_bytes = tile_stride * bpe;
+  size_t epoch_pool_bytes = total_tiles * tile_stride * bpe;
+
+  // Iteration 1: fc=0, fill with epoch0
+  CHECK(Fail, fill_pool_epoch(c.d_pool, total_tiles, tile_stride, bpe,
+                              fill_epoch0) == 0);
+  CU(Fail, cuEventCreate(&c.epoch_events[0], CU_EVENT_DEFAULT));
+  CU(Fail, cuEventRecord(c.epoch_events[0], c.compute));
+
+  {
+    struct flush_handoff handoff;
+    CHECK(Fail, test_ctx_kick_and_drain(&c, &config, 0, 1, &handoff) == 0);
+  }
+
+  CHECK(Fail, sink.finalize_count == 0); // 1 of 2 epochs
+  CHECK(Fail, c.metrics.d2h.count == 1);
+
+  // Iteration 2: fc=1, fill with epoch1
+  CHECK(Fail, fill_pool_epoch(c.d_pool + epoch_pool_bytes, total_tiles,
+                              tile_stride, bpe, fill_epoch1) == 0);
+  CU(Fail, cuEventCreate(&c.epoch_events[1], CU_EVENT_DEFAULT));
+  CU(Fail, cuEventRecord(c.epoch_events[1], c.compute));
+
+  // Need a fresh input pointing to epoch 1 data
+  {
+    struct compress_agg_input in = {
+      .fc = 1,
+      .n_epochs = 1,
+      .active_levels_mask = 0x1,
+      .pool_buf = c.d_pool + epoch_pool_bytes,
+      .epochs_per_batch = c.cl.epochs_per_batch,
+      .lod_done = 0,
+    };
+    in.batch_active_masks[0] = 0x1;
+    in.epoch_events[0] = c.epoch_events[1];
+
+    struct flush_handoff handoff;
+    memset(&handoff, 0, sizeof(handoff));
+
+    CHECK(Fail,
+          compress_agg_kick(
+            &c.ca, &in, &c.cl.levels, &c.batch, c.compute, &handoff) == 0);
+    CHECK(Fail,
+          d2h_deliver_kick(
+            &c.d2h, &handoff, &c.cl.levels, &c.batch, &config,
+            c.d2h_stream) == 0);
+
+    struct writer_result r = d2h_deliver_drain(
+      &c.d2h, &handoff, &c.cl.levels, &c.batch, &c.cl.l0, &config, &c.lod,
+      &c.metrics, &c.metadata_clock);
+    CHECK(Fail, r.error == 0);
+  }
+
+  CHECK(Fail, sink.finalize_count == 1); // shard complete
+  CHECK(Fail, c.metrics.d2h.count == 2);
+
+  // Parse finalized shard and verify both epochs' data
+  {
+    struct shard_state* ss = &c.ca.levels[0].shard;
+    uint64_t tps_total = ss->tiles_per_shard_total;
+    size_t index_data_bytes = tps_total * 2 * sizeof(uint64_t);
+    size_t index_total_bytes = index_data_bytes + 4;
+
+    CHECK(Fail, sink.writer.size >= index_total_bytes);
+    size_t index_start = sink.writer.size - index_total_bytes;
+    const uint64_t* idx =
+      (const uint64_t*)(sink.writer.buf + index_start);
+
+    const struct aggregate_layout* al = &c.ca.levels[0].agg_layout;
+    uint64_t tps_inner = ss->tiles_per_shard_inner;
+
+    int errors = 0;
+    for (int epoch = 0; epoch < 2; ++epoch) {
+      uint16_t (*fill_fn)(uint64_t) =
+        (epoch == 0) ? fill_epoch0 : fill_epoch1;
+      for (uint64_t j = 0; j < total_tiles; ++j) {
+        uint32_t pi = cpu_perm(j, al->lifted_rank, al->lifted_shape,
+                               al->lifted_strides);
+        uint64_t slot_idx = (uint64_t)epoch * tps_inner + pi;
+        uint64_t tile_off = idx[2 * slot_idx];
+        uint64_t tile_sz = idx[2 * slot_idx + 1];
+
+        if (tile_sz != tile_bytes) {
+          if (errors < 5)
+            log_error("  epoch %d tile %lu: size=%lu expected=%zu", epoch,
+                      (unsigned long)j, (unsigned long)tile_sz, tile_bytes);
+          errors++;
+          continue;
+        }
+
+        uint16_t expected_val = fill_fn(j);
+        const uint16_t* got = (const uint16_t*)(sink.writer.buf + tile_off);
+        for (uint64_t e = 0; e < tile_stride; ++e) {
+          if (got[e] != expected_val) {
+            if (errors < 5)
+              log_error(
+                "  epoch %d tile %lu elem %lu: expected %u got %u", epoch,
+                (unsigned long)j, (unsigned long)e, expected_val, got[e]);
+            errors++;
+          }
+        }
+      }
+    }
+    CHECK(Fail, errors == 0);
+  }
+
+  ok = 1;
+
+Fail:
+  test_ctx_destroy(&c);
+  test_sink_free(&sink);
+  log_info("  %s", ok ? "PASS" : "FAIL");
+  return ok ? 0 : 1;
+}
+
+// ---------------------------------------------------------------------------
+// main
+// ---------------------------------------------------------------------------
+
+int
+main(int ac, char* av[])
+{
+  (void)ac;
+  (void)av;
+
+  int ecode = 0;
+  CUcontext ctx = 0;
+  CUdevice dev;
+
+  CU(Fail, cuInit(0));
+  CU(Fail, cuDeviceGet(&dev, 0));
+  CU(Fail, cuCtxCreate(&ctx, 0, dev));
+
+  ecode |= test_d2h_single_epoch_none();
+  log_info("");
+  ecode |= test_d2h_batch_none();
+  log_info("");
+  ecode |= test_d2h_zstd_single_epoch();
+  log_info("");
+  ecode |= test_d2h_double_buffer();
+
+  cuCtxDestroy(ctx);
+  return ecode;
+
+Fail:
+  cuCtxDestroy(ctx);
+  return 1;
+}

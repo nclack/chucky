@@ -4,6 +4,20 @@
 #include "log/log.h"
 #include <cuda.h>
 
+#define CU(lbl, e)                                                             \
+  do {                                                                         \
+    CUresult res_ = (e);                                                       \
+    if (res_ != CUDA_SUCCESS &&                                                \
+        handle_curesult(LOG_ERROR, res_, __FILE__, __LINE__, #e)) {            \
+      goto lbl;                                                                \
+    }                                                                          \
+  } while (0)
+
+#define CUWARN(e)                                                              \
+  do {                                                                         \
+    handle_curesult(LOG_WARN, (e), __FILE__, __LINE__, #e);                    \
+  } while (0)
+
 #ifdef __cplusplus
 extern "C"
 {
@@ -33,19 +47,26 @@ extern "C"
     return 1;
   }
 
-#define CU(lbl, e)                                                             \
-  do {                                                                         \
-    CUresult res_ = (e);                                                       \
-    if (res_ != CUDA_SUCCESS &&                                                \
-        handle_curesult(LOG_ERROR, res_, __FILE__, __LINE__, #e)) {            \
-      goto lbl;                                                                \
-    }                                                                          \
-  } while (0)
-
-#define CUWARN(e)                                                              \
-  do {                                                                         \
-    handle_curesult(LOG_WARN, (e), __FILE__, __LINE__, #e);                    \
-  } while (0)
+  static inline void cu_event_destroy(CUevent e)
+  {
+    if (e)
+      cuEventDestroy(e);
+  }
+  static inline void cu_stream_destroy(CUstream s)
+  {
+    if (s)
+      cuStreamDestroy(s);
+  }
+  static inline void cu_mem_free(CUdeviceptr p)
+  {
+    if (p)
+      cuMemFree(p);
+  }
+  static inline void cu_mem_freehost(void* p)
+  {
+    if (p)
+      cuMemFreeHost(p);
+  }
 
 #ifdef __cplusplus
 }

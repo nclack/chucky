@@ -7,8 +7,9 @@
 struct flush_context
 {
   struct flush_pipeline* flush;
+  struct compress_agg_stage* compress_agg;
+  struct d2h_deliver_stage* d2h_deliver;
   const struct level_geometry* levels;
-  struct codec* codec;
   struct batch_state* batch;
   struct pool_state* pools;
   struct lod_state* lod;
@@ -35,3 +36,17 @@ flush_accumulated_sync(struct flush_context* ctx);
 // Drain partial dim0 accumulators on final flush.
 struct writer_result
 flush_partial_dim0(struct flush_context* ctx);
+
+// Compute active mask for current epoch (runs LOD if multiscale).
+// Updates flush slot active masks. Returns 0 on success.
+int
+flush_run_epoch_lod(struct flush_context* ctx);
+
+// Accumulate one epoch into the current batch:
+// 1. Compute epoch mask (LOD or all-active)
+// 2. Record pool event
+// 3. Increment batch.accumulated
+// 4. If batch full: drain pending, kick new flush, swap pools, reset
+// Returns writer_result.
+struct writer_result
+flush_accumulate_epoch(struct flush_context* ctx);

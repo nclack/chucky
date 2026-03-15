@@ -2,11 +2,22 @@
 
 ## TODO
 
+- [ ] interface for streaming from device, integrating with a cuda stream
+- [ ] u8, u32, i8, i16, i32
+- [ ] u64, i64, double?
+- [ ] ? f16
+- [ ] cpu impl
+- [ ] whitepaper
+- [ ] coverage
+- [ ] ci/cd
+- [ ] make a report to characterize performance/memory by chunk size
+- [ ] metadata
+- [ ] fix "temporal" vs "spatial" naming.
+- [ ] fix uses of the work chunk, then fix uses of the word tile.
 - [x] boundary conditions for dim0 downsampling - it's a ceil like it should be
 - [x] lod for dim0
 - [x] move benchmark suite out of tests
 - [x] optimize buffering for compression stage - may need more than one epoch
-- [ ] interface for streaming from device, integrating with a cuda stream
 - [x] "append dimension" semantics for dim0 - can be infinitely sized, updates over time 
 - [x] uniform handling of tiles across lods for compress and aggregate
 - [x] uniform handling of tiles for shard writer
@@ -18,23 +29,14 @@
       dims need to be bigger than tile size
 - [x] add metrics, bench
 - [x] optimize lod scatter, lod gather kernels.
-- [ ] u8, u32, i8, i16, i32
-- [ ] u64, i64, double?
-- [ ] ? f16
-- [ ] cpu impl
-- [ ] whitepaper
-- [ ] coverage
-- [ ] ci/cd
-- [ ] make a report to characterize performance/memory by chunk size
 - [x] within epoch transpose
 - [x] unbuffered io
-- [ ] metadata
-- [ ] fix "temporal" vs "spatial" naming.
-- [ ] fix uses of the work chunk, then fix uses of the word tile.
 - [x] cleanup tests vs experiments
 - [x] evaluate gather vs scatter for non-lod stream
 
 ## 2026-03-14
+
+Trying to refactor to isolate pipeline stages.
 
 
 

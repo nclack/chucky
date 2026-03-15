@@ -4,10 +4,9 @@
 #include "stream.h" // public types
 
 #include "aggregate.h"
+#include "flush_handoff.h"
 #include "lod_plan.h"
 #include "platform.h"
-
-#define MAX_BATCH_EPOCHS 128
 
 struct pool_state
 {
@@ -34,16 +33,10 @@ struct staging_state
   size_t bytes_written; // bytes written to current slot's h_in so far
 };
 
-// Per flush-slot: holds compressed output + pre-built pointer arrays.
-// flush[0] is used for A-pool epochs, flush[1] for B-pool epochs.
+// Per flush-slot: mutable batch state (masks + epoch count).
+// Compress/D2H events and d_compressed now live in the stage structs.
 struct flush_slot_gpu
 {
-  CUdeviceptr d_compressed; // device: K * total_tiles * max_output_size
-  CUevent t_compress_end;   // signals compress finished
-  CUevent t_compress_start;
-  CUevent t_aggregate_end;
-  CUevent t_d2h_start;
-  CUevent ready;               // signals all D2H for this slot is done
   uint32_t active_levels_mask; // union of per-epoch active masks
   uint32_t batch_active_masks[MAX_BATCH_EPOCHS]; // per-epoch active level masks
   int batch_epoch_count; // number of epochs accumulated in this batch
@@ -128,13 +121,17 @@ struct batch_state
   CUevent pool_events[MAX_BATCH_EPOCHS]; // per-epoch pool-ready signals
 };
 
+// --- Stage headers (depend on types above, needed by tile_stream_gpu) ---
+#include "flush_compress_agg.h"
+#include "flush_d2h_deliver.h"
+
 // Flush pipeline: double-buffered compress->D2H->deliver
 struct flush_pipeline
 {
-  struct flush_slot_gpu slot[2];                   // [0]=A pool, [1]=B pool
-  struct level_flush_state levels[LOD_MAX_LEVELS]; // per-level agg+shard
-  int current; // mutable: which slot is active
-  int pending; // mutable: has unkicked work
+  struct flush_slot_gpu slot[2]; // [0]=A pool, [1]=B pool
+  int current;                   // mutable: which slot is active
+  int pending;                   // mutable: has un-drained work
+  struct flush_handoff pending_handoff; // saved handoff for drain
 };
 
 struct tile_stream_gpu
@@ -145,8 +142,9 @@ struct tile_stream_gpu
   struct level_geometry levels; // per-level accounting
   struct gpu_streams streams;   // CUDA stream handles
   struct batch_state batch;     // epoch accumulation
-  struct flush_pipeline flush;  // compress->deliver pipeline
-  struct codec codec;           // compression state
+  struct flush_pipeline flush;  // orchestration state (slots + pending)
+  struct compress_agg_stage compress_agg;  // compress+aggregate stage
+  struct d2h_deliver_stage d2h_deliver;    // D2H+deliver stage
   struct lod_state lod;         // LOD buffers + plan
 
   struct pool_state pools;       // tile pools

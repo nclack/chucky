@@ -1,4 +1,4 @@
-#include "stream_internal.h"
+#include "flush_compress_agg.h"
 #include "flush_helpers.h"
 
 #include "aggregate.h"

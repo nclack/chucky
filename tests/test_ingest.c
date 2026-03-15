@@ -1,7 +1,7 @@
 #include "index.ops.h"
 #include "prelude.cuda.h"
 #include "prelude.h"
-#include "stream_internal.h"
+#include "stream_ingest.h"
 
 #include <stdlib.h>
 #include <string.h>

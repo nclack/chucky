@@ -1,166 +1,15 @@
-#include "stream_internal.h"
+#include "flush_compress_agg.h"
+#include "flush_d2h_deliver.h"
+#include "stream_flush.h"
+
+#include "test_gpu_helpers.h"
+#include "test_shard_sink.h"
 
 #include "prelude.cuda.h"
 #include "prelude.h"
 
 #include <stdlib.h>
 #include <string.h>
-
-// ---------------------------------------------------------------------------
-// Test shard sink
-// ---------------------------------------------------------------------------
-
-struct test_shard_sink
-{
-  struct shard_sink base;
-  struct
-  {
-    struct shard_writer base;
-    uint8_t* buf;
-    size_t capacity;
-    size_t size;
-  } writer;
-  int open_count;
-  int finalize_count;
-};
-
-static int
-test_sink_write(struct shard_writer* self,
-                uint64_t offset,
-                const void* beg,
-                const void* end)
-{
-  struct test_shard_sink* sink =
-    (struct test_shard_sink*)((char*)self -
-                              offsetof(struct test_shard_sink, writer));
-  size_t nbytes = (size_t)((const char*)end - (const char*)beg);
-  if (offset + nbytes > sink->writer.capacity)
-    return 1;
-  memcpy(sink->writer.buf + offset, beg, nbytes);
-  if (offset + nbytes > sink->writer.size)
-    sink->writer.size = offset + nbytes;
-  return 0;
-}
-
-static int
-test_sink_finalize(struct shard_writer* self)
-{
-  struct test_shard_sink* sink =
-    (struct test_shard_sink*)((char*)self -
-                              offsetof(struct test_shard_sink, writer));
-  sink->finalize_count++;
-  return 0;
-}
-
-static struct shard_writer*
-test_sink_open(struct shard_sink* self, uint8_t level, uint64_t shard_index)
-{
-  (void)level;
-  (void)shard_index;
-  struct test_shard_sink* s = (struct test_shard_sink*)self;
-  s->open_count++;
-  return &s->writer.base;
-}
-
-static void
-test_sink_init(struct test_shard_sink* s, size_t capacity)
-{
-  memset(s, 0, sizeof(*s));
-  s->base.open = test_sink_open;
-  s->writer.base.write = test_sink_write;
-  s->writer.base.finalize = test_sink_finalize;
-  s->writer.buf = (uint8_t*)calloc(1, capacity);
-  s->writer.capacity = capacity;
-}
-
-static void
-test_sink_free(struct test_shard_sink* s)
-{
-  free(s->writer.buf);
-  memset(s, 0, sizeof(*s));
-}
-
-// ---------------------------------------------------------------------------
-// Helpers (from test_compress_agg.c)
-// ---------------------------------------------------------------------------
-
-static int
-make_test_config(struct tile_stream_configuration* config,
-                 struct dimension* dims,
-                 uint8_t epochs_per_batch)
-{
-  dims[0] = (struct dimension){
-    .size = 4, .tile_size = 2, .tiles_per_shard = 2, .storage_position = 0
-  };
-  dims[1] = (struct dimension){
-    .size = 4, .tile_size = 2, .tiles_per_shard = 2, .storage_position = 1
-  };
-  dims[2] = (struct dimension){
-    .size = 6, .tile_size = 3, .tiles_per_shard = 2, .storage_position = 2
-  };
-
-  memset(config, 0, sizeof(*config));
-  config->rank = 3;
-  config->dimensions = dims;
-  config->bytes_per_element = 2;
-  config->buffer_capacity_bytes = 4096;
-  config->codec = CODEC_NONE;
-  config->shard_alignment = 0;
-  config->epochs_per_batch = epochs_per_batch;
-  return 0;
-}
-
-static int
-fill_pool_epoch(CUdeviceptr pool_buf,
-                uint64_t tiles,
-                uint64_t tile_stride,
-                size_t bpe,
-                uint16_t (*fill_fn)(uint64_t tile))
-{
-  size_t epoch_bytes = tiles * tile_stride * bpe;
-  uint16_t* h = (uint16_t*)malloc(epoch_bytes);
-  CHECK(Fail, h);
-  memset(h, 0, epoch_bytes);
-
-  for (uint64_t t = 0; t < tiles; ++t) {
-    uint16_t val = fill_fn(t);
-    uint16_t* tile_data = h + t * tile_stride;
-    for (uint64_t e = 0; e < tile_stride; ++e)
-      tile_data[e] = val;
-  }
-
-  CU(Fail, cuMemcpyHtoD(pool_buf, h, epoch_bytes));
-  free(h);
-  return 0;
-
-Fail:
-  free(h);
-  return 1;
-}
-
-static uint16_t
-fill_epoch0(uint64_t t)
-{
-  return (uint16_t)(t + 1);
-}
-
-static uint16_t
-fill_epoch1(uint64_t t)
-{
-  return (uint16_t)(t + 100);
-}
-
-static uint16_t
-fill_epoch2(uint64_t t)
-{
-  return (uint16_t)(t + 200);
-}
-
-static uint16_t
-fill_epoch3(uint64_t t)
-{
-  return (uint16_t)(t + 300);
-}
 
 // ---------------------------------------------------------------------------
 // Orchestration test context: assembles flush_context from individual parts
@@ -212,19 +61,6 @@ orch_ctx_destroy(struct orch_ctx* c)
   cu_stream_destroy(c->streams.compute);
   cu_stream_destroy(c->streams.compress);
   cu_stream_destroy(c->streams.d2h);
-}
-
-static struct stream_metrics
-init_test_metrics(void)
-{
-  struct stream_metrics m;
-  memset(&m, 0, sizeof(m));
-  m.compress.best_ms = 1e30f;
-  m.aggregate.best_ms = 1e30f;
-  m.d2h.best_ms = 1e30f;
-  m.sink.best_ms = 1e30f;
-  m.lod_gather.best_ms = 1e30f;
-  return m;
 }
 
 // Set up all components for the flush orchestration test.
@@ -279,7 +115,13 @@ orch_ctx_setup(struct orch_ctx* c,
   // Non-multiscale: zeroed lod
   memset(&c->lod, 0, sizeof(c->lod));
 
-  c->metrics = init_test_metrics();
+  memset(&c->metrics, 0, sizeof(c->metrics));
+  c->metrics.compress = mk_stream_metric("Compress");
+  c->metrics.aggregate = mk_stream_metric("Aggregate");
+  c->metrics.d2h = mk_stream_metric("D2H");
+  c->metrics.sink = mk_stream_metric("Sink");
+  c->metrics.lod_gather = mk_stream_metric("LOD Gather");
+
   memset(&c->metadata_clock, 0, sizeof(c->metadata_clock));
 
   CU(Fail, cuStreamSynchronize(c->streams.compute));
@@ -342,7 +184,7 @@ test_accumulate_one_epoch(void)
 
   struct dimension dims[3];
   struct tile_stream_configuration config;
-  make_test_config(&config, dims, 2);
+  make_test_config(&config, dims, CODEC_NONE, 2);
 
   struct test_shard_sink sink;
   test_sink_init(&sink, 512 * 1024);
@@ -395,7 +237,7 @@ test_full_batch_auto_flush(void)
 
   struct dimension dims[3];
   struct tile_stream_configuration config;
-  make_test_config(&config, dims, 2);
+  make_test_config(&config, dims, CODEC_NONE, 2);
 
   struct test_shard_sink sink;
   test_sink_init(&sink, 512 * 1024);
@@ -447,7 +289,7 @@ test_drain_delivers_data(void)
 
   struct dimension dims[3];
   struct tile_stream_configuration config;
-  make_test_config(&config, dims, 2);
+  make_test_config(&config, dims, CODEC_NONE, 2);
 
   struct test_shard_sink sink;
   test_sink_init(&sink, 512 * 1024);
@@ -476,7 +318,7 @@ test_drain_delivers_data(void)
   // Data delivered: shard opened and finalized (tps_0=2, 2 epochs → complete)
   CHECK(Fail, sink.open_count >= 1);
   CHECK(Fail, sink.finalize_count == 1);
-  CHECK(Fail, sink.writer.size > 0);
+  CHECK(Fail, sink.writers[0].size > 0);
 
   // Sink metric always recorded (uses platform_toc, not CUDA events)
   CHECK(Fail, c.metrics.sink.count == 1);
@@ -500,7 +342,7 @@ test_accumulated_sync_partial(void)
 
   struct dimension dims[3];
   struct tile_stream_configuration config;
-  make_test_config(&config, dims, 2);
+  make_test_config(&config, dims, CODEC_NONE, 2);
 
   struct test_shard_sink sink;
   test_sink_init(&sink, 512 * 1024);
@@ -527,7 +369,7 @@ test_accumulated_sync_partial(void)
 
   // Data delivered to sink (1 epoch, shard not finalized since tps_0=2)
   CHECK(Fail, sink.open_count >= 1);
-  CHECK(Fail, sink.writer.size > 0);
+  CHECK(Fail, sink.writers[0].size > 0);
 
   // Sink metric recorded (platform_toc, not CUDA events — always fires)
   CHECK(Fail, c.metrics.sink.count == 1);
@@ -551,7 +393,7 @@ test_two_batch_cycle(void)
 
   struct dimension dims[3];
   struct tile_stream_configuration config;
-  make_test_config(&config, dims, 2);
+  make_test_config(&config, dims, CODEC_NONE, 2);
 
   struct test_shard_sink sink;
   test_sink_init(&sink, 1024 * 1024);

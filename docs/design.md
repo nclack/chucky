@@ -5,89 +5,57 @@
 Scientific imaging instruments produce sustained, high-bandwidth streams of
 multidimensional data. A light-sheet microscope, for example, generates
 2–10 GB/s of 16-bit pixel values organized across time, channel, z, y, and x
-dimensions.
+dimensions. These streams may run indefinitely — an instrument can acquire for
+hours or days, appending along one dimension with no predetermined end.
 
-A **multidimensional array** of rank $D$ has a shape $(s_0, s_1, \ldots,
-s_{D-1})$, where $s_d$ is the extent along dimension $d$. We order dimensions
-slowest-to-fastest: $d = 0$ varies slowest and $d = D{-}1$ varies fastest. The
-array is stored in **row-major order** — elements are laid out in memory such
-that the last index changes fastest. Each element is identified by a flat index
-$i \in [0, \prod_d s_d)$. The mapping between flat indices and coordinate
-vectors is described in [Mixed-radix representation](#mixed-radix-representation)
-below.
+The storage system must handle this with a fixed resource footprint: bounded
+memory, bounded open file handles, and the ability to write completed regions
+incrementally without revisiting earlier data. It must also support random
+access to rectangular sub-regions for downstream analysis.
 
-These arrays are too large to hold in memory or store as flat files. They
-require a format that supports random access to rectangular sub-regions without
-reading the entire dataset. **Zarr v3** is a chunked array format designed for
-this: it partitions the array into independent, individually addressable
-**chunks** (called **tiles** here) that can each be compressed and read in
-isolation.
+[Zarr v3][zarr-v3] addresses this by partitioning the array into independent,
+individually addressable **chunks** that can each be compressed and read in
+isolation. (We use the term **tile** for chunk throughout this document to avoid
+overloading "chunk," which is used in other contexts.) Zarr's
+[sharding codec][zarr-shard] groups tiles into **shards** — single storage
+objects containing multiple tiles plus an index — reducing the number of files
+and amortizing I/O overhead. Tile sizes balance compression ratio against
+random-access granularity; shard sizes balance file count against write
+amplification.
 
-### Tiles and shards
+[zarr-v3]: https://zarr-specs.readthedocs.io/en/latest/v3/core/v3.0.html
+[zarr-shard]: https://zarr-specs.readthedocs.io/en/latest/v3/codecs/sharding-indexed/index.html
 
-A **tile** is a fixed-size rectangular sub-block of the array. Given a tile
-shape $(n_0, n_1, \ldots, n_{D-1})$, the array is partitioned into
-$\prod_d \lceil s_d / n_d \rceil$ tiles. Each tile is compressed independently
-and stored as a unit. Tile sizes are chosen to balance compression ratio (larger
-tiles compress better) against random access granularity (smaller tiles allow
-more targeted reads).
+Because the stream is potentially unbounded, the pipeline cannot buffer the
+full array before writing. It must tile and compress data incrementally. The
+key observation is that as data arrives in row-major order, only a bounded set
+of tiles are active at any time — those sharing the same position along the
+outermost (slowest-varying) dimension, the **append dimension**. We call this
+set of simultaneously live tiles an **epoch**. The pipeline processes one epoch
+at a time, flushes the completed tiles, and reuses the memory. This bounds
+the working set regardless of how long the stream runs. (The formal analysis
+is in [streaming.md](streaming.md); the mathematical details appear in the
+[Approach](#approach) section below.)
 
-A **shard** groups multiple tiles into a single storage object. Shards reduce
-the number of files or objects in the store and amortize I/O overhead. Each
-shard contains the compressed bytes of its constituent tiles followed by an
-**index** — an array of `(offset, nbytes)` pairs that locates each tile within
-the shard. The number of tiles per shard is specified per dimension by a
-parameter $p_d$ (tiles per shard along dimension $d$), so each shard covers a
-rectangular region of $\prod_d p_d$ tiles.
+During acquisition, scientists need to visualize incoming data in real time —
+zooming and panning across a dataset that may already be hundreds of gigabytes.
+This requires a **multiscale pyramid**: progressively downsampled copies of the
+array at half the resolution along selected dimensions. Viewers like
+Neuroglancer read coarse levels for overview and load finer levels on demand,
+even while acquisition is still running. The [OME-NGFF][ome-ngff]
+specification standardizes how these pyramids are stored alongside zarr arrays
+for bioimaging, and is the target output format.
 
-### Streaming and epochs
-
-The data arrives as a stream of bytes in row-major order. The full array may
-never exist in memory — and one dimension (the **append dimension**, always
-$d = 0$) may be unbounded, growing indefinitely as the instrument runs. The
-pipeline must accept data incrementally and produce complete, compressed shards
-without ever requiring the full extent of $s_0$.
-
-To tile this stream with bounded memory, we observe that the number of tiles
-simultaneously "live" — receiving elements from the input stream — is limited.
-Define the **tile count** along each dimension as $t_d = \lceil s_d / n_d
-\rceil$. As data arrives in row-major order, all tiles sharing the same
-outermost tile index $t_0$ are active at the same time. This set of tiles is an
-**epoch**. An epoch contains
-
-$$M = \prod_{d=1}^{D-1} t_d$$
-
-tiles — the product of tile counts along every dimension except $d = 0$.
-Within an epoch, tiles activate and retire in FIFO order: the first tile to
-receive data is the first to complete. This means a fixed-size pool of $M$ tile
-buffers suffices to hold an entire epoch, and completed tiles can be flushed in
-order without any reordering.
-
-Since $d = 0$ is potentially unbounded, the pipeline processes one epoch at a
-time (or a small batch of epochs), flushes the resulting tiles, and reuses the
-memory.
-
-### Multiscale visualization
-
-During acquisition, scientists need to visualize the incoming data in real
-time — zooming and panning across a dataset that may already be hundreds of
-gigabytes. Rendering the full-resolution data at every zoom level is
-impractical, so the store provides a **multiscale pyramid**: a hierarchy of
-progressively downsampled copies of the array, each at half the resolution of
-the previous level along selected dimensions.
-
-Because the pipeline already touches every element during the tiling scatter, it
-can compute the pyramid levels at negligible additional cost — the data is
-already on the GPU and in registers. Each level applies a **reduction** (mean,
-min, max, median, or suppressed extremum) over $2 \times \ldots \times 2$
-blocks to produce the next coarser level. The reduced data is tiled, compressed,
-and written alongside the full-resolution output.
-
-This means visualization tools can read coarse levels for overview and
-progressively load finer levels on demand, even while the acquisition is still
-running.
+[ome-ngff]: https://ngff.openmicroscopy.org/0.5/
 
 ## Approach
+
+We model the data as a **multidimensional array** of rank $D$ with shape
+$(s_0, s_1, \ldots, s_{D-1})$, where $s_d$ is the extent along dimension $d$.
+Dimensions are ordered slowest-to-fastest: $d = 0$ varies slowest and
+$d = D{-}1$ varies fastest. The array is stored in **row-major order** —
+elements are laid out in memory such that the last index changes fastest, and
+each element is identified by a flat index $i \in [0, \prod_d s_d)$.
 
 ### Mixed-radix representation
 
@@ -132,32 +100,37 @@ tables they use.
 ### Lifted coordinates and scatter
 
 The central operation is reorganizing a flat row-major stream into tiles. We do
-this by **lifting** the index space into a higher-rank mixed-radix system that
+this by **lifting** — replacing the original radix vector with a finer one that
 separates tile identity from position within a tile.
 
 Given the array shape $(s_0, \ldots, s_{D-1})$ and tile shape $(n_0, \ldots,
 n_{D-1})$, define the tile count $t_d = \lceil s_d / n_d \rceil$ for each
-dimension. The original radix vector $(s_0, \ldots, s_{D-1})$ is replaced by a
-finer one — the **lifted shape**:
+dimension. The original rank-$D$ radix vector is replaced by a rank-$2D$
+**lifted radix vector**:
 
 $$(t_0, n_0, \; t_1, n_1, \; \ldots, \; t_{D-1}, n_{D-1})$$
 
-Unraveling a flat index $i$ against this lifted shape produces coordinates
-where $t_d$ identifies the tile along dimension $d$ and $n_d$ is the position
-within that tile. To assemble tiles, we ravel these coordinates with a
-different set of strides — those corresponding to the **tile-major** ordering:
+Unraveling a flat index against this radix vector produces coordinates where
+$t_d$ identifies the tile along dimension $d$ and $n_d$ is the position within
+that tile. To assemble tiles, we ravel these same coordinates with the strides
+of the **tile-major** radix vector:
 
 $$(t_0, \ldots, t_{D-1}, \; n_0, \ldots, n_{D-1})$$
 
 The first $D$ coordinates identify the tile; the last $D$ identify the position
-within it. A GPU **scatter kernel** implements this: each thread unravels its
-input index against the lifted shape, then ravels the coordinates with the
-tile-major output strides, writing the element directly to its tile slot.
+within it. This is the unravel/ravel pattern from the previous section — the
+two radix vectors share the same elements, just in a different order, so the
+mapping is an isomorphism.
 
-**Storage order.** The output strides encode the desired dimension ordering in
-the on-disk layout. Changing the storage order (e.g., from `tzcyx` to `tczyx`)
-is just a different set of output strides — the scatter kernel is unchanged.
-Transposition to any storage order is zero additional cost.
+A GPU **scatter kernel** implements this: each thread unravels its input index
+against the lifted radix vector, then ravels the coordinates with the
+tile-major strides, writing the element directly to its tile slot.
+
+**Storage order.** The tile-major strides encode the desired dimension ordering
+in the on-disk layout. Changing the storage order (e.g., from `tzcyx` to
+`tczyx`) is a different permutation of the same radix vector, producing
+different strides. The scatter kernel itself is unchanged — only the stride
+table differs.
 
 ### Parallel compression with nvcomp
 
@@ -200,10 +173,10 @@ shard are adjacent. This means each shard can be written to disk with one I/O
 call. When direct I/O is configured, padding is inserted between shards to
 align to page boundaries.
 
-The permutation itself is another instance of the lifted-stride technique: tile
-coordinates are decomposed into shard index and within-shard position, then
-raveled with shard-major strides. See [sharding.md](sharding.md) for the
-derivation.
+The permutation is another instance of the unravel/ravel pattern. Each tile
+coordinate $t_d$ is unraveled into a shard index $s_d$ and within-shard
+position $w_d$ (using radix $p_d$), then the full coordinate vector is raveled
+with shard-major strides. See [sharding.md](sharding.md) for the derivation.
 
 ### Multiscale via compacted morton order
 
@@ -322,17 +295,18 @@ buffers. When a buffer is full (or the data chunk ends), it is transferred to
 the GPU asynchronously. The H2D stream waits on the prior scatter to finish
 before overwriting the staging area on the device.
 
-**Scatter (compute stream).** Each thread decomposes its input index into
-lifted coordinates and writes the element to the appropriate tile pool slot.
-When multiscale is enabled, the raw data is instead copied linearly for the LOD
-pipeline, and L0 scatter happens as part of the LOD stage.
+**Scatter (compute stream).** Each thread unravels its input index against the
+lifted radix vector and ravels with tile-major strides, writing the element to
+its tile pool slot. When multiscale is enabled, the raw data is instead copied
+linearly for the LOD pipeline, and L0 scatter happens as part of the LOD stage.
 
 **LOD (compute stream).** If multiscale is enabled, each epoch triggers:
 1. *Gather* — reorder elements into compacted morton order
 2. *Reduce* — apply the reduction operator across $2 \times \ldots \times 2$
    blocks for each level
 3. *Dim0 fold* — accumulate into temporal reduction buffers
-4. *Morton-to-tiles* — scatter reduced data into per-level tile regions
+4. *Morton-to-tiles* — unravel morton indices and ravel with per-level
+   tile-major strides to scatter reduced data into tile regions
 
 Each LOD level produces its own set of tiles, interleaved in the same tile pool
 as L0.

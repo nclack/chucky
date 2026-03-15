@@ -1,4 +1,4 @@
-#include "stream_internal.h"
+#include "flush_d2h_deliver.h"
 #include "flush_helpers.h"
 
 #include "lod.h"

@@ -55,4 +55,11 @@ expect_arrays_equal(const uint64_t* expected,
 uint64_t*
 random_vu64(int count, uint64_t max);
 
+// CPU reference permutation: same unravel-dot logic as the GPU kernel.
+uint32_t
+cpu_perm(uint64_t i,
+         uint8_t lifted_rank,
+         const uint64_t* shape,
+         const int64_t* strides);
+
 #endif // INDEX_OPS_UTIL_H

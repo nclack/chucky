@@ -127,3 +127,19 @@ random_vu64(int count, uint64_t max)
   }
   return cases;
 }
+
+uint32_t
+cpu_perm(uint64_t i,
+         uint8_t lifted_rank,
+         const uint64_t* shape,
+         const int64_t* strides)
+{
+  uint64_t out = 0;
+  uint64_t rest = i;
+  for (int d = lifted_rank - 1; d >= 0; --d) {
+    uint64_t coord = rest % shape[d];
+    rest /= shape[d];
+    out += coord * (uint64_t)strides[d];
+  }
+  return (uint32_t)out;
+}

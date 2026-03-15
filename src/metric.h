@@ -12,6 +12,9 @@ struct stream_metric
   int count;
 };
 
+struct stream_metric
+mk_stream_metric(const char* name);
+
 static inline void
 accumulate_metric_ms(struct stream_metric* m, float ms, size_t bytes)
 {

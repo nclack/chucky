@@ -1,0 +1,33 @@
+#ifndef TEST_GPU_HELPERS_H
+#define TEST_GPU_HELPERS_H
+
+#include "stream.h"
+
+#include <cuda.h>
+#include <stddef.h>
+#include <stdint.h>
+
+// Build a rank-3 tile_stream_configuration for testing.
+// Shape: dims {4,4,6}, tiles {2,2,3}, tiles_per_shard {2,2,2}.
+int
+make_test_config(struct tile_stream_configuration* config,
+                 struct dimension* dims,
+                 enum compression_codec codec,
+                 uint8_t epochs_per_batch);
+
+// Fill one epoch of tile pool on device.
+// Each tile t gets all elements set to fill_fn(t).
+int
+fill_pool_epoch(CUdeviceptr pool_buf,
+                uint64_t tiles,
+                uint64_t tile_stride,
+                size_t bpe,
+                uint16_t (*fill_fn)(uint64_t tile));
+
+// Canned fill value functions for testing.
+uint16_t fill_epoch0(uint64_t t);
+uint16_t fill_epoch1(uint64_t t);
+uint16_t fill_epoch2(uint64_t t);
+uint16_t fill_epoch3(uint64_t t);
+
+#endif // TEST_GPU_HELPERS_H

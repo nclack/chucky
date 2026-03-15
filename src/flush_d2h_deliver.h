@@ -1,20 +1,6 @@
 #pragma once
 
-// Included via stream_internal.h — all internal types available above.
-
-#include "flush_handoff.h"
-
-// D2H + deliver stage. Owns D2H events and references to shard states
-// (which live in compress_agg_stage.levels[]).
-struct d2h_deliver_stage
-{
-  CUevent t_d2h_start[2]; // per flush slot
-  CUevent ready[2];       // per flush slot: D2H completion
-
-  // Borrowed references (not owned)
-  struct level_flush_state* levels; // points to compress_agg_stage.levels
-  int nlod;
-};
+#include "stream_internal.h"
 
 // Initialize the D2H+deliver stage. Returns 0 on success.
 // `levels` is borrowed from compress_agg_stage — must outlive this stage.

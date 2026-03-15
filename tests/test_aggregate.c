@@ -1,28 +1,11 @@
 #include "aggregate.h"
+#include "index.ops.util.h"
 #include "prelude.cuda.h"
 #include "prelude.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
-// CPU reference: compute permutation P[i] using the same unravel-dot logic
-// as the GPU kernel.
-static uint32_t
-cpu_perm(uint64_t i,
-         uint8_t lifted_rank,
-         const uint64_t* shape,
-         const int64_t* strides)
-{
-  uint64_t out = 0;
-  uint64_t rest = i;
-  for (int d = lifted_rank - 1; d >= 0; --d) {
-    uint64_t coord = rest % shape[d];
-    rest /= shape[d];
-    out += coord * (uint64_t)strides[d];
-  }
-  return (uint32_t)out;
-}
 
 // ---------------------------------------------------------------------------
 // Test 1: even case — rank=3, tc=(4,6,8), tps=(_,3,4)

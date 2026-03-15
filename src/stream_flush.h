@@ -1,24 +1,6 @@
 #pragma once
 
-// Included via stream_internal.h — all internal types available above.
-
-// Context for flush pipeline operations.
-// Stack-allocated by the orchestrator; contains only pointers/copies.
-struct flush_context
-{
-  struct flush_pipeline* flush;
-  struct compress_agg_stage* compress_agg;
-  struct d2h_deliver_stage* d2h_deliver;
-  const struct level_geometry* levels;
-  struct batch_state* batch;
-  struct pool_state* pools;
-  struct lod_state* lod;
-  struct stream_metrics* metrics;
-  const struct tile_stream_configuration* config;
-  const struct stream_layout* layout;
-  struct gpu_streams streams;
-  struct platform_clock* metadata_update_clock;
-};
+#include "stream_internal.h"
 
 // Drain pending flush from the previous batch.
 struct writer_result

@@ -1,4 +1,5 @@
-#include "stream_internal.h"
+#include "stream_flush.h"
+#include "stream_ingest.h"
 
 #include "metric.cuda.h"
 #include "platform.h"

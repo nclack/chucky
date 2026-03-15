@@ -2,85 +2,11 @@
 #include "prelude.h"
 #include "stream.h"
 #include "stream_internal.h"
+#include "test_shard_sink.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
-// --- Counting shard sink ---
-
-struct counting_shard_writer
-{
-  struct shard_writer base;
-  uint8_t* buf;
-  size_t capacity;
-  size_t size;
-};
-
-struct counting_shard_sink
-{
-  struct shard_sink base;
-  struct counting_shard_writer writer;
-  int open_count;
-  int finalize_count;
-};
-
-static int
-counting_write(struct shard_writer* self,
-               uint64_t offset,
-               const void* beg,
-               const void* end)
-{
-  struct counting_shard_writer* w = (struct counting_shard_writer*)self;
-  size_t nbytes = (size_t)((const char*)end - (const char*)beg);
-  if (offset + nbytes > w->capacity)
-    return 1;
-  memcpy(w->buf + offset, beg, nbytes);
-  if (offset + nbytes > w->size)
-    w->size = offset + nbytes;
-  return 0;
-}
-
-static int
-counting_finalize(struct shard_writer* self)
-{
-  struct counting_shard_sink* sink =
-    (struct counting_shard_sink*)((char*)self -
-                                  offsetof(struct counting_shard_sink, writer));
-  sink->finalize_count++;
-  return 0;
-}
-
-static struct shard_writer*
-counting_open(struct shard_sink* self, uint8_t level, uint64_t shard_index)
-{
-  (void)level;
-  (void)shard_index;
-  struct counting_shard_sink* s = (struct counting_shard_sink*)self;
-  s->open_count++;
-  s->writer.size = 0;
-  return &s->writer.base;
-}
-
-static void
-counting_sink_init(struct counting_shard_sink* s, size_t capacity)
-{
-  *s = (struct counting_shard_sink){
-    .base = { .open = counting_open },
-  };
-  s->writer = (struct counting_shard_writer){
-    .base = { .write = counting_write, .finalize = counting_finalize },
-    .buf = (uint8_t*)calloc(1, capacity),
-    .capacity = capacity,
-  };
-}
-
-static void
-counting_sink_free(struct counting_shard_sink* s)
-{
-  free(s->writer.buf);
-  *s = (struct counting_shard_sink){ 0 };
-}
 
 // --- Config builder ---
 // Rank=3, dims {0, 4, 6}, tiles {2, 2, 3}, tiles_per_shard {2, 2, 2}.
@@ -127,9 +53,8 @@ test_batch_counter_one_epoch(void)
 {
   log_info("=== test_batch_counter_one_epoch ===");
 
-  struct counting_shard_sink css;
-  counting_sink_init(&css, 512 * 1024);
-  CHECK(Fail0, css.writer.buf);
+  struct test_shard_sink css;
+  test_sink_init(&css, 512 * 1024);
 
   struct tile_stream_configuration config = make_config(test_dims, &css.base);
   struct tile_stream_gpu* s = tile_stream_gpu_create(&config);
@@ -164,7 +89,7 @@ test_batch_counter_one_epoch(void)
 
   free(src);
   tile_stream_gpu_destroy(s);
-  counting_sink_free(&css);
+  test_sink_free(&css);
   log_info("  PASS");
   return 0;
 
@@ -173,7 +98,7 @@ Fail2:
 Fail:
   tile_stream_gpu_destroy(s);
 Fail0:
-  counting_sink_free(&css);
+  test_sink_free(&css);
   log_error("  FAIL");
   return 1;
 }
@@ -184,9 +109,8 @@ test_batch_full_triggers_swap(void)
 {
   log_info("=== test_batch_full_triggers_swap ===");
 
-  struct counting_shard_sink css;
-  counting_sink_init(&css, 512 * 1024);
-  CHECK(Fail0, css.writer.buf);
+  struct test_shard_sink css;
+  test_sink_init(&css, 512 * 1024);
 
   struct tile_stream_configuration config = make_config(test_dims, &css.base);
   struct tile_stream_gpu* s = tile_stream_gpu_create(&config);
@@ -217,7 +141,7 @@ test_batch_full_triggers_swap(void)
 
   free(src);
   tile_stream_gpu_destroy(s);
-  counting_sink_free(&css);
+  test_sink_free(&css);
   log_info("  PASS");
   return 0;
 
@@ -226,7 +150,7 @@ Fail2:
 Fail:
   tile_stream_gpu_destroy(s);
 Fail0:
-  counting_sink_free(&css);
+  test_sink_free(&css);
   log_error("  FAIL");
   return 1;
 }
@@ -237,9 +161,8 @@ test_batch_multi_cycle(void)
 {
   log_info("=== test_batch_multi_cycle ===");
 
-  struct counting_shard_sink css;
-  counting_sink_init(&css, 1024 * 1024);
-  CHECK(Fail0, css.writer.buf);
+  struct test_shard_sink css;
+  test_sink_init(&css, 1024 * 1024);
 
   struct tile_stream_configuration config = make_config(test_dims, &css.base);
   struct tile_stream_gpu* s = tile_stream_gpu_create(&config);
@@ -269,7 +192,7 @@ test_batch_multi_cycle(void)
 
   free(src);
   tile_stream_gpu_destroy(s);
-  counting_sink_free(&css);
+  test_sink_free(&css);
   log_info("  PASS");
   return 0;
 
@@ -278,7 +201,7 @@ Fail2:
 Fail:
   tile_stream_gpu_destroy(s);
 Fail0:
-  counting_sink_free(&css);
+  test_sink_free(&css);
   log_error("  FAIL");
   return 1;
 }
@@ -289,9 +212,8 @@ test_batch_partial_flush(void)
 {
   log_info("=== test_batch_partial_flush ===");
 
-  struct counting_shard_sink css;
-  counting_sink_init(&css, 512 * 1024);
-  CHECK(Fail0, css.writer.buf);
+  struct test_shard_sink css;
+  test_sink_init(&css, 512 * 1024);
 
   struct tile_stream_configuration config = make_config(test_dims, &css.base);
   struct tile_stream_gpu* s = tile_stream_gpu_create(&config);
@@ -316,7 +238,7 @@ test_batch_partial_flush(void)
 
   free(src);
   tile_stream_gpu_destroy(s);
-  counting_sink_free(&css);
+  test_sink_free(&css);
   log_info("  PASS");
   return 0;
 
@@ -325,7 +247,7 @@ Fail2:
 Fail:
   tile_stream_gpu_destroy(s);
 Fail0:
-  counting_sink_free(&css);
+  test_sink_free(&css);
   log_error("  FAIL");
   return 1;
 }
@@ -336,9 +258,8 @@ test_batch_3epochs_flush(void)
 {
   log_info("=== test_batch_3epochs_flush ===");
 
-  struct counting_shard_sink css;
-  counting_sink_init(&css, 1024 * 1024);
-  CHECK(Fail0, css.writer.buf);
+  struct test_shard_sink css;
+  test_sink_init(&css, 1024 * 1024);
 
   struct tile_stream_configuration config = make_config(test_dims, &css.base);
   struct tile_stream_gpu* s = tile_stream_gpu_create(&config);
@@ -367,7 +288,7 @@ test_batch_3epochs_flush(void)
 
   free(src);
   tile_stream_gpu_destroy(s);
-  counting_sink_free(&css);
+  test_sink_free(&css);
   log_info("  PASS");
   return 0;
 
@@ -376,7 +297,7 @@ Fail2:
 Fail:
   tile_stream_gpu_destroy(s);
 Fail0:
-  counting_sink_free(&css);
+  test_sink_free(&css);
   log_error("  FAIL");
   return 1;
 }

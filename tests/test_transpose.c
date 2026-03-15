@@ -5,6 +5,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "test_runner.h"
+
 // Run transpose kernel and verify against CPU ravel() reference.
 // dim_sizes/tile_sizes: per-dimension sizes.
 // bpe: bytes per element (2 or 4).
@@ -224,41 +226,11 @@ test_transpose_4d_storage_order(void)
                             2);
 }
 
-int
-main(int ac, char* av[])
-{
-  (void)ac;
-  (void)av;
-
-  CUcontext ctx = 0;
-  CUdevice dev;
-
-  CU(Fail, cuInit(0));
-  CU(Fail, cuDeviceGet(&dev, 0));
-  CU(Fail, cuCtxCreate(&ctx, 0, dev));
-
-  int rc = 0;
-  struct {
-    const char* name;
-    int (*fn)(void);
-  } tests[] = {
-    { "transpose_2d", test_transpose_2d },
-    { "transpose_3d", test_transpose_3d },
-    { "transpose_identity", test_transpose_identity },
-    { "transpose_bpe4", test_transpose_bpe4 },
-    { "transpose_3d_storage_order", test_transpose_3d_storage_order },
-    { "transpose_4d_storage_order", test_transpose_4d_storage_order },
-  };
-  for (size_t i = 0; i < sizeof(tests) / sizeof(tests[0]); ++i) {
-    int r = tests[i].fn();
-    if (r) { log_error("  FAIL: %s", tests[i].name); rc = 1; }
-    else   { log_info("  PASS: %s", tests[i].name); }
-  }
-
-  cuCtxDestroy(ctx);
-  return rc;
-
-Fail:
-  cuCtxDestroy(ctx);
-  return 1;
-}
+RUN_GPU_TESTS(
+  { "transpose_2d", test_transpose_2d },
+  { "transpose_3d", test_transpose_3d },
+  { "transpose_identity", test_transpose_identity },
+  { "transpose_bpe4", test_transpose_bpe4 },
+  { "transpose_3d_storage_order", test_transpose_3d_storage_order },
+  { "transpose_4d_storage_order", test_transpose_4d_storage_order },
+)

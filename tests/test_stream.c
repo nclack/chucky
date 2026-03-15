@@ -1,9 +1,13 @@
+#include "crc32c.h"
 #include "index.ops.util.h"
 #include "prelude.cuda.h"
 #include "prelude.h"
 #include "stream.h"
 #include "test_gpu_helpers.h"
+#include "test_runner.h"
 #include "test_shard_sink.h"
+#include "test_shard_verify.h"
+#include "test_voxel_encode.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -34,25 +38,6 @@ make_expected_tiles(uint64_t epoch_start,
   return expected;
 }
 
-// Parse shard index from end of shard buffer.
-// Returns 0 on success, 1 on failure.
-static int
-parse_shard_index(const uint8_t* buf,
-                  size_t shard_size,
-                  size_t tiles_per_shard,
-                  uint64_t* offsets,
-                  uint64_t* sizes)
-{
-  size_t index_data_bytes = tiles_per_shard * 2 * sizeof(uint64_t);
-  if (shard_size <= index_data_bytes + 4)
-    return 1;
-  const uint8_t* index_ptr = buf + shard_size - index_data_bytes - 4;
-  for (size_t i = 0; i < tiles_per_shard; ++i) {
-    memcpy(&offsets[i], index_ptr + i * 16, sizeof(uint64_t));
-    memcpy(&sizes[i], index_ptr + i * 16 + 8, sizeof(uint64_t));
-  }
-  return 0;
-}
 
 // Verify tile data against expected tiles for all epochs.
 // If use_zstd, decompress each tile before comparing.
@@ -202,7 +187,7 @@ test_stream_single_append(void)
 
   {
     uint64_t tile_offsets[8], tile_sizes[8];
-    CHECK(Fail, parse_shard_index(mss.writers[0][0].buf, mss.writers[0][0].size,
+    CHECK(Fail, shard_index_parse(mss.writers[0][0].buf, mss.writers[0][0].size,
                                   tiles_per_shard_total, tile_offsets, tile_sizes) == 0);
     CHECK(Fail, verify_tiles(s, mss.writers[0][0].buf, tile_offsets, tile_sizes, 0) == 0);
   }
@@ -277,7 +262,7 @@ test_stream_chunked_append(void)
 
   {
     uint64_t tile_offsets[8], tile_sizes[8];
-    CHECK(Fail, parse_shard_index(mss.writers[0][0].buf, mss.writers[0][0].size,
+    CHECK(Fail, shard_index_parse(mss.writers[0][0].buf, mss.writers[0][0].size,
                                   tiles_per_shard_total, tile_offsets, tile_sizes) == 0);
     CHECK(Fail, verify_tiles(s, mss.writers[0][0].buf, tile_offsets, tile_sizes, 0) == 0);
   }
@@ -353,7 +338,7 @@ test_stream_compressed_roundtrip(void)
 
   {
     uint64_t tile_offsets[8], tile_sizes[8];
-    CHECK(Fail, parse_shard_index(mss.writers[0][0].buf, mss.writers[0][0].size,
+    CHECK(Fail, shard_index_parse(mss.writers[0][0].buf, mss.writers[0][0].size,
                                   tiles_per_shard_total, tile_offsets, tile_sizes) == 0);
     CHECK(Fail, verify_tiles(s, mss.writers[0][0].buf, tile_offsets, tile_sizes, 1) == 0);
   }
@@ -416,17 +401,12 @@ test_stream_lz4_roundtrip(void)
   log_info("  shard_size=%zu", shard_size);
 
   // Parse shard index
-  const size_t index_data_bytes = tiles_per_shard_total * 2 * sizeof(uint64_t);
-  CHECK(Fail, shard_size > index_data_bytes + 4);
-  const uint8_t* index_ptr = mss.writers[0][0].buf + shard_size - index_data_bytes - 4;
-
   uint64_t tile_offsets[8], tile_sizes[8];
-  for (size_t i = 0; i < tiles_per_shard_total; ++i) {
-    memcpy(&tile_offsets[i], index_ptr + i * 16, sizeof(uint64_t));
-    memcpy(&tile_sizes[i], index_ptr + i * 16 + 8, sizeof(uint64_t));
-  }
+  CHECK(Fail, shard_index_parse(mss.writers[0][0].buf, shard_size,
+                                tiles_per_shard_total, tile_offsets, tile_sizes) == 0);
 
   // Verify structural properties
+  const size_t index_data_bytes = tiles_per_shard_total * 2 * sizeof(uint64_t);
   size_t tile_data_total = 0;
   for (size_t i = 0; i < tiles_per_shard_total; ++i) {
     CHECK(Fail, tile_sizes[i] > 0);
@@ -811,46 +791,236 @@ Fail0:
   return 1;
 }
 
-int
-main(int ac, char* av[])
+// Verify shard index structure: monotonic offsets, size sum, CRC.
+// Tests with both even (multi-shard u32) and single (u16) cases.
+// Moved from test_shard_contents.c.
+static int
+test_shard_index_structure(void)
 {
-  (void)ac;
-  (void)av;
+  log_info("=== test_shard_index_structure ===");
 
-  CUcontext ctx = 0;
-  CUdevice dev;
+  crc32c_init();
 
-  CU(Fail, cuInit(0));
-  CU(Fail, cuDeviceGet(&dev, 0));
-  CU(Fail, cuCtxCreate(&ctx, 0, dev));
+  // --- Case 1: Even tiling (all tiles fill shard evenly) ---
+  {
+    const int size[3] = { 12, 8, 12 };
+    const int tile_size[3] = { 2, 4, 3 };
+    const int tps[3] = { 3, 2, 2 };
 
-  int rc = 0;
-  struct {
-    const char* name;
-    int (*fn)(void);
-  } tests[] = {
-    { "single_append", test_stream_single_append },
-    { "chunked_append", test_stream_chunked_append },
-    { "compressed_roundtrip", test_stream_compressed_roundtrip },
-    { "lz4_roundtrip", test_stream_lz4_roundtrip },
-    { "zero_length_append", test_stream_zero_length_append },
-    { "null_config_fields", test_stream_null_config_fields },
-    { "rank_1_dim", test_stream_rank_1_dim },
-    { "flush_empty", test_stream_flush_empty },
-    { "unbounded_dim0", test_stream_unbounded_dim0 },
-    { "unbounded_requires_tps", test_stream_unbounded_requires_tps },
-    { "bounded_dim0", test_stream_bounded_dim0 },
-  };
-  for (size_t i = 0; i < sizeof(tests) / sizeof(tests[0]); ++i) {
-    int r = tests[i].fn();
-    if (r) { log_error("  FAIL: %s", tests[i].name); rc = 1; }
-    else   { log_info("  PASS: %s", tests[i].name); }
+    const int tile_count[3] = {
+      size[0] / tile_size[0],
+      size[1] / tile_size[1],
+      size[2] / tile_size[2],
+    };
+    const int shard_count[3] = {
+      tile_count[0] / tps[0],
+      tile_count[1] / tps[1],
+      tile_count[2] / tps[2],
+    };
+
+    const int total_elements = size[0] * size[1] * size[2];
+    const int num_shards = shard_count[0] * shard_count[1] * shard_count[2];
+    const int tiles_per_shard_total = tps[0] * tps[1] * tps[2];
+
+    uint32_t* src = generate_encoded_volume(size, tile_size, tps);
+    CHECK(Fail0, src);
+
+    struct test_shard_sink mss;
+    test_sink_init(&mss, num_shards, 256 * 1024);
+
+    const struct dimension dims[] = {
+      { .size = 12, .tile_size = 2, .tiles_per_shard = 3, .storage_position = 0 },
+      { .size = 8, .tile_size = 4, .tiles_per_shard = 2, .storage_position = 1 },
+      { .size = 12, .tile_size = 3, .tiles_per_shard = 2, .storage_position = 2 },
+    };
+
+    const struct tile_stream_configuration config = {
+      .buffer_capacity_bytes = total_elements * sizeof(uint32_t),
+      .bytes_per_element = sizeof(uint32_t),
+      .rank = 3,
+      .dimensions = dims,
+      .codec = CODEC_ZSTD,
+      .shard_sink = &mss.base,
+    };
+
+    struct tile_stream_gpu* s = NULL;
+    CHECK(Fail2, (s = tile_stream_gpu_create(&config)) != NULL);
+
+    {
+      struct slice input = { .beg = src, .end = src + total_elements };
+      struct writer_result r = writer_append(tile_stream_gpu_writer(s), input);
+      CHECK(Fail3, r.error == 0);
+    }
+    {
+      struct writer_result r = writer_flush(tile_stream_gpu_writer(s));
+      CHECK(Fail3, r.error == 0);
+    }
+
+    // Verify index structure for each shard
+    const size_t index_data_bytes =
+      (size_t)tiles_per_shard_total * 2 * sizeof(uint64_t);
+    const size_t index_total_bytes = index_data_bytes + 4;
+    int errors = 0;
+
+    for (int si = 0; si < num_shards; ++si) {
+      struct test_shard_writer* w = &mss.writers[0][si];
+      CHECK(Fail3, w->finalized);
+      CHECK(Fail3, w->size > index_total_bytes);
+
+      uint64_t tile_offsets[12], tile_nbytes[12];
+      CHECK(Fail3, shard_index_parse(w->buf, w->size,
+                                     (size_t)tiles_per_shard_total,
+                                     tile_offsets, tile_nbytes) == 0);
+
+      // 1. Offsets must be monotonically non-decreasing
+      for (int i = 1; i < tiles_per_shard_total; ++i) {
+        if (tile_offsets[i] < tile_offsets[i - 1]) {
+          log_error("  shard %d: offset[%d]=%lu < offset[%d]=%lu",
+                    si, i, (unsigned long)tile_offsets[i],
+                    i - 1, (unsigned long)tile_offsets[i - 1]);
+          errors++;
+        }
+      }
+
+      // 2. Sum of tile sizes + index block + CRC = shard size
+      size_t tile_data_sum = 0;
+      for (int i = 0; i < tiles_per_shard_total; ++i)
+        tile_data_sum += tile_nbytes[i];
+
+      if (tile_data_sum + index_total_bytes != w->size) {
+        log_error("  shard %d: tile_data_sum=%zu + index=%zu != shard_size=%zu",
+                  si, tile_data_sum, index_total_bytes, w->size);
+        errors++;
+      }
+
+      // 3. Verify CRC32C
+      const uint8_t* index_ptr = w->buf + w->size - index_total_bytes;
+      uint32_t stored_crc;
+      memcpy(&stored_crc, index_ptr + index_data_bytes, 4);
+      uint32_t computed_crc = crc32c(index_ptr, index_data_bytes);
+      if (stored_crc != computed_crc) {
+        log_error("  shard %d: CRC mismatch (stored=0x%08x computed=0x%08x)",
+                  si, stored_crc, computed_crc);
+        errors++;
+      }
+    }
+
+    if (errors > 0) {
+      log_error("  %d index structure errors", errors);
+      goto Fail3;
+    }
+
+    log_info("  even tiling: %d shards verified", num_shards);
+    tile_stream_gpu_destroy(s);
+    test_sink_free(&mss);
+    free(src);
+    goto Case2;
+
+  Fail3:
+    tile_stream_gpu_destroy(s);
+  Fail2:
+    test_sink_free(&mss);
+  Fail0:
+    free(src);
+    log_error("  FAIL");
+    return 1;
   }
 
-  cuCtxDestroy(ctx);
-  return rc;
+Case2:
+  // --- Case 2: Single shard (u16 data, smaller shape) ---
+  {
+    const struct dimension dims2[] = {
+      { .size = 4, .tile_size = 2, .storage_position = 0 },
+      { .size = 4, .tile_size = 2, .storage_position = 1 },
+      { .size = 6, .tile_size = 3, .storage_position = 2 },
+    };
+    const size_t tiles_per_shard_total2 = 8;
+    const int total2 = 96;
 
-Fail:
-  cuCtxDestroy(ctx);
-  return 1;
+    struct test_shard_sink mss2;
+    test_sink_init(&mss2, 1, 256 * 1024);
+
+    const struct tile_stream_configuration config2 = {
+      .buffer_capacity_bytes = total2 * sizeof(uint16_t),
+      .bytes_per_element = sizeof(uint16_t),
+      .rank = 3,
+      .dimensions = dims2,
+      .codec = CODEC_ZSTD,
+      .shard_sink = &mss2.base,
+    };
+
+    struct tile_stream_gpu* s2 = NULL;
+    CHECK(FailB1, (s2 = tile_stream_gpu_create(&config2)) != NULL);
+
+    uint16_t src2[96];
+    for (int i = 0; i < 96; ++i)
+      src2[i] = (uint16_t)i;
+
+    {
+      struct slice input = { .beg = src2, .end = src2 + total2 };
+      struct writer_result r = writer_append(tile_stream_gpu_writer(s2), input);
+      CHECK(FailB2, r.error == 0);
+    }
+    {
+      struct writer_result r = writer_flush(tile_stream_gpu_writer(s2));
+      CHECK(FailB2, r.error == 0);
+    }
+
+    struct test_shard_writer* w = &mss2.writers[0][0];
+    CHECK(FailB2, w->finalized);
+
+    uint64_t offs[8], sizes[8];
+    CHECK(FailB2, shard_index_parse(w->buf, w->size, tiles_per_shard_total2,
+                                    offs, sizes) == 0);
+
+    // Monotonic offsets
+    for (size_t i = 1; i < tiles_per_shard_total2; ++i)
+      CHECK(FailB2, offs[i] >= offs[i - 1]);
+
+    // Size sum
+    size_t sum = 0;
+    for (size_t i = 0; i < tiles_per_shard_total2; ++i)
+      sum += sizes[i];
+    const size_t index_data_bytes2 = tiles_per_shard_total2 * 2 * sizeof(uint64_t);
+    const size_t index_total_bytes2 = index_data_bytes2 + 4;
+    CHECK(FailB2, sum + index_total_bytes2 == w->size);
+
+    // CRC
+    const uint8_t* index_ptr2 = w->buf + w->size - index_total_bytes2;
+    uint32_t stored, computed;
+    memcpy(&stored, index_ptr2 + index_data_bytes2, 4);
+    computed = crc32c(index_ptr2, index_data_bytes2);
+    CHECK(FailB2, stored == computed);
+
+    log_info("  single shard (u16): verified");
+    tile_stream_gpu_destroy(s2);
+    test_sink_free(&mss2);
+    goto Done;
+
+  FailB2:
+    tile_stream_gpu_destroy(s2);
+  FailB1:
+    test_sink_free(&mss2);
+    log_error("  FAIL");
+    return 1;
+  }
+
+Done:
+  log_info("  PASS");
+  return 0;
 }
+
+RUN_GPU_TESTS(
+  { "single_append", test_stream_single_append },
+  { "chunked_append", test_stream_chunked_append },
+  { "compressed_roundtrip", test_stream_compressed_roundtrip },
+  { "lz4_roundtrip", test_stream_lz4_roundtrip },
+  { "zero_length_append", test_stream_zero_length_append },
+  { "null_config_fields", test_stream_null_config_fields },
+  { "rank_1_dim", test_stream_rank_1_dim },
+  { "flush_empty", test_stream_flush_empty },
+  { "unbounded_dim0", test_stream_unbounded_dim0 },
+  { "unbounded_requires_tps", test_stream_unbounded_requires_tps },
+  { "bounded_dim0", test_stream_bounded_dim0 },
+  { "shard_index_structure", test_shard_index_structure },
+)

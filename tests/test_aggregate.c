@@ -2,6 +2,7 @@
 #include "index.ops.util.h"
 #include "prelude.cuda.h"
 #include "prelude.h"
+#include "test_runner.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -281,37 +282,7 @@ Fail:
   return ok ? 0 : 1;
 }
 
-int
-main(int argc, char* argv[])
-{
-  (void)argc;
-  (void)argv;
-
-  CUcontext ctx = NULL;
-  CUdevice dev = -1;
-
-  CU(Fail, cuInit(0));
-  CU(Fail, cuDeviceGet(&dev, 0));
-  CU(Fail, cuCtxCreate(&ctx, 0, dev));
-
-  int rc = 0;
-  struct {
-    const char* name;
-    int (*fn)(void);
-  } tests[] = {
-    { "aggregate_even", test_aggregate_even },
-    { "aggregate_uneven", test_aggregate_uneven },
-  };
-  for (size_t i = 0; i < sizeof(tests) / sizeof(tests[0]); ++i) {
-    int r = tests[i].fn();
-    if (r) { log_error("  FAIL: %s", tests[i].name); rc = 1; }
-    else   { log_info("  PASS: %s", tests[i].name); }
-  }
-
-  cuCtxDestroy(ctx);
-  return rc;
-
-Fail:
-  cuCtxDestroy(ctx);
-  return 1;
-}
+RUN_GPU_TESTS(
+  { "aggregate_even", test_aggregate_even },
+  { "aggregate_uneven", test_aggregate_uneven },
+)

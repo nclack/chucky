@@ -3,6 +3,8 @@
 #include "prelude.h"
 #include "stream_ingest.h"
 
+#include "test_runner.h"
+
 #include <stdlib.h>
 #include <string.h>
 
@@ -331,38 +333,8 @@ Fail:
   return ok ? 0 : 1;
 }
 
-int
-main(int ac, char* av[])
-{
-  (void)ac;
-  (void)av;
-
-  CUcontext ctx = 0;
-  CUdevice dev;
-
-  CU(Fail, cuInit(0));
-  CU(Fail, cuDeviceGet(&dev, 0));
-  CU(Fail, cuCtxCreate(&ctx, 0, dev));
-
-  int rc = 0;
-  struct {
-    const char* name;
-    int (*fn)(void);
-  } tests[] = {
-    { "ingest_single_epoch", test_ingest_single_epoch },
-    { "ingest_chunked", test_ingest_chunked },
-    { "ingest_multiscale", test_ingest_multiscale },
-  };
-  for (size_t i = 0; i < sizeof(tests) / sizeof(tests[0]); ++i) {
-    int r = tests[i].fn();
-    if (r) { log_error("  FAIL: %s", tests[i].name); rc = 1; }
-    else   { log_info("  PASS: %s", tests[i].name); }
-  }
-
-  cuCtxDestroy(ctx);
-  return rc;
-
-Fail:
-  cuCtxDestroy(ctx);
-  return 1;
-}
+RUN_GPU_TESTS(
+  { "ingest_single_epoch", test_ingest_single_epoch },
+  { "ingest_chunked", test_ingest_chunked },
+  { "ingest_multiscale", test_ingest_multiscale },
+)

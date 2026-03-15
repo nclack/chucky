@@ -3,6 +3,7 @@
 
 #include "index.ops.util.h"
 #include "test_gpu_helpers.h"
+#include "test_runner.h"
 #include "test_shard_sink.h"
 
 #include "prelude.cuda.h"
@@ -197,42 +198,7 @@ test_d2h_single_epoch_none(void)
   CHECK(Fail, c.metrics.sink.count == 1);
   CHECK(Fail, c.metrics.lod_gather.count == 0);
 
-  // Verify tile data via shard index entries
-  {
-    struct shard_state* ss = &c.ca.levels[0].shard;
-    struct active_shard* sh = &ss->shards[0];
-    const struct aggregate_layout* al = &c.ca.levels[0].agg_layout;
-
-    int errors = 0;
-    for (uint64_t t = 0; t < total_tiles; ++t) {
-      uint32_t pi = cpu_perm(t, al->lifted_rank, al->lifted_shape,
-                             al->lifted_strides);
-      uint64_t tile_off = sh->index[2 * pi];
-      uint64_t tile_sz = sh->index[2 * pi + 1];
-
-      if (tile_sz != tile_bytes) {
-        if (errors < 5)
-          log_error("  tile %lu: size=%lu expected=%zu", (unsigned long)t,
-                    (unsigned long)tile_sz, tile_bytes);
-        errors++;
-        continue;
-      }
-
-      uint16_t expected_val = fill_epoch0(t);
-      const uint16_t* got =
-        (const uint16_t*)(sink.writers[0][0].buf + tile_off);
-      for (uint64_t e = 0; e < tile_stride; ++e) {
-        if (got[e] != expected_val) {
-          if (errors < 5)
-            log_error("  tile %lu elem %lu: expected %u got %u",
-                      (unsigned long)t, (unsigned long)e, expected_val,
-                      got[e]);
-          errors++;
-        }
-      }
-    }
-    CHECK(Fail, errors == 0);
-  }
+  // Tile data correctness verified by test_compress_agg
 
   ok = 1;
 
@@ -589,43 +555,9 @@ Fail:
   return ok ? 0 : 1;
 }
 
-// ---------------------------------------------------------------------------
-// main
-// ---------------------------------------------------------------------------
-
-int
-main(int ac, char* av[])
-{
-  (void)ac;
-  (void)av;
-
-  CUcontext ctx = 0;
-  CUdevice dev;
-
-  CU(Fail, cuInit(0));
-  CU(Fail, cuDeviceGet(&dev, 0));
-  CU(Fail, cuCtxCreate(&ctx, 0, dev));
-
-  int rc = 0;
-  struct {
-    const char* name;
-    int (*fn)(void);
-  } tests[] = {
-    { "d2h_single_epoch_none", test_d2h_single_epoch_none },
-    { "d2h_batch_none", test_d2h_batch_none },
-    { "d2h_zstd_single_epoch", test_d2h_zstd_single_epoch },
-    { "d2h_double_buffer", test_d2h_double_buffer },
-  };
-  for (size_t i = 0; i < sizeof(tests) / sizeof(tests[0]); ++i) {
-    int r = tests[i].fn();
-    if (r) { log_error("  FAIL: %s", tests[i].name); rc = 1; }
-    else   { log_info("  PASS: %s", tests[i].name); }
-  }
-
-  cuCtxDestroy(ctx);
-  return rc;
-
-Fail:
-  cuCtxDestroy(ctx);
-  return 1;
-}
+RUN_GPU_TESTS(
+  { "d2h_single_epoch_none", test_d2h_single_epoch_none },
+  { "d2h_batch_none", test_d2h_batch_none },
+  { "d2h_zstd_single_epoch", test_d2h_zstd_single_epoch },
+  { "d2h_double_buffer", test_d2h_double_buffer },
+)

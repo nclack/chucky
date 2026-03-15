@@ -3,32 +3,14 @@
 #include "prelude.h"
 #include "stream.h"
 #include "test_platform.h"
+#include "test_shard_verify.h"
+#include "test_voxel_encode.h"
 #include "zarr_sink.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <zstd.h>
-
-// --- Coordinate encoding (same as test_shard_contents) ---
-// 3D: dim0=12, dim1=8, dim2=12
-// tile: 2, 4, 3. tps: 3, 2, 2.
-
-static uint32_t
-encode_voxel(int s0,
-             int s1,
-             int s2,
-             int t0,
-             int t1,
-             int t2,
-             int v0,
-             int v1,
-             int v2)
-{
-  return ((uint32_t)s0 << 24) | ((uint32_t)s1 << 21) | ((uint32_t)s2 << 18) |
-         ((uint32_t)t0 << 15) | ((uint32_t)t1 << 12) | ((uint32_t)t2 << 9) |
-         ((uint32_t)v0 << 6) | ((uint32_t)v1 << 3) | ((uint32_t)v2);
-}
 
 static int
 read_file_all(const char* path, uint8_t** out, size_t* out_len)
@@ -169,27 +151,8 @@ test_pipeline(const char* tmpdir)
     tiles_per_shard[0] * tiles_per_shard[1] * tiles_per_shard[2];
   const int voxels_per_tile = tile_size[0] * tile_size[1] * tile_size[2];
 
-  uint32_t* src = NULL;
-
-  // Generate source data
-  src = (uint32_t*)malloc((size_t)total_elements * sizeof(uint32_t));
+  uint32_t* src = generate_encoded_volume(size, tile_size, tiles_per_shard);
   CHECK(Fail, src);
-
-  for (int x0 = 0; x0 < size[0]; ++x0)
-    for (int x1 = 0; x1 < size[1]; ++x1)
-      for (int x2 = 0; x2 < size[2]; ++x2) {
-        int gi = x0 * size[1] * size[2] + x1 * size[2] + x2;
-        int s0 = x0 / (tile_size[0] * tiles_per_shard[0]);
-        int s1 = x1 / (tile_size[1] * tiles_per_shard[1]);
-        int s2 = x2 / (tile_size[2] * tiles_per_shard[2]);
-        int t0 = (x0 / tile_size[0]) % tiles_per_shard[0];
-        int t1 = (x1 / tile_size[1]) % tiles_per_shard[1];
-        int t2 = (x2 / tile_size[2]) % tiles_per_shard[2];
-        int v0 = x0 % tile_size[0];
-        int v1 = x1 % tile_size[1];
-        int v2 = x2 % tile_size[2];
-        src[gi] = encode_voxel(s0, s1, s2, t0, t1, t2, v0, v1, v2);
-      }
 
   // Create zarr sink
   const struct dimension dims[] = {
@@ -273,20 +236,11 @@ test_pipeline(const char* tmpdir)
       size_t shard_len;
       CHECK(Fail4, read_file_all(path, &shard_data, &shard_len) == 0);
 
-      // Parse index from end: tiles_per_shard_total * 2 * 8 bytes + 4 crc
-      size_t index_data_bytes =
-        (size_t)tiles_per_shard_total * 2 * sizeof(uint64_t);
-      size_t index_total_bytes = index_data_bytes + 4;
-      CHECK(Fail4, shard_len > index_total_bytes);
-
-      const uint8_t* index_ptr = shard_data + shard_len - index_total_bytes;
-
+      // Parse shard index
       uint64_t tile_offsets[12], tile_nbytes[12];
-      for (int i = 0; i < tiles_per_shard_total; ++i) {
-        memcpy(&tile_offsets[i], index_ptr + (size_t)i * 16, sizeof(uint64_t));
-        memcpy(
-          &tile_nbytes[i], index_ptr + (size_t)i * 16 + 8, sizeof(uint64_t));
-      }
+      CHECK(Fail4, shard_index_parse(shard_data, shard_len,
+                                     (size_t)tiles_per_shard_total,
+                                     tile_offsets, tile_nbytes) == 0);
 
       // Decompress and verify each tile
       // tile_stride may be padded; use actual tile_stride for decompression

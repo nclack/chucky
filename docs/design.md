@@ -332,27 +332,15 @@ morton order for the coarser shape ($\lceil s_d / 2 \rceil$ per dimension).
 Continuing the 3×5 example:
 
 ```
-  L0 (3×5, 15 elements):
   ┌─────────┬─────────┬─────┬─────┬─────┬────┐
-  │ 0 1 2 3 │ 4 5 6 7 │ 8 9 │10 11│12 13│ 14 │
-  └────┬────┴────┬────┴──┬──┴──┬──┴──┬──┴─┬──┘
-       ▼         ▼       ▼     ▼     ▼    ▼
-  L1 (2×3, 6 elements):
-  ┌─────────┬─────┬────┐
-  │ 0 1 2 3 │ 4 5 │(p) │
-  └────┬────┴──┬──┴────┘
-       ▼       ▼
-  L2 (1×2, 2 elements):
-  ┌─────┐
-  │ 0 1 │
-  └──┬──┘
-     ▼
-  L3 (1×1, 1 element):
-  ┌───┐
-  │ 0 │
-  └───┘
-
-  (p) = partial block, replicate padded
+  │ 0 1 2 3 │ 4 5 6 7 │ 8 9 │10 11│12 13│ 14 │ L0 (3×5, 15 elements):
+  └─────────┴─────────┴─────┴─────┴─────┴────┘  |
+  ┌───────────────────────────────┬──────────┐  ▼
+  │ 0         1         2    3    │4      5  │ L1 (2×3, 6 elements):
+  └───────────────────────────────┴──────────┘  |
+  ┌──────────────────────────────────────────┐  ▼
+  │ 0                              1         │ L2 (1×2, 2 elements):
+  └──────────────────────────────────────────┘
 ```
 
 Run lengths vary at each level due to boundary effects and are precomputed
@@ -384,13 +372,14 @@ This factoring constrains the choice of reduction method. Mean, min, and max
 are separable — the factored result equals the joint result. Median is not: the
 median of spatial medians is not in general the joint median. When median is
 configured, the pipeline computes it correctly within each phase, but the
-composition across phases is an approximation.
+composition across phases is an approximation — it can differ from the joint
+median by up to the inter-quartile range of the reduction block.
 
 The two phases can use different reduction operators (e.g., mean spatially and
 max temporally), which is useful when the semantics of the append dimension
 differ from the spatial dimensions.
 
-## Pipeline
+## Implementation
 
 Data flows through four CUDA streams. Double-buffered pools and event-based
 synchronization overlap every stage.
@@ -402,39 +391,39 @@ synchronization overlap every stage.
         │                 │                                                 │
         ▼                 │                                                 │
  ┌──────────────┐         │                                                 │
- │ Staging      │ ── H2D ─┤►  d_staging                                     │
- │ (pinned, 2×) │  stream │       │                                         │
- └──────────────┘         │       ▼                                         │
-                          │  ┌─────────┐   ┌──────────────────────────────┐ │
-                          │  │ Scatter │   │ LOD (if multiscale)          │ │
-                 compute  │  │ kernel  │   │                              │ │
-                  stream  │  │         │──►│  gather → reduce → dim0 fold │ │
-                          │  │         │   │   → morton-to-tiles scatter  │ │
-                          │  └────┬────┘   └──────────────┬───────────────┘ │
-                          │       │                       │                 │
-                          │       ▼                       ▼                 │
-                          │  ┌──────────────────────────────┐               │
-                          │  │ Tile pool (2× batched)       │               │
-                          │  │ L0 tiles + L1..Ln LOD tiles  │               │
-                          │  └──────────────┬───────────────┘               │
+ │ Staging      ├── H2D ──┤►  d_staging ───────────┐                        │
+ │ (pinned, 2×) │  stream │       │                │                        │
+ └──────────────┘         │       ▼                ▼                        │
+              compute  ┌► │  ┌─────────┐   ┌──────────────────────────────┐ │
+               stream  │  │  │ Scatter │   │ LOD (if multiscale)          │ │
+                       │  │  │ kernel  │   │                              │ │
+                       │  │  │         │   │  gather → reduce → dim0 fold │ │
+                       │  │  │         │   │   → morton-to-tiles scatter  │ │
+                       │  │  └────┬────┘   └──────────────────────────────┘ │
+                       │  │       │                │                        │
+                       │  │       ▼                ▼                        │
+                       │  │  ┌──────────────────────────┐                   │
+                       │  │  │ Tile pool (2× batched)   │                   │
+                       │  │  │ L0..Ln LOD tiles         │                   │
+                       └► │  └──────────────┬───────────┘                   │
                           │                 │                               │
-                 compress │                 ▼                               │
-                  stream  │  ┌──────────────────────────┐                   │
-                          │  │ Batch compress           │                   │
-                          │  │ (nvcomp lz4/zstd)        │                   │
-                          │  └─────────────┬────────────┘                   │
+                          │                 ▼                               │
+              compress ┌► │  ┌──────────────────────────┐                   │
+               stream  │  │  │ Batch compress           │                   │
+                       │  │  │ (nvcomp lz4/zstd)        │                   │
+                       │  │  └─────────────┬────────────┘                   │
+                       │  │                │                                │
+                       │  │                ▼                                │
+                       │  │  ┌──────────────────────────┐                   │
+                       │  │  │ Aggregate by shard       │                   │
+                       │  │  │ (permute, scan, gather)  │                   │
+                       └► │  └─────────────┬────────────┘                   │
                           │                │                                │
                           │                ▼                                │
-                          │  ┌──────────────────────────┐                   │
-                          │  │ Aggregate by shard       │                   │
-                          │  │ (permute, scan, gather)  │                   │
-                          │  └─────────────┬────────────┘                   │
-                          │                │                                │
-                     d2h  │                ▼                                │
-                  stream  │  ┌──────────────────────────┐                   │
-                          │  │ D2H transfer             │                   │
-                          │  │ (offsets, then data)     │                   │
-                          │  └─────────────┬────────────┘                   │
+              d2h      ┌► │  ┌──────────────────────────┐                   │
+               stream  │  │  │ D2H transfer             │                   │
+                       │  │  │ (offsets, then data)     │                   │
+                       └► │  └─────────────┬────────────┘                   │
                           │                │                                │
                           └────────────────┼────────────────────────────────┘
                                            │
@@ -451,7 +440,7 @@ synchronization overlap every stage.
                                     └───────────────┘
 ```
 
-### Stage details
+### Pipeline stages
 
 **Ingest (H2D stream).** Host data is copied into one of two pinned staging
 buffers. When a buffer is full (or the data chunk ends), it is transferred to
@@ -484,10 +473,27 @@ to shard-major order using the three-pass algorithm described above.
 the compressed data (sized by the actual compressed output, not the worst-case
 bound).
 
-**Shard delivery (host).** The host iterates over tiles in shard-major order,
-dispatching contiguous runs to per-shard writers and building the shard index.
-When a shard's tiles are complete, the index is serialized with a CRC32C
-checksum and emitted.
+### Event model
+
+The four CUDA streams form a dependency graph through events. Each stage
+records an event when it completes; downstream stages wait on that event
+before touching the same buffer.
+
+| Producer | Event | Consumer | Guarantees |
+|---|---|---|---|
+| H2D stream | `t_h2d_end` | compute stream | Staging data is on device before scatter |
+| compute stream | `t_scatter_end` | H2D stream | Scatter is done before next H2D overwrites staging |
+| compute stream | `pool_events[k]` | compress stream | All $K$ epochs are scattered before compress starts |
+| compress stream | `t_aggregate_end` | D2H stream | Aggregated data is ready before transfer |
+| D2H stream | `ready` | host | Host can read pinned buffer for shard delivery |
+
+When multiscale is enabled, the LOD pipeline records additional events on
+the compute stream (`t_scatter_end`, `t_reduce_end`, `t_dim0_end`) that the
+compress stream also waits on before starting.
+
+No stream-wide barriers (`cuStreamSynchronize`) appear in the steady-state
+pipeline. The only host-synchronous wait is on the `ready` event before
+delivering completed shards to the sink.
 
 ### Double buffering
 
@@ -498,8 +504,144 @@ checksum and emitted.
 | Compressed pools  | 2     | Overlap compress with D2H                  |
 | Aggregate buffers | 2     | Overlap aggregate with D2H                 |
 
-Event-based synchronization (no stream-wide barriers) ensures each stage waits
-only on its actual data dependency.
+Synchronization is event-based, not stream-wide: each double-buffered resource
+has a pair of events (one per slot) so that writes to slot A and reads from
+slot B proceed concurrently without blocking the entire stream.
+
+D2H transfer is two-phase: first the per-tile offset array (a small,
+synchronous transfer so the host can compute shard boundaries), then the
+compressed byte data (asynchronous, sized by actual compressed output rather
+than worst-case bounds).
+
+### Memory budget
+
+All GPU memory is allocated deterministically at initialization — no dynamic
+growth during streaming. The six pools and how they scale:
+
+| Pool | Size | Notes |
+|---|---|---|
+| Staging (device) | $2 \times \text{buffer\_capacity}$ | Pinned host mirrors of equal size |
+| Tile pool | $2 \times K \times M_{\text{total}} \times \text{tile\_stride} \times \text{bpe}$ | $M_{\text{total}}$ = sum of tiles across all LOD levels |
+| Compressed pool | $2 \times K \times M_{\text{total}} \times \text{max\_output\_size}$ | Worst-case compressed tile bound |
+| Codec workspace | batch pointer arrays + nvcomp temp buffer | Scales with $K \times M_{\text{total}}$ |
+| Aggregate | per-level: 2 slots × (offset + size arrays + gather buffer) | Plus permutation LUTs when $K > 1$ |
+| LOD | `d_linear` + `d_morton` + per-level shape/stride/LUT arrays + dim0 accumulators | Only allocated when multiscale is enabled |
+
+The dominant terms are the tile pool and compressed pool, both proportional to
+$K \times M_{\text{total}}$. Increasing the tile size reduces $M$ (fewer tiles
+per epoch) at the cost of larger per-tile buffers. Increasing $K$ improves GPU
+occupancy during compression but increases memory proportionally.
+
+`tile_stream_gpu_memory_estimate` computes the exact budget from a
+configuration without allocating anything. Call it before committing to verify
+that the working set fits in available GPU memory.
+
+### API
+
+#### Configuration
+
+A stream is configured by filling a `tile_stream_configuration`:
+
+| Field | Type / Range | Purpose |
+|---|---|---|
+| `rank` | 1–16 | Number of dimensions |
+| `dimensions` | `struct dimension[]` | Per-dimension geometry (see below) |
+| `bytes_per_element` | 1, 2, 4 | Element size |
+| `buffer_capacity_bytes` | > 0 | H2D staging buffer size (doubled internally) |
+| `codec` | none / lz4 / zstd | Compression codec |
+| `epochs_per_batch` | 0 or power of 2 | Epochs per batch ($K$); 0 = auto |
+| `target_batch_tiles` | > 0 | Target tile count for auto-$K$ (default 1024) |
+| `shard_sink` | `struct shard_sink*` | Downstream storage factory |
+| `reduce_method` | mean / median / min / max | Spatial LOD reduction |
+| `dim0_reduce_method` | (same) | Temporal LOD reduction |
+| `shard_alignment` | 0 or page size | Inter-shard padding for direct I/O |
+| `metadata_update_interval_s` | ≥ 0 | Seconds between metadata refreshes |
+
+Each `struct dimension` describes one axis:
+
+| Field | Semantics |
+|---|---|
+| `size` | Extent; 0 = unbounded (append dimension only) |
+| `tile_size` | Tile extent in this dimension |
+| `tiles_per_shard` | Tiles per shard; must be > 0 when `size` is 0 |
+| `name` | Optional label (e.g. `"x"`) |
+| `downsample` | Include in LOD pyramid (0 or 1) |
+| `storage_position` | Position in storage layout; append dimension must be position 0 |
+
+#### Writer interface
+
+The caller interacts with the pipeline through a `struct writer` vtable:
+
+- **`append(self, data)`** — push a contiguous slice of row-major elements.
+  The library tiles, compresses, and delivers internally. Returns a result
+  indicating bytes consumed and whether the stream is ready for more.
+
+- **`flush(self)`** — drain any partially filled epochs. Call once at end of
+  stream to ensure all data is written.
+
+#### Shard sink interface
+
+`struct shard_sink` is the extension point for storage backends. Any
+implementation that provides these four operations can receive output:
+
+- **`open(self, level, shard_index) → shard_writer*`** — return a writer for
+  the given shard. The library calls this once per shard per batch.
+
+- **`update_dim0(self, level, dim0_size)`** — called periodically as the
+  append dimension grows, allowing the backend to update metadata.
+
+- **`record_fence(self, level) → io_event`** — snapshot the current I/O
+  position for backpressure.
+
+- **`wait_fence(self, level, event)`** — block until the I/O subsystem has
+  retired past the given fence, preventing the pipeline from outrunning
+  storage.
+
+Each `struct shard_writer` returned by `open` provides:
+
+- **`write(self, offset, beg, end)`** — copy data into the shard at the given
+  byte offset.
+- **`write_direct(self, offset, beg, end)`** — zero-copy variant; the caller
+  guarantees the buffer remains valid until the write completes.
+- **`finalize(self)`** — mark the shard complete.
+
+#### Memory estimation
+
+`tile_stream_gpu_memory_estimate` takes a `tile_stream_configuration` and
+returns a `tile_stream_memory_info` containing total `device_bytes` and
+`host_pinned_bytes`, plus a per-component breakdown (staging, tile pool,
+compressed pool, aggregate, LOD, codec workspace) and derived parameters
+(`tiles_per_epoch`, `total_tiles`, `epochs_per_batch`). This lets callers
+verify resource requirements before allocating.
+
+### Zarr store
+
+The library ships a concrete `shard_sink` targeting Zarr v3 stores with the
+sharding codec.
+
+**`zarr_sink`** implements `shard_sink` for a single zarr array.
+**`zarr_multiscale_sink`** wraps an array of `zarr_sink` instances — one per
+LOD level — and manages OME-NGFF group metadata.
+
+**Writer pool.** Each sink maintains a pool of `shard_writer` objects (one per
+inner shard index), reused across shard epochs. This bounds open file
+descriptors regardless of how many shards are written over the stream's
+lifetime.
+
+**Unbuffered I/O.** When `shard_alignment > 0`, shard data is written with
+`O_DIRECT` (Linux) or `FILE_FLAG_NO_BUFFERING` (Windows). Buffers are
+page-aligned and inter-shard padding ensures each write begins on a page
+boundary. This bypasses the kernel page cache — important at sustained
+multi-GB/s write rates where cache pressure would otherwise evict useful
+read-side data.
+
+**Dynamic metadata.** `update_dim0` regenerates the zarr array metadata
+(`zarr.json`) as the append dimension grows, and for multiscale sinks also
+regenerates OME-NGFF group metadata. Metadata is written at a configurable
+interval rather than every epoch.
+
+For the zarr shard binary format, see [sharding.md](sharding.md) and the
+[zarr sharding codec specification][zarr-shard].
 
 ## Related documents
 
@@ -507,3 +649,47 @@ only on its actual data dependency.
   derivation
 - [sharding.md](sharding.md) — tile-to-shard lifting, aggregation kernel, zarr
   shard binary format
+
+## Glossary
+
+**Aggregate.** The GPU stage that reorders compressed tiles from tile-major to
+shard-major order, packing them contiguously for single-call shard writes.
+
+**Append dimension.** The outermost (slowest-varying) dimension of the input
+array, along which data arrives incrementally. Must be `storage_position` 0.
+
+**Batch.** A group of $K$ consecutive epochs processed together through
+compress → aggregate → D2H. Larger batches improve GPU occupancy during
+compression.
+
+**Compacted morton order.** A dense reindexing of array elements by
+bit-interleaved coordinates, skipping out-of-bounds entries. Groups
+$2^{D'}$-element reduction blocks into contiguous runs.
+
+**Epoch.** The set of tiles sharing the same append-dimension tile index $t_0$.
+One epoch's worth of data fills $M$ tile slots in the pool.
+
+**Lifted shape.** The rank-$2D$ shape $(t_0, n_0, \ldots, t_{D-1}, n_{D-1})$
+that separates tile identity from intra-tile position.
+
+**LOD level.** One layer of the multiscale pyramid. Level 0 is the original
+resolution; level $l$ is reduced by $2^l$ along each downsampled dimension.
+
+**Place values / strides.** The weight of each coordinate position when
+converting to a flat index: $\sigma_d = \prod_{k>d} b_k$.
+
+**Radix vector.** The shape interpreted as mixed-radix bases — each entry is
+the number of distinct values a coordinate can take.
+
+**Scatter.** A GPU kernel that writes each input element to its tile-pool
+destination by unraveling against the lifted shape and raveling with
+tile-major strides.
+
+**Shard.** A storage object grouping multiple tiles with an appended index.
+Corresponds to a single file or object in the zarr store.
+
+**Tile.** The smallest independently addressable and compressible unit of the
+array. Called "chunk" in zarr terminology.
+
+**Tile pool.** A contiguous GPU buffer holding $K \times M_{\text{total}}$ tile
+slots (across all LOD levels), double-buffered.

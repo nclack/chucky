@@ -50,6 +50,10 @@ double check that part of the code again.
 I've been just adding stuff to the code as I go. I need to break up a bunch of
 files/functions. So doing some cleanup...
 
+Spent a good amount of time rewriting the design doc which I think will
+basically turn into a whitepaper. Or at least I can use the design doc to get
+some useful text down.
+
 ## 2026-03-12
 
 Finishing unbuffered io on posix.

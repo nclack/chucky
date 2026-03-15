@@ -31,6 +31,13 @@ target_link_libraries(test_shard_sink PUBLIC stream)
 add_test_lib(test_gpu_helpers test_gpu_helpers.c test_gpu_helpers.h)
 target_link_libraries(test_gpu_helpers PUBLIC stream CUDA::cuda_driver)
 
+# Shared shard verification helpers (index parse, decompress+verify)
+add_test_lib(test_shard_verify test_shard_verify.c test_shard_verify.h)
+target_link_libraries(test_shard_verify PUBLIC stream Zstd::Zstd)
+
+# Shared voxel coordinate encoding helpers
+add_test_lib(test_voxel_encode test_voxel_encode.c test_voxel_encode.h)
+
 # Index operations unit tests (pure CPU)
 add_test_exe(test_index_ops test_index_ops.c index_ops chucky_log)
 
@@ -46,23 +53,22 @@ add_test_lib(test_data test_data.c test_data.h)
 target_link_libraries(test_data PUBLIC stream)
 
 # Tests with zstd
-add_test_exe(test_stream          test_stream.c          CUDA::cuda_driver CUDA::cudart_static stream Zstd::Zstd index_ops_util test_shard_sink test_gpu_helpers)
+add_test_exe(test_stream          test_stream.c          CUDA::cuda_driver CUDA::cudart_static stream Zstd::Zstd index_ops_util test_shard_sink test_gpu_helpers test_shard_verify test_voxel_encode)
 add_test_exe(test_compress        test_compress.c        CUDA::cuda_driver CUDA::cudart_static stream Zstd::Zstd)
 add_test_exe(test_aggregate       test_aggregate.c       CUDA::cuda_driver CUDA::cudart_static aggregate index_ops_util)
-add_test_exe(test_shard_contents  test_shard_contents.c  CUDA::cuda_driver CUDA::cudart_static stream Zstd::Zstd)
 
 add_test_exe(test_json_writer test_json_writer.c json_writer chucky_log)
 add_test_exe(test_io_queue    test_io_queue.c    io_queue chucky_log)
 
-add_test_exe(test_zarr_sink   test_zarr_sink.c   CUDA::cuda_driver CUDA::cudart_static zarr_sink stream Zstd::Zstd test_platform)
+add_test_exe(test_zarr_sink   test_zarr_sink.c   CUDA::cuda_driver CUDA::cudart_static zarr_sink stream Zstd::Zstd test_platform test_shard_verify test_voxel_encode)
 
 add_test_exe(test_ingest       test_ingest.c       CUDA::cuda_driver CUDA::cudart_static stream index_ops_util)
-add_test_exe(test_compress_agg test_compress_agg.c CUDA::cuda_driver CUDA::cudart_static stream Zstd::Zstd test_gpu_helpers index_ops_util)
+add_test_exe(test_compress_agg test_compress_agg.c CUDA::cuda_driver CUDA::cudart_static stream Zstd::Zstd test_gpu_helpers index_ops_util test_shard_verify)
 add_test_exe(test_batch        test_batch.c        CUDA::cuda_driver CUDA::cudart_static stream test_shard_sink test_gpu_helpers)
 add_test_exe(test_d2h_deliver  test_d2h_deliver.c  CUDA::cuda_driver CUDA::cudart_static stream Zstd::Zstd test_shard_sink test_gpu_helpers index_ops_util)
 add_test_exe(test_flush_orch  test_flush_orchestration.c CUDA::cuda_driver CUDA::cudart_static stream test_shard_sink test_gpu_helpers)
 add_test_exe(test_dimension   test_dimension.c   stream chucky_log)
 add_test_exe(test_lod         test_lod.c         CUDA::cuda_driver CUDA::cudart_static lod lod_plan index_ops morton_util)
-add_test_exe(test_multiscale  test_multiscale.c  CUDA::cuda_driver CUDA::cudart_static stream Zstd::Zstd test_data zarr_sink test_shard_sink)
+add_test_exe(test_multiscale  test_multiscale.c  CUDA::cuda_driver CUDA::cudart_static stream Zstd::Zstd test_data test_shard_sink)
 
 add_subdirectory(experiments)

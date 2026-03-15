@@ -7,6 +7,8 @@
 #include <string.h>
 #include <zstd.h>
 
+#include "test_runner.h"
+
 // Deterministic source data
 // Hash-based values: any element is reconstructable from its global index.
 static uint16_t
@@ -373,37 +375,7 @@ Fail:
   return 1;
 }
 
-int
-main(int ac, char* av[])
-{
-  (void)ac;
-  (void)av;
-
-  CUcontext ctx = 0;
-  CUdevice dev;
-
-  CU(Fail, cuInit(0));
-  CU(Fail, cuDeviceGet(&dev, 0));
-  CU(Fail, cuCtxCreate(&ctx, 0, dev));
-
-  int rc = 0;
-  struct {
-    const char* name;
-    int (*fn)(void);
-  } tests[] = {
-    { "compress_roundtrip", test_compress_roundtrip },
-    { "compress_lz4_roundtrip", test_compress_lz4_roundtrip },
-  };
-  for (size_t i = 0; i < sizeof(tests) / sizeof(tests[0]); ++i) {
-    int r = tests[i].fn();
-    if (r) { log_error("  FAIL: %s", tests[i].name); rc = 1; }
-    else   { log_info("  PASS: %s", tests[i].name); }
-  }
-
-  cuCtxDestroy(ctx);
-  return rc;
-
-Fail:
-  cuCtxDestroy(ctx);
-  return 1;
-}
+RUN_GPU_TESTS(
+  { "compress_roundtrip", test_compress_roundtrip },
+  { "compress_lz4_roundtrip", test_compress_lz4_roundtrip },
+)

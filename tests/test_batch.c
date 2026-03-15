@@ -4,6 +4,8 @@
 #include "test_gpu_helpers.h"
 #include "test_shard_sink.h"
 
+#include "test_runner.h"
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -309,40 +311,10 @@ Fail0:
   return 1;
 }
 
-int
-main(int ac, char* av[])
-{
-  (void)ac;
-  (void)av;
-
-  CUcontext ctx = 0;
-  CUdevice dev;
-
-  CU(Fail, cuInit(0));
-  CU(Fail, cuDeviceGet(&dev, 0));
-  CU(Fail, cuCtxCreate(&ctx, 0, dev));
-
-  int rc = 0;
-  struct {
-    const char* name;
-    int (*fn)(void);
-  } tests[] = {
-    { "batch_counter_one_epoch", test_batch_counter_one_epoch },
-    { "batch_full_triggers_swap", test_batch_full_triggers_swap },
-    { "batch_multi_cycle", test_batch_multi_cycle },
-    { "batch_partial_flush", test_batch_partial_flush },
-    { "batch_3epochs_flush", test_batch_3epochs_flush },
-  };
-  for (size_t i = 0; i < sizeof(tests) / sizeof(tests[0]); ++i) {
-    int r = tests[i].fn();
-    if (r) { log_error("  FAIL: %s", tests[i].name); rc = 1; }
-    else   { log_info("  PASS: %s", tests[i].name); }
-  }
-
-  cuCtxDestroy(ctx);
-  return rc;
-
-Fail:
-  cuCtxDestroy(ctx);
-  return 1;
-}
+RUN_GPU_TESTS(
+  { "batch_counter_one_epoch", test_batch_counter_one_epoch },
+  { "batch_full_triggers_swap", test_batch_full_triggers_swap },
+  { "batch_multi_cycle", test_batch_multi_cycle },
+  { "batch_partial_flush", test_batch_partial_flush },
+  { "batch_3epochs_flush", test_batch_3epochs_flush },
+)

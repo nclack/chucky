@@ -2,6 +2,8 @@
 
 #include "index.ops.util.h"
 #include "test_gpu_helpers.h"
+#include "test_runner.h"
+#include "test_shard_verify.h"
 
 #include "prelude.cuda.h"
 #include "prelude.h"
@@ -146,19 +148,6 @@ ca_ctx_fetch_agg(struct flush_handoff* handoff,
   CU(Fail, cuMemcpyDtoH(h_agg, (CUdeviceptr)agg->d_aggregated, total_data));
 
   *out_agg_data = h_agg;
-  return 0;
-
-Fail:
-  return 1;
-}
-
-// Verify offsets are monotonically non-decreasing, starting at 0.
-static int
-verify_offsets_monotonic(const size_t* offsets, uint64_t n)
-{
-  CHECK(Fail, offsets[0] == 0);
-  for (uint64_t j = 1; j <= n; ++j)
-    CHECK(Fail, offsets[j] >= offsets[j - 1]);
   return 0;
 
 Fail:
@@ -551,40 +540,10 @@ Fail:
   return ok ? 0 : 1;
 }
 
-int
-main(int ac, char* av[])
-{
-  (void)ac;
-  (void)av;
-
-  CUcontext ctx = 0;
-  CUdevice dev;
-
-  CU(Fail, cuInit(0));
-  CU(Fail, cuDeviceGet(&dev, 0));
-  CU(Fail, cuCtxCreate(&ctx, 0, dev));
-
-  int rc = 0;
-  struct {
-    const char* name;
-    int (*fn)(void);
-  } tests[] = {
-    { "compress_agg_single_epoch", test_compress_agg_single_epoch },
-    { "compress_agg_batch", test_compress_agg_batch },
-    { "compress_agg_partial_batch", test_compress_agg_partial_batch },
-    { "compress_agg_zstd_single_epoch", test_compress_agg_zstd_single_epoch },
-    { "compress_agg_zstd_batch", test_compress_agg_zstd_batch },
-  };
-  for (size_t i = 0; i < sizeof(tests) / sizeof(tests[0]); ++i) {
-    int r = tests[i].fn();
-    if (r) { log_error("  FAIL: %s", tests[i].name); rc = 1; }
-    else   { log_info("  PASS: %s", tests[i].name); }
-  }
-
-  cuCtxDestroy(ctx);
-  return rc;
-
-Fail:
-  cuCtxDestroy(ctx);
-  return 1;
-}
+RUN_GPU_TESTS(
+  { "compress_agg_single_epoch", test_compress_agg_single_epoch },
+  { "compress_agg_batch", test_compress_agg_batch },
+  { "compress_agg_partial_batch", test_compress_agg_partial_batch },
+  { "compress_agg_zstd_single_epoch", test_compress_agg_zstd_single_epoch },
+  { "compress_agg_zstd_batch", test_compress_agg_zstd_batch },
+)

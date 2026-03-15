@@ -4,7 +4,7 @@
 #include "stream.h"
 #include "test_data.h"
 #include "test_shard_sink.h"
-#include "zarr_sink.h"
+#include "test_runner.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -207,104 +207,6 @@ Fail2b:
 Fail1:
   test_sink_free(&baseline_sink);
   xor_pattern_free();
-  log_error("  FAIL");
-  return 1;
-}
-
-// --- Multiscale zarr visual test ---
-
-static int
-test_multiscale_zarr_visual(const char* output_path)
-{
-  log_info("=== test_multiscale_zarr_visual ===");
-  log_info("  output: %s", output_path);
-
-  const struct dimension dims[] = {
-    {
-      .size = 100,
-      .tile_size = 2,
-      .tiles_per_shard = 32,
-      .name = "t",
-      .storage_position = 0,
-    },
-    {
-      .size = 128,
-      .tile_size = 16,
-      .tiles_per_shard = 4,
-      .name = "z",
-      .downsample = 1,
-      .storage_position = 1,
-    },
-    {
-      .size = 256,
-      .tile_size = 16,
-      .tiles_per_shard = 4,
-      .name = "y",
-      .downsample = 1,
-      .storage_position = 2,
-    },
-    {
-      .size = 256,
-      .tile_size = 16,
-      .tiles_per_shard = 4,
-      .name = "x",
-      .downsample = 1,
-      .storage_position = 3,
-    },
-    {
-      .size = 3,
-      .tile_size = 1,
-      .tiles_per_shard = 3,
-      .name = "c",
-      .storage_position = 4,
-    },
-  };
-  const uint8_t rank = 5;
-  const size_t total_elements = dim_total_elements(dims, rank);
-
-  struct zarr_multiscale_config zcfg = {
-    .store_path = output_path,
-    .data_type = zarr_dtype_uint16,
-    .fill_value = 0,
-    .rank = rank,
-    .dimensions = dims,
-    .nlod = 0, // auto
-  };
-
-  struct zarr_multiscale_sink* ms = zarr_multiscale_sink_create(&zcfg);
-  CHECK(Fail, ms);
-
-  struct tile_stream_gpu* s = NULL;
-  const struct tile_stream_configuration config = {
-    .buffer_capacity_bytes = 128 << 20,
-    .bytes_per_element = sizeof(uint16_t),
-    .rank = rank,
-    .dimensions = dims,
-    .codec = CODEC_ZSTD,
-    .shard_sink = zarr_multiscale_sink_as_shard_sink(ms),
-  };
-
-  CHECK(Fail2, (s = tile_stream_gpu_create(&config)) != NULL);
-  log_info(
-    "  total: %zu elements, LOD levels: %d", total_elements, tile_stream_gpu_status(s).nlod);
-
-  xor_pattern_init(dims, rank, 2);
-  CHECK(Fail3, pump_data(tile_stream_gpu_writer(s), total_elements, fill_xor) == 0);
-  CHECK(Fail3, tile_stream_gpu_cursor(s) == total_elements);
-
-  tile_stream_gpu_destroy(s);
-  xor_pattern_free();
-  zarr_multiscale_sink_flush(ms);
-  zarr_multiscale_sink_destroy(ms);
-  log_info("  PASS — wrote %s", output_path);
-  return 0;
-
-Fail3:
-  tile_stream_gpu_destroy(s);
-  xor_pattern_free();
-Fail2:
-  zarr_multiscale_sink_destroy(ms);
-Fail:
   log_error("  FAIL");
   return 1;
 }
@@ -685,44 +587,8 @@ Fail:
   return 1;
 }
 
-int
-main(int ac, char* av[])
-{
-  CUcontext ctx = 0;
-  CUdevice dev;
-
-  CU(Fail, cuInit(0));
-  CU(Fail, cuDeviceGet(&dev, 0));
-  CU(Fail, cuCtxCreate(&ctx, 0, dev));
-
-  int rc = 0;
-  struct {
-    const char* name;
-    int (*fn)(void);
-  } tests[] = {
-    { "multiscale_l0_correctness", test_multiscale_l0_correctness },
-    { "dim0_l0_correctness", test_dim0_l0_correctness },
-    { "dim0_multi_epoch_levels", test_dim0_multi_epoch_levels },
-  };
-  for (size_t i = 0; i < sizeof(tests) / sizeof(tests[0]); ++i) {
-    int r = tests[i].fn();
-    if (r) { log_error("  FAIL: %s", tests[i].name); rc = 1; }
-    else   { log_info("  PASS: %s", tests[i].name); }
-  }
-
-  if (!rc && ac > 1) {
-    if (test_multiscale_zarr_visual(av[1])) {
-      log_error("  FAIL: multiscale_zarr_visual");
-      rc = 1;
-    } else {
-      log_info("  PASS: multiscale_zarr_visual");
-    }
-  }
-
-  cuCtxDestroy(ctx);
-  return rc;
-
-Fail:
-  cuCtxDestroy(ctx);
-  return 1;
-}
+RUN_GPU_TESTS(
+  { "multiscale_l0_correctness", test_multiscale_l0_correctness },
+  { "dim0_l0_correctness", test_dim0_l0_correctness },
+  { "dim0_multi_epoch_levels", test_dim0_multi_epoch_levels },
+)

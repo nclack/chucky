@@ -163,3 +163,5 @@ dimensions, shard layout, LOD reduction method, etc.). See
 
 Pre-release. Functional streaming pipeline with multiscale LOD support and Zarr
 v3 sharded output. The API may change without notice. Under active development.
+Plan to use this as a future backbone for 
+[acquire-zarr](https://github.com/acquire-project/acquire-zarr).

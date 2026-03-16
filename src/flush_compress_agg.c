@@ -18,17 +18,17 @@ static int
 kick_compress(struct compress_agg_stage* stage,
               int fc,
               const void* d_input,
-              uint64_t n_tiles,
-              size_t tile_bytes,
+              uint64_t n_chunks,
+              size_t chunk_bytes,
               CUstream compress_stream)
 {
   CU(Error, cuEventRecord(stage->t_compress_start[fc], compress_stream));
   CHECK(Error,
         codec_compress(&stage->codec,
                        d_input,
-                       tile_bytes,
+                       chunk_bytes,
                        (void*)stage->d_compressed[fc],
-                       n_tiles,
+                       n_chunks,
                        compress_stream) == 0);
   CU(Error, cuEventRecord(stage->t_compress_end[fc], compress_stream));
   return 0;
@@ -67,21 +67,19 @@ compress_agg_init(struct compress_agg_stage* stage,
 
   const size_t bpe = lod_dtype_bpe(config->dtype);
   const uint32_t K = cl->epochs_per_batch;
-  const uint64_t total_tiles = cl->levels.total_tiles;
-  const uint64_t tile_stride = cl->l0.tile_stride;
-  const uint64_t M = (uint64_t)K * total_tiles;
-  const size_t tile_bytes = tile_stride * bpe;
+  const uint64_t total_chunks = cl->levels.total_chunks;
+  const uint64_t chunk_stride = cl->l0.chunk_stride;
+  const uint64_t M = (uint64_t)K * total_chunks;
+  const size_t chunk_bytes = chunk_stride * bpe;
 
   // Codec
-  CHECK(Fail, codec_init(&stage->codec, config->codec, tile_bytes, M) == 0);
+  CHECK(Fail, codec_init(&stage->codec, config->codec, chunk_bytes, M) == 0);
 
   // Compressed buffers + events
   for (int fc = 0; fc < 2; ++fc) {
     CU(Fail,
-       cuMemAlloc(&stage->d_compressed[fc],
-                  M * stage->codec.max_output_size));
-    CU(Fail,
-       cuEventCreate(&stage->t_compress_start[fc], CU_EVENT_DEFAULT));
+       cuMemAlloc(&stage->d_compressed[fc], M * stage->codec.max_output_size));
+    CU(Fail, cuEventCreate(&stage->t_compress_start[fc], CU_EVENT_DEFAULT));
     CU(Fail, cuEventCreate(&stage->t_compress_end[fc], CU_EVENT_DEFAULT));
     CU(Fail, cuEventCreate(&stage->t_aggregate_end[fc], CU_EVENT_DEFAULT));
   }
@@ -99,20 +97,20 @@ compress_agg_init(struct compress_agg_stage* stage,
 
     uint32_t slot_count =
       li->batch_active_count > 0 ? li->batch_active_count : 1;
-    uint64_t tiles_lv = cl->levels.tile_count[lv];
-    uint64_t batch_tiles = (uint64_t)slot_count * tiles_lv;
+    uint64_t chunks_lv = cl->levels.chunk_count[lv];
+    uint64_t batch_chunks = (uint64_t)slot_count * chunks_lv;
     uint64_t batch_covering =
       (uint64_t)slot_count * li->agg_layout.covering_count;
-    size_t batch_agg_bytes = agg_pool_bytes(batch_tiles,
+    size_t batch_agg_bytes = agg_pool_bytes(batch_chunks,
                                             cl->max_output_size,
                                             li->agg_layout.covering_count,
-                                            li->agg_layout.tps_inner,
+                                            li->agg_layout.cps_inner,
                                             li->agg_layout.page_size);
 
     for (int i = 0; i < 2; ++i) {
       CHECK(Fail,
             aggregate_batch_slot_init(&stage->levels[lv].agg[i],
-                                      batch_tiles,
+                                      batch_chunks,
                                       batch_covering,
                                       batch_agg_bytes) == 0);
       CU(Fail, cuEventRecord(stage->levels[lv].agg[i].ready, compute));
@@ -120,16 +118,16 @@ compress_agg_init(struct compress_agg_stage* stage,
 
     // Shard state
     struct shard_state* ss = &stage->levels[lv].shard;
-    ss->tiles_per_shard_0 = li->tiles_per_shard_0;
-    ss->tiles_per_shard_inner = li->tiles_per_shard_inner;
-    ss->tiles_per_shard_total = li->tiles_per_shard_total;
+    ss->chunks_per_shard_0 = li->chunks_per_shard_0;
+    ss->chunks_per_shard_inner = li->chunks_per_shard_inner;
+    ss->chunks_per_shard_total = li->chunks_per_shard_total;
     ss->shard_inner_count = li->shard_inner_count;
 
     ss->shards = (struct active_shard*)calloc(ss->shard_inner_count,
                                               sizeof(struct active_shard));
     CHECK(Fail, ss->shards);
 
-    size_t index_bytes = 2 * ss->tiles_per_shard_total * sizeof(uint64_t);
+    size_t index_bytes = 2 * ss->chunks_per_shard_total * sizeof(uint64_t);
     for (uint64_t i = 0; i < ss->shard_inner_count; ++i) {
       ss->shards[i].index = (uint64_t*)malloc(index_bytes);
       CHECK(Fail, ss->shards[i].index);
@@ -145,8 +143,8 @@ compress_agg_init(struct compress_agg_stage* stage,
     for (int lv = 0; lv < cl->levels.nlod; ++lv) {
       struct level_flush_state* lvl = &stage->levels[lv];
       uint32_t batch_count = lvl->batch_active_count;
-      uint64_t tiles_lv = cl->levels.tile_count[lv];
-      uint64_t lut_len = (uint64_t)batch_count * tiles_lv;
+      uint64_t chunks_lv = cl->levels.chunk_count[lv];
+      uint64_t lut_len = (uint64_t)batch_count * chunks_lv;
 
       if (lut_len == 0)
         continue;
@@ -163,10 +161,10 @@ compress_agg_init(struct compress_agg_stage* stage,
           period = 1u << lv;
         uint32_t pool_epoch = (a + 1) * period - 1;
 
-        for (uint64_t j = 0; j < tiles_lv; ++j) {
-          uint64_t idx = (uint64_t)a * tiles_lv + j;
-          h_gather[idx] = (uint32_t)(pool_epoch * total_tiles +
-                                     cl->levels.tile_offset[lv] + j);
+        for (uint64_t j = 0; j < chunks_lv; ++j) {
+          uint64_t idx = (uint64_t)a * chunks_lv + j;
+          h_gather[idx] = (uint32_t)(pool_epoch * total_chunks +
+                                     cl->levels.chunk_offset[lv] + j);
 
           uint64_t perm_pos = 0;
           uint64_t rest = j;
@@ -249,12 +247,15 @@ compress_agg_kick(struct compress_agg_stage* stage,
 
   // Compress all epochs as one batch
   {
-    uint64_t batch_tiles = (uint64_t)n_epochs * levels->total_tiles;
-    size_t real_tile_bytes = stage->codec.tile_bytes;
+    uint64_t batch_chunks = (uint64_t)n_epochs * levels->total_chunks;
+    size_t real_chunk_bytes = stage->codec.chunk_bytes;
     CHECK(Error,
-          kick_compress(
-            stage, fc, (void*)in->pool_buf, batch_tiles, real_tile_bytes,
-            compress_stream) == 0);
+          kick_compress(stage,
+                        fc,
+                        (void*)in->pool_buf,
+                        batch_chunks,
+                        real_chunk_bytes,
+                        compress_stream) == 0);
   }
 
   // Per-level batch aggregate on compress stream
@@ -263,10 +264,11 @@ compress_agg_kick(struct compress_agg_stage* stage,
       continue;
 
     struct level_flush_state* lvl = &stage->levels[lv];
-    uint32_t active_count = level_active_epochs(lvl, batch, levels, lv, n_epochs);
+    uint32_t active_count =
+      level_active_epochs(lvl, batch, levels, lv, n_epochs);
 
     struct aggregate_slot* agg = &lvl->agg[fc];
-    uint64_t tiles_lv = levels->tile_count[lv];
+    uint64_t chunks_lv = levels->chunk_count[lv];
 
     if (active_count == 0) {
       // Infrequent dim0 level (period > K): scan actual per-epoch masks.
@@ -276,22 +278,21 @@ compress_agg_kick(struct compress_agg_stage* stage,
         active_count++;
 
         // aggregate_epoch_level but with compress_stream
-        void* d_comp = (char*)stage->d_compressed[fc] +
-                       ((uint64_t)e * levels->total_tiles +
-                        levels->tile_offset[lv]) *
-                         stage->codec.max_output_size;
+        void* d_comp =
+          (char*)stage->d_compressed[fc] +
+          ((uint64_t)e * levels->total_chunks + levels->chunk_offset[lv]) *
+            stage->codec.max_output_size;
         size_t* d_sizes = stage->codec.d_comp_sizes +
-                          (uint64_t)e * levels->total_tiles +
-                          levels->tile_offset[lv];
+                          (uint64_t)e * levels->total_chunks +
+                          levels->chunk_offset[lv];
         CHECK(Error,
               aggregate_by_shard_async(
-                &lvl->agg_layout, d_comp, d_sizes, agg,
-                compress_stream) == 0);
+                &lvl->agg_layout, d_comp, d_sizes, agg, compress_stream) == 0);
       }
       if (active_count == 0)
         continue;
     } else {
-      uint64_t batch_tile_count = (uint64_t)active_count * tiles_lv;
+      uint64_t batch_chunk_count = (uint64_t)active_count * chunks_lv;
       uint64_t batch_covering =
         (uint64_t)active_count * lvl->agg_layout.covering_count;
 
@@ -304,7 +305,7 @@ compress_agg_kick(struct compress_agg_stage* stage,
                 stage->codec.d_comp_sizes,
                 (const uint32_t*)(uintptr_t)lvl->d_batch_gather,
                 (const uint32_t*)(uintptr_t)lvl->d_batch_perm,
-                batch_tile_count,
+                batch_chunk_count,
                 batch_covering,
                 stage->codec.max_output_size,
                 &lvl->agg_layout,
@@ -319,16 +320,16 @@ compress_agg_kick(struct compress_agg_stage* stage,
           uint32_t pool_epoch = (n_epochs == 1) ? 0 : (a + 1) * period - 1;
 
           void* d_comp = (char*)stage->d_compressed[fc] +
-                         ((uint64_t)pool_epoch * levels->total_tiles +
-                          levels->tile_offset[lv]) *
+                         ((uint64_t)pool_epoch * levels->total_chunks +
+                          levels->chunk_offset[lv]) *
                            stage->codec.max_output_size;
           size_t* d_sizes = stage->codec.d_comp_sizes +
-                            (uint64_t)pool_epoch * levels->total_tiles +
-                            levels->tile_offset[lv];
+                            (uint64_t)pool_epoch * levels->total_chunks +
+                            levels->chunk_offset[lv];
           CHECK(Error,
                 aggregate_by_shard_async(
-                  &lvl->agg_layout, d_comp, d_sizes, agg,
-                  compress_stream) == 0);
+                  &lvl->agg_layout, d_comp, d_sizes, agg, compress_stream) ==
+                  0);
         }
       }
     }

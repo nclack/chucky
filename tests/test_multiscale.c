@@ -1,10 +1,10 @@
+#include "lod_plan.h"
 #include "prelude.cuda.h"
 #include "prelude.h"
-#include "lod_plan.h"
 #include "stream.h"
 #include "test_data.h"
-#include "test_shard_sink.h"
 #include "test_runner.h"
+#include "test_shard_sink.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -22,58 +22,58 @@ test_multiscale_l0_correctness(void)
   // Small enough for fast testing, large enough to exercise multiple epochs.
   const struct dimension dims[] = {
     { .size = 8,
-      .tile_size = 2,
-      .tiles_per_shard = 2,
+      .chunk_size = 2,
+      .chunks_per_shard = 2,
       .name = "t",
       .storage_position = 0 },
     { .size = 16,
-      .tile_size = 8,
-      .tiles_per_shard = 2,
+      .chunk_size = 8,
+      .chunks_per_shard = 2,
       .name = "z",
       .storage_position = 1 },
     { .size = 16,
-      .tile_size = 8,
-      .tiles_per_shard = 2,
+      .chunk_size = 8,
+      .chunks_per_shard = 2,
       .name = "y",
       .storage_position = 2 },
     { .size = 16,
-      .tile_size = 8,
-      .tiles_per_shard = 2,
+      .chunk_size = 8,
+      .chunks_per_shard = 2,
       .name = "x",
       .storage_position = 3 },
     { .size = 1,
-      .tile_size = 1,
-      .tiles_per_shard = 1,
+      .chunk_size = 1,
+      .chunks_per_shard = 1,
       .name = "c",
       .storage_position = 4 },
   };
   const struct dimension dims_ms[] = {
     { .size = 8,
-      .tile_size = 2,
-      .tiles_per_shard = 2,
+      .chunk_size = 2,
+      .chunks_per_shard = 2,
       .name = "t",
       .storage_position = 0 },
     { .size = 16,
-      .tile_size = 8,
-      .tiles_per_shard = 2,
+      .chunk_size = 8,
+      .chunks_per_shard = 2,
       .name = "z",
       .downsample = 1,
       .storage_position = 1 },
     { .size = 16,
-      .tile_size = 8,
-      .tiles_per_shard = 2,
+      .chunk_size = 8,
+      .chunks_per_shard = 2,
       .name = "y",
       .downsample = 1,
       .storage_position = 2 },
     { .size = 16,
-      .tile_size = 8,
-      .tiles_per_shard = 2,
+      .chunk_size = 8,
+      .chunks_per_shard = 2,
       .name = "x",
       .downsample = 1,
       .storage_position = 3 },
     { .size = 1,
-      .tile_size = 1,
-      .tiles_per_shard = 1,
+      .chunk_size = 1,
+      .chunks_per_shard = 1,
       .name = "c",
       .storage_position = 4 },
   };
@@ -84,8 +84,8 @@ test_multiscale_l0_correctness(void)
   // Compute number of L0 shards
   int num_shards = 1;
   for (int d = 0; d < rank; ++d) {
-    int tile_count = (int)(dims[d].size / dims[d].tile_size);
-    int shard_count = (int)(tile_count / dims[d].tiles_per_shard);
+    int chunk_count = (int)(dims[d].size / dims[d].chunk_size);
+    int shard_count = (int)(chunk_count / dims[d].chunks_per_shard);
     num_shards *= shard_count;
   }
   const size_t shard_cap = total_bytes + 4096; // generous per-shard capacity
@@ -108,7 +108,8 @@ test_multiscale_l0_correctness(void)
     };
     CHECK(Fail1, (s = tile_stream_gpu_create(&config)) != NULL);
     xor_pattern_init(dims, rank, 2);
-    CHECK(Fail1b, pump_data(tile_stream_gpu_writer(s), total_elements, fill_xor) == 0);
+    CHECK(Fail1b,
+          pump_data(tile_stream_gpu_writer(s), total_elements, fill_xor) == 0);
     CHECK(Fail1b, tile_stream_gpu_cursor(s) == total_elements);
     tile_stream_gpu_destroy(s);
     xor_pattern_free();
@@ -137,7 +138,8 @@ Run2:
     };
     CHECK(Fail2b, (s = tile_stream_gpu_create(&config)) != NULL);
     xor_pattern_init(dims_ms, rank, 2);
-    CHECK(Fail2c, pump_data(tile_stream_gpu_writer(s), total_elements, fill_xor) == 0);
+    CHECK(Fail2c,
+          pump_data(tile_stream_gpu_writer(s), total_elements, fill_xor) == 0);
     CHECK(Fail2c, tile_stream_gpu_cursor(s) == total_elements);
     tile_stream_gpu_destroy(s);
     xor_pattern_free();
@@ -222,62 +224,62 @@ test_dim0_l0_correctness(void)
   // 8 epochs along t so dim0 levels 1+ accumulate and emit.
   const struct dimension dims_inner[] = {
     { .size = 8,
-      .tile_size = 2,
-      .tiles_per_shard = 2,
+      .chunk_size = 2,
+      .chunks_per_shard = 2,
       .name = "t",
       .storage_position = 0 },
     { .size = 16,
-      .tile_size = 8,
-      .tiles_per_shard = 2,
+      .chunk_size = 8,
+      .chunks_per_shard = 2,
       .name = "z",
       .downsample = 1,
       .storage_position = 1 },
     { .size = 16,
-      .tile_size = 8,
-      .tiles_per_shard = 2,
+      .chunk_size = 8,
+      .chunks_per_shard = 2,
       .name = "y",
       .downsample = 1,
       .storage_position = 2 },
     { .size = 16,
-      .tile_size = 8,
-      .tiles_per_shard = 2,
+      .chunk_size = 8,
+      .chunks_per_shard = 2,
       .name = "x",
       .downsample = 1,
       .storage_position = 3 },
     { .size = 1,
-      .tile_size = 1,
-      .tiles_per_shard = 1,
+      .chunk_size = 1,
+      .chunks_per_shard = 1,
       .name = "c",
       .storage_position = 4 },
   };
   const struct dimension dims_dim0[] = {
     { .size = 8,
-      .tile_size = 2,
-      .tiles_per_shard = 2,
+      .chunk_size = 2,
+      .chunks_per_shard = 2,
       .name = "t",
       .downsample = 1,
       .storage_position = 0 },
     { .size = 16,
-      .tile_size = 8,
-      .tiles_per_shard = 2,
+      .chunk_size = 8,
+      .chunks_per_shard = 2,
       .name = "z",
       .downsample = 1,
       .storage_position = 1 },
     { .size = 16,
-      .tile_size = 8,
-      .tiles_per_shard = 2,
+      .chunk_size = 8,
+      .chunks_per_shard = 2,
       .name = "y",
       .downsample = 1,
       .storage_position = 2 },
     { .size = 16,
-      .tile_size = 8,
-      .tiles_per_shard = 2,
+      .chunk_size = 8,
+      .chunks_per_shard = 2,
       .name = "x",
       .downsample = 1,
       .storage_position = 3 },
     { .size = 1,
-      .tile_size = 1,
-      .tiles_per_shard = 1,
+      .chunk_size = 1,
+      .chunks_per_shard = 1,
       .name = "c",
       .storage_position = 4 },
   };
@@ -287,8 +289,8 @@ test_dim0_l0_correctness(void)
   // Compute number of L0 shards
   int num_shards = 1;
   for (int d = 0; d < rank; ++d) {
-    int tile_count = (int)(dims_inner[d].size / dims_inner[d].tile_size);
-    int shard_count = (int)(tile_count / dims_inner[d].tiles_per_shard);
+    int chunk_count = (int)(dims_inner[d].size / dims_inner[d].chunk_size);
+    int shard_count = (int)(chunk_count / dims_inner[d].chunks_per_shard);
     num_shards *= shard_count;
   }
   const size_t shard_cap = total_elements * sizeof(uint16_t) + 4096;
@@ -311,7 +313,8 @@ test_dim0_l0_correctness(void)
     };
     CHECK(Fail1, (s = tile_stream_gpu_create(&config)) != NULL);
     xor_pattern_init(dims_inner, rank, 2);
-    CHECK(Fail1b, pump_data(tile_stream_gpu_writer(s), total_elements, fill_xor) == 0);
+    CHECK(Fail1b,
+          pump_data(tile_stream_gpu_writer(s), total_elements, fill_xor) == 0);
     CHECK(Fail1b, tile_stream_gpu_cursor(s) == total_elements);
     tile_stream_gpu_destroy(s);
     xor_pattern_free();
@@ -344,10 +347,12 @@ Run2d:
     {
       struct tile_stream_status st = tile_stream_gpu_status(s);
       log_info("  dim0 enabled: nlod=%d, dim0_downsample=%d",
-               st.nlod, st.dim0_downsample);
+               st.nlod,
+               st.dim0_downsample);
     }
     xor_pattern_init(dims_dim0, rank, 2);
-    CHECK(Fail2c, pump_data(tile_stream_gpu_writer(s), total_elements, fill_xor) == 0);
+    CHECK(Fail2c,
+          pump_data(tile_stream_gpu_writer(s), total_elements, fill_xor) == 0);
     CHECK(Fail2c, tile_stream_gpu_cursor(s) == total_elements);
     tile_stream_gpu_destroy(s);
     xor_pattern_free();
@@ -427,35 +432,36 @@ test_dim0_multi_epoch_levels(void)
 
   // 5D: t, z, y, x, c. Dim0 + inner downsample.
   // 16 epochs along t to trigger multiple dim0 emissions.
-  // Inner dims 32 with tile 8 → 4 tiles → level 1 has 16 (≥ tile 8) → nlod≥2
+  // Inner dims 32 with chunk 8 → 4 chunks → level 1 has 16 (>= chunk 8) →
+  // nlod>=2
   const struct dimension dims[] = {
     { .size = 32,
-      .tile_size = 2,
-      .tiles_per_shard = 4,
+      .chunk_size = 2,
+      .chunks_per_shard = 4,
       .name = "t",
       .downsample = 1,
       .storage_position = 0 },
     { .size = 32,
-      .tile_size = 8,
-      .tiles_per_shard = 2,
+      .chunk_size = 8,
+      .chunks_per_shard = 2,
       .name = "z",
       .downsample = 1,
       .storage_position = 1 },
     { .size = 32,
-      .tile_size = 8,
-      .tiles_per_shard = 2,
+      .chunk_size = 8,
+      .chunks_per_shard = 2,
       .name = "y",
       .downsample = 1,
       .storage_position = 2 },
     { .size = 32,
-      .tile_size = 8,
-      .tiles_per_shard = 2,
+      .chunk_size = 8,
+      .chunks_per_shard = 2,
       .name = "x",
       .downsample = 1,
       .storage_position = 3 },
     { .size = 1,
-      .tile_size = 1,
-      .tiles_per_shard = 1,
+      .chunk_size = 1,
+      .chunks_per_shard = 1,
       .name = "c",
       .storage_position = 4 },
   };
@@ -469,7 +475,7 @@ test_dim0_multi_epoch_levels(void)
     uint32_t lod_mask = 0;
     for (int i = 0; i < rank; ++i) {
       shape[i] = dims[i].size;
-      tile_shape[i] = dims[i].tile_size;
+      tile_shape[i] = dims[i].chunk_size;
       if (dims[i].downsample)
         lod_mask |= (1u << i);
     }
@@ -490,14 +496,15 @@ test_dim0_multi_epoch_levels(void)
     if (lv == 0) {
       int ns = 1;
       for (int d = 0; d < rank; ++d) {
-        uint64_t tc = ceildiv(dims[d].size, dims[d].tile_size);
-        uint64_t tps = dims[d].tiles_per_shard;
+        uint64_t tc = ceildiv(dims[d].size, dims[d].chunk_size);
+        uint64_t tps = dims[d].chunks_per_shard;
         if (tps == 0)
           tps = tc;
         uint64_t sc = ceildiv(tc, tps);
         ns *= (int)sc;
       }
-      num_shards_per_level[lv] = ns < TEST_SHARD_SINK_MAX_SHARDS ? ns : TEST_SHARD_SINK_MAX_SHARDS;
+      num_shards_per_level[lv] =
+        ns < TEST_SHARD_SINK_MAX_SHARDS ? ns : TEST_SHARD_SINK_MAX_SHARDS;
     } else {
       num_shards_per_level[lv] = TEST_SHARD_SINK_MAX_SHARDS;
     }
@@ -533,11 +540,14 @@ test_dim0_multi_epoch_levels(void)
     {
       struct tile_stream_status st = tile_stream_gpu_status(s);
       log_info("  stream nlod=%d dim0_downsample=%d epochs_per_batch=%u",
-               st.nlod, st.dim0_downsample, st.epochs_per_batch);
+               st.nlod,
+               st.dim0_downsample,
+               st.epochs_per_batch);
     }
 
     xor_pattern_init(dims, rank, 2);
-    int pump_ok = (pump_data(tile_stream_gpu_writer(s), total_elements, fill_xor) == 0);
+    int pump_ok =
+      (pump_data(tile_stream_gpu_writer(s), total_elements, fill_xor) == 0);
     int cursor_ok = pump_ok && (tile_stream_gpu_cursor(s) == total_elements);
     tile_stream_gpu_destroy(s);
     xor_pattern_free();
@@ -587,8 +597,6 @@ Fail:
   return 1;
 }
 
-RUN_GPU_TESTS(
-  { "multiscale_l0_correctness", test_multiscale_l0_correctness },
-  { "dim0_l0_correctness", test_dim0_l0_correctness },
-  { "dim0_multi_epoch_levels", test_dim0_multi_epoch_levels },
-)
+RUN_GPU_TESTS({ "multiscale_l0_correctness", test_multiscale_l0_correctness },
+              { "dim0_l0_correctness", test_dim0_l0_correctness },
+              { "dim0_multi_epoch_levels", test_dim0_multi_epoch_levels }, )

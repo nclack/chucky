@@ -23,17 +23,18 @@
     CU(RunGpuFail_, cuCtxCreate(&ctx_, 0, dev_));                              \
                                                                                \
     int rc_ = 0;                                                               \
-    struct {                                                                    \
+    struct                                                                     \
+    {                                                                          \
       const char* name;                                                        \
       int (*fn)(void);                                                         \
     } tests_[] = { __VA_ARGS__ };                                              \
-    for (size_t i_ = 0; i_ < sizeof(tests_) / sizeof(tests_[0]); ++i_) {      \
-      int r_ = tests_[i_].fn();                                               \
+    for (size_t i_ = 0; i_ < sizeof(tests_) / sizeof(tests_[0]); ++i_) {       \
+      int r_ = tests_[i_].fn();                                                \
       if (r_) {                                                                \
-        log_error("  FAIL: %s", tests_[i_].name);                             \
+        log_error("  FAIL: %s", tests_[i_].name);                              \
         rc_ = 1;                                                               \
       } else {                                                                 \
-        log_info("  PASS: %s", tests_[i_].name);                              \
+        log_info("  PASS: %s", tests_[i_].name);                               \
       }                                                                        \
     }                                                                          \
                                                                                \

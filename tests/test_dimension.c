@@ -30,9 +30,9 @@ test_dims_create(void)
   CHECK(Error, dims[1].size == 2);
   CHECK(Error, dims[2].size == 2048);
   CHECK(Error, dims[3].size == 2304);
-  // defaults: tile_size = size
-  CHECK(Error, dims[0].tile_size == 1000);
-  CHECK(Error, dims[1].tile_size == 2);
+  // defaults: chunk_size = size
+  CHECK(Error, dims[0].chunk_size == 1000);
+  CHECK(Error, dims[1].chunk_size == 2);
   // defaults: identity storage_position
   CHECK(Error, dims[0].storage_position == 0);
   CHECK(Error, dims[1].storage_position == 1);
@@ -40,8 +40,8 @@ test_dims_create(void)
   CHECK(Error, dims[3].storage_position == 3);
   // defaults: no downsample
   CHECK(Error, dims[0].downsample == 0);
-  // defaults: tiles_per_shard = 0
-  CHECK(Error, dims[0].tiles_per_shard == 0);
+  // defaults: chunks_per_shard = 0
+  CHECK(Error, dims[0].chunks_per_shard == 0);
 
   ok = 1;
 Error:
@@ -67,7 +67,7 @@ Error:
 }
 
 static int
-test_dims_budget_tile_size(void)
+test_dims_budget_chunk_size(void)
 {
   int ok = 0;
   struct dimension dims[4];
@@ -81,17 +81,17 @@ test_dims_budget_tile_size(void)
   // dim 2 (ratio 2): 1<<(2*4)   = 1<<8 = 256
   // dim 3 (ratio 2): 1<<(2*4)   = 1<<8 = 256
   uint8_t ratios[] = { 1, 0, 2, 2 };
-  dims_budget_tile_size(dims, 4, 1ULL << 19, ratios);
+  dims_budget_chunk_size(dims, 4, 1ULL << 19, ratios);
 
-  CHECK(Error, dims[0].tile_size == 8);
-  CHECK(Error, dims[1].tile_size == 1);
-  CHECK(Error, dims[2].tile_size == 256);
-  CHECK(Error, dims[3].tile_size == 256);
+  CHECK(Error, dims[0].chunk_size == 8);
+  CHECK(Error, dims[1].chunk_size == 1);
+  CHECK(Error, dims[2].chunk_size == 256);
+  CHECK(Error, dims[3].chunk_size == 256);
 
   // Verify total: 128 * 1 * 64 * 64 = 2^19
   uint64_t total = 1;
   for (int i = 0; i < 4; ++i)
-    total *= dims[i].tile_size;
+    total *= dims[i].chunk_size;
   CHECK(Error, total == (1ULL << 19));
 
   ok = 1;
@@ -101,7 +101,7 @@ Error:
 }
 
 static int
-test_dims_budget_tile_size_uniform(void)
+test_dims_budget_chunk_size_uniform(void)
 {
   int ok = 0;
   struct dimension dims[3];
@@ -112,11 +112,11 @@ test_dims_budget_tile_size_uniform(void)
   // bits_per_part = ceil(12/3) = 4, remainder = 0
   // each dim: 1<<4 = 16
   uint8_t ratios[] = { 1, 1, 1 };
-  dims_budget_tile_size(dims, 3, 1ULL << 12, ratios);
+  dims_budget_chunk_size(dims, 3, 1ULL << 12, ratios);
 
-  CHECK(Error, dims[0].tile_size == 16);
-  CHECK(Error, dims[1].tile_size == 16);
-  CHECK(Error, dims[2].tile_size == 16);
+  CHECK(Error, dims[0].chunk_size == 16);
+  CHECK(Error, dims[1].chunk_size == 16);
+  CHECK(Error, dims[2].chunk_size == 16);
 
   ok = 1;
 Error:
@@ -133,22 +133,22 @@ test_dims_set_shard_counts(void)
   dims_create(dims, "tcyx", sizes);
 
   uint8_t ratios[] = { 1, 0, 2, 2 };
-  dims_budget_tile_size(dims, 4, 1ULL << 19, ratios);
-  // tile_sizes: 8, 1, 256, 256
-  // tile_counts: ceil(1000/8)=125, ceil(2/1)=2, ceil(2048/256)=8,
+  dims_budget_chunk_size(dims, 4, 1ULL << 19, ratios);
+  // chunk_sizes: 8, 1, 256, 256
+  // chunk_counts: ceil(1000/8)=125, ceil(2/1)=2, ceil(2048/256)=8,
   // ceil(2304/256)=9
 
   uint64_t shard_counts[] = { 1, 1, 4, 4 };
   dims_set_shard_counts(dims, 4, shard_counts);
 
   // tps[0] = ceil(125/1) = 125
-  CHECK(Error, dims[0].tiles_per_shard == 125);
+  CHECK(Error, dims[0].chunks_per_shard == 125);
   // tps[1] = ceil(2/1) = 2
-  CHECK(Error, dims[1].tiles_per_shard == 2);
+  CHECK(Error, dims[1].chunks_per_shard == 2);
   // tps[2] = ceil(8/4) = 2
-  CHECK(Error, dims[2].tiles_per_shard == 2);
+  CHECK(Error, dims[2].chunks_per_shard == 2);
   // tps[3] = ceil(9/4) = 3
-  CHECK(Error, dims[3].tiles_per_shard == 3);
+  CHECK(Error, dims[3].chunks_per_shard == 3);
 
   ok = 1;
 Error:
@@ -163,15 +163,15 @@ test_dims_set_shard_counts_skip_zero(void)
   struct dimension dims[2];
   uint64_t sizes[] = { 100, 200 };
   dims_create(dims, "xy", sizes);
-  dims[0].tile_size = 10;
-  dims[1].tile_size = 20;
-  dims[0].tiles_per_shard = 99; // should not change
+  dims[0].chunk_size = 10;
+  dims[1].chunk_size = 20;
+  dims[0].chunks_per_shard = 99; // should not change
 
   uint64_t shard_counts[] = { 0, 2 };
   dims_set_shard_counts(dims, 2, shard_counts);
 
-  CHECK(Error, dims[0].tiles_per_shard == 99); // unchanged
-  CHECK(Error, dims[1].tiles_per_shard == 5);  // ceil(10/2)
+  CHECK(Error, dims[0].chunks_per_shard == 99); // unchanged
+  CHECK(Error, dims[1].chunks_per_shard == 5);  // ceil(10/2)
 
   ok = 1;
 Error:
@@ -244,7 +244,7 @@ test_dims_print(void)
   dims_create(dims, "tcyx", sizes);
 
   uint8_t ratios[] = { 1, 0, 2, 2 };
-  dims_budget_tile_size(dims, 4, 1ULL << 19, ratios);
+  dims_budget_chunk_size(dims, 4, 1ULL << 19, ratios);
 
   uint64_t shard_counts[] = { 1, 1, 4, 4 };
   dims_set_shard_counts(dims, 4, shard_counts);
@@ -263,14 +263,15 @@ int
 main(void)
 {
   int rc = 0;
-  struct {
+  struct
+  {
     const char* name;
     int (*fn)(void);
   } tests[] = {
     { "dims_create", test_dims_create },
     { "dims_create_errors", test_dims_create_errors },
-    { "dims_budget_tile_size", test_dims_budget_tile_size },
-    { "dims_budget_tile_size_uniform", test_dims_budget_tile_size_uniform },
+    { "dims_budget_chunk_size", test_dims_budget_chunk_size },
+    { "dims_budget_chunk_size_uniform", test_dims_budget_chunk_size_uniform },
     { "dims_set_shard_counts", test_dims_set_shard_counts },
     { "dims_set_shard_counts_skip_zero", test_dims_set_shard_counts_skip_zero },
     { "dims_set_storage_order", test_dims_set_storage_order },
@@ -279,8 +280,12 @@ main(void)
   };
   for (size_t i = 0; i < sizeof(tests) / sizeof(tests[0]); ++i) {
     int r = tests[i].fn();
-    if (r) { log_error("  FAIL: %s", tests[i].name); rc = 1; }
-    else   { log_info("  PASS: %s", tests[i].name); }
+    if (r) {
+      log_error("  FAIL: %s", tests[i].name);
+      rc = 1;
+    } else {
+      log_info("  PASS: %s", tests[i].name);
+    }
   }
   return rc;
 }

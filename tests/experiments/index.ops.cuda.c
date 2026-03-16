@@ -1,9 +1,9 @@
 #include "index.ops.util.h"
+#include "prelude.cuda.h"
+#include "prelude.h"
 #include "transpose.h"
 #include <cuda.h>
 #include <cuda_runtime_api.h>
-#include "prelude.h"
-#include "prelude.cuda.h"
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -139,7 +139,7 @@ make_expected_u16(int rank,
 static int
 test_transpose_u16_basic(void)
 {
-  // Setup a tiling of a 640x480x3 array into tiles of size 10x10x1
+  // Setup a tiling of a 640x480x3 array into chunks of size 10x10x1
   const int rank = 6;
   const int shape[] = { 48, 10, 64, 10, 3, 1 };
   const int p[] = { 0, 2, 4, 1, 3, 5 };
@@ -268,7 +268,7 @@ Fail:
 static int
 test_transpose_u16_with_offset(void)
 {
-  // Setup a tiling of a 640x480x3 array into tiles of size 10x10x1
+  // Setup a tiling of a 640x480x3 array into chunks of size 10x10x1
   const int rank = 6;
   const int shape[] = { 48, 10, 64, 10, 3, 1 };
   const int p[] = { 0, 2, 4, 1, 3, 5 };

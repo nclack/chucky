@@ -50,7 +50,7 @@ zarr_sink_flush(struct zarr_sink* s);
 size_t
 zarr_sink_pending_bytes(struct zarr_sink* s);
 
-// Get the shard_sink interface for use with tile_stream_gpu.
+// Get the shard_sink interface for use with the chunk stream.
 struct shard_sink*
 zarr_sink_as_shard_sink(struct zarr_sink* s);
 

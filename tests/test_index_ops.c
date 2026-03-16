@@ -369,7 +369,8 @@ main(int ac, char* av[])
   (void)av;
 
   int rc = 0;
-  struct {
+  struct
+  {
     const char* name;
     int (*fn)(void);
   } tests[] = {
@@ -384,8 +385,12 @@ main(int ac, char* av[])
   };
   for (size_t i = 0; i < sizeof(tests) / sizeof(tests[0]); ++i) {
     int r = tests[i].fn();
-    if (r) { log_error("  FAIL: %s", tests[i].name); rc = 1; }
-    else   { log_info("  PASS: %s", tests[i].name); }
+    if (r) {
+      log_error("  FAIL: %s", tests[i].name);
+      rc = 1;
+    } else {
+      log_info("  PASS: %s", tests[i].name);
+    }
   }
   return rc;
 }

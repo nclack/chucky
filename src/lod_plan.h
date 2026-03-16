@@ -52,13 +52,13 @@ struct lod_span
 lod_segment(const struct lod_plan* p, int level);
 
 // Initialize a plan. Returns 0 on success, non-zero on failure.
-// tile_shape: per-dimension tile sizes (may be NULL). When provided,
-// levels stop before any LOD dimension would drop below its tile size.
+// chunk_shape: per-dimension chunk sizes (may be NULL). When provided,
+// levels stop before any LOD dimension would drop below its chunk size.
 int
 lod_plan_init(struct lod_plan* p,
               int ndim,
               const uint64_t* shape,
-              const uint64_t* tile_shape,
+              const uint64_t* chunk_shape,
               uint32_t lod_mask,
               int max_levels);
 
@@ -68,7 +68,7 @@ int
 lod_plan_init_shapes(struct lod_plan* p,
                      int ndim,
                      const uint64_t* shape,
-                     const uint64_t* tile_shape,
+                     const uint64_t* chunk_shape,
                      uint32_t lod_mask,
                      int max_levels);
 

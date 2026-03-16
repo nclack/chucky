@@ -9,15 +9,15 @@
 int
 shard_index_parse(const uint8_t* buf,
                   size_t shard_size,
-                  size_t tiles_per_shard,
+                  size_t chunks_per_shard,
                   uint64_t* offsets,
                   uint64_t* sizes)
 {
-  size_t index_data_bytes = tiles_per_shard * 2 * sizeof(uint64_t);
+  size_t index_data_bytes = chunks_per_shard * 2 * sizeof(uint64_t);
   if (shard_size <= index_data_bytes + 4)
     return 1;
   const uint8_t* index_ptr = buf + shard_size - index_data_bytes - 4;
-  for (size_t i = 0; i < tiles_per_shard; ++i) {
+  for (size_t i = 0; i < chunks_per_shard; ++i) {
     memcpy(&offsets[i], index_ptr + i * 16, sizeof(uint64_t));
     memcpy(&sizes[i], index_ptr + i * 16 + 8, sizeof(uint64_t));
   }
@@ -37,25 +37,25 @@ Fail:
 }
 
 int
-tile_decompress_verify_u16(const uint8_t* comp_data,
-                           size_t comp_size,
-                           size_t tile_bytes,
-                           uint64_t tile_stride,
-                           uint16_t expected_val)
+chunk_decompress_verify_u16(const uint8_t* comp_data,
+                            size_t comp_size,
+                            size_t chunk_bytes,
+                            uint64_t chunk_stride,
+                            uint16_t expected_val)
 {
-  uint8_t* decomp = (uint8_t*)calloc(1, tile_bytes);
+  uint8_t* decomp = (uint8_t*)calloc(1, chunk_bytes);
   if (!decomp)
     return 1;
 
-  size_t result = ZSTD_decompress(decomp, tile_bytes, comp_data, comp_size);
-  if (ZSTD_isError(result) || result != tile_bytes) {
+  size_t result = ZSTD_decompress(decomp, chunk_bytes, comp_data, comp_size);
+  if (ZSTD_isError(result) || result != chunk_bytes) {
     free(decomp);
     return 1;
   }
 
   const uint16_t* got = (const uint16_t*)decomp;
   int errors = 0;
-  for (uint64_t e = 0; e < tile_stride; ++e) {
+  for (uint64_t e = 0; e < chunk_stride; ++e) {
     if (got[e] != expected_val)
       errors++;
   }
@@ -64,10 +64,10 @@ tile_decompress_verify_u16(const uint8_t* comp_data,
 }
 
 int
-tile_decompress(const uint8_t* comp_data,
-                size_t comp_size,
-                void* out,
-                size_t out_bytes)
+chunk_decompress(const uint8_t* comp_data,
+                 size_t comp_size,
+                 void* out,
+                 size_t out_bytes)
 {
   size_t result = ZSTD_decompress(out, out_bytes, comp_data, comp_size);
   if (ZSTD_isError(result) || result != out_bytes)

@@ -131,19 +131,19 @@ two_phase_d2h(const struct d2h_deliver_stage* stage,
     size_t actual = agg->h_offsets[covering];
     if (config->shard_alignment > 0)
       actual += config->shard_alignment;
-    size_t cap = agg_pool_bytes((uint64_t)active_count * levels->tile_count[lv],
-                                handoff->max_output_size,
-                                lvl->agg_layout.covering_count,
-                                lvl->agg_layout.tps_inner,
-                                lvl->agg_layout.page_size);
+    size_t cap =
+      agg_pool_bytes((uint64_t)active_count * levels->chunk_count[lv],
+                     handoff->max_output_size,
+                     lvl->agg_layout.covering_count,
+                     lvl->agg_layout.cps_inner,
+                     lvl->agg_layout.page_size);
     if (actual > cap)
       actual = cap;
 
-    CU(Error,
-       cuMemcpyDtoHAsync(agg->h_aggregated,
-                         (CUdeviceptr)agg->d_aggregated,
-                         actual,
-                         d2h_stream));
+    CU(
+      Error,
+      cuMemcpyDtoHAsync(
+        agg->h_aggregated, (CUdeviceptr)agg->d_aggregated, actual, d2h_stream));
     CU(Error, cuEventRecord(agg->ready, d2h_stream));
   }
 
@@ -171,10 +171,9 @@ record_flush_metrics(const struct d2h_deliver_stage* stage,
   if (levels->enable_multiscale && lod->t_start) {
     const size_t bpe = lod_dtype_bpe(config->dtype);
     const size_t scatter_bytes = layout->epoch_elements * bpe;
-    const size_t morton_bytes =
-      lod->plan.levels.ends[lod->plan.nlod - 1] * bpe;
+    const size_t morton_bytes = lod->plan.levels.ends[lod->plan.nlod - 1] * bpe;
     const size_t unified_pool_bytes =
-      levels->total_tiles * layout->tile_stride * bpe;
+      levels->total_chunks * layout->chunk_stride * bpe;
 
     accumulate_metric_cu(
       &metrics->lod_gather, lod->t_start, lod->t_scatter_end, scatter_bytes);
@@ -183,22 +182,24 @@ record_flush_metrics(const struct d2h_deliver_stage* stage,
                          lod->t_reduce_end,
                          morton_bytes);
     if (levels->dim0_downsample) {
-      size_t accum_bpe = lod_accum_bpe(config->dtype, config->dim0_reduce_method);
+      size_t accum_bpe =
+        lod_accum_bpe(config->dtype, config->dim0_reduce_method);
       size_t dim0_bytes = lod->dim0.total_elements * accum_bpe;
       accumulate_metric_cu(&metrics->lod_dim0_fold,
                            lod->t_reduce_end,
                            lod->t_dim0_end,
                            dim0_bytes);
     }
-    accumulate_metric_cu(&metrics->lod_morton_tile,
+    accumulate_metric_cu(&metrics->lod_morton_chunk,
                          lod->t_dim0_end,
                          lod->t_end,
                          unified_pool_bytes);
   }
 
   {
-    const size_t pool_bytes = (uint64_t)n_epochs * levels->total_tiles *
-                              layout->tile_stride * lod_dtype_bpe(config->dtype);
+    const size_t pool_bytes = (uint64_t)n_epochs * levels->total_chunks *
+                              layout->chunk_stride *
+                              lod_dtype_bpe(config->dtype);
 
     accumulate_metric_cu(&metrics->compress,
                          handoff->t_compress_start,
@@ -224,10 +225,8 @@ record_flush_metrics(const struct d2h_deliver_stage* stage,
                          handoff->t_compress_end,
                          handoff->t_aggregate_end,
                          agg_bytes);
-    accumulate_metric_cu(&metrics->d2h,
-                         stage->t_d2h_start[fc],
-                         stage->ready[fc],
-                         agg_bytes);
+    accumulate_metric_cu(
+      &metrics->d2h, stage->t_d2h_start[fc], stage->ready[fc], agg_bytes);
   }
 }
 
@@ -276,8 +275,8 @@ sync_and_deliver(const struct d2h_deliver_stage* stage,
       sink_bytes += level_bytes;
 
       if (config->shard_sink->record_fence)
-        lvl->agg[fc].io_done = config->shard_sink->record_fence(
-          config->shard_sink, (uint8_t)lv);
+        lvl->agg[fc].io_done =
+          config->shard_sink->record_fence(config->shard_sink, (uint8_t)lv);
     }
 
     float sink_ms = platform_toc(&sink_clock) * 1000.0f;
@@ -308,9 +307,9 @@ maybe_update_metadata(const struct d2h_deliver_stage* stage,
   const struct dimension* dims = config->dimensions;
   for (int lv = 0; lv < stage->nlod; ++lv) {
     struct shard_state* ss = &stage->levels[lv].shard;
-    uint64_t dim0_tiles =
-      ss->shard_epoch * ss->tiles_per_shard_0 + ss->epoch_in_shard;
-    uint64_t dim0_extent = dim0_tiles * dims[0].tile_size;
+    uint64_t dim0_chunks =
+      ss->shard_epoch * ss->chunks_per_shard_0 + ss->epoch_in_shard;
+    uint64_t dim0_extent = dim0_chunks * dims[0].chunk_size;
     config->shard_sink->update_dim0(
       config->shard_sink, (uint8_t)lv, dim0_extent);
   }
@@ -353,8 +352,8 @@ d2h_deliver_drain(struct d2h_deliver_stage* stage,
                   struct stream_metrics* metrics,
                   struct platform_clock* metadata_update_clock)
 {
-  struct writer_result r =
-    sync_and_deliver(stage, handoff, levels, batch, layout, config, lod, metrics);
+  struct writer_result r = sync_and_deliver(
+    stage, handoff, levels, batch, layout, config, lod, metrics);
   if (!r.error)
     maybe_update_metadata(stage, config, metadata_update_clock);
   return r;

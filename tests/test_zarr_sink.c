@@ -46,18 +46,18 @@ test_metadata(const char* tmpdir)
 
   struct dimension dims[] = {
     { .size = 12,
-      .tile_size = 2,
-      .tiles_per_shard = 3,
+      .chunk_size = 2,
+      .chunks_per_shard = 3,
       .name = "z",
       .storage_position = 0 },
     { .size = 8,
-      .tile_size = 4,
-      .tiles_per_shard = 2,
+      .chunk_size = 4,
+      .chunks_per_shard = 2,
       .name = "y",
       .storage_position = 1 },
     { .size = 12,
-      .tile_size = 3,
-      .tiles_per_shard = 2,
+      .chunk_size = 3,
+      .chunks_per_shard = 2,
       .name = "x",
       .storage_position = 2 },
   };
@@ -104,7 +104,7 @@ test_metadata(const char* tmpdir)
     CHECK(Fail2, strstr((char*)data, "\"node_type\":\"array\""));
     CHECK(Fail2, strstr((char*)data, "\"data_type\":\"uint32\""));
     CHECK(Fail2, strstr((char*)data, "\"shape\":[12,8,12]"));
-    // chunk_shape (shard shape) = tile_size * tiles_per_shard = [6,8,6]
+    // chunk_shape (shard shape) = chunk_size * chunks_per_shard = [6,8,6]
     CHECK(Fail2, strstr((char*)data, "\"chunk_shape\":[6,8,6]"));
     CHECK(Fail2, strstr((char*)data, "\"sharding_indexed\""));
     CHECK(Fail2,
@@ -131,44 +131,44 @@ test_pipeline(const char* tmpdir)
   log_info("=== test_pipeline ===");
 
   const int size[3] = { 12, 8, 12 };
-  const int tile_size[3] = { 2, 4, 3 };
-  const int tiles_per_shard[3] = { 3, 2, 2 };
+  const int chunk_size[3] = { 2, 4, 3 };
+  const int chunks_per_shard[3] = { 3, 2, 2 };
 
-  const int tile_count[3] = {
-    size[0] / tile_size[0],
-    size[1] / tile_size[1],
-    size[2] / tile_size[2],
+  const int chunk_count[3] = {
+    size[0] / chunk_size[0],
+    size[1] / chunk_size[1],
+    size[2] / chunk_size[2],
   };
   const int shard_count[3] = {
-    tile_count[0] / tiles_per_shard[0],
-    tile_count[1] / tiles_per_shard[1],
-    tile_count[2] / tiles_per_shard[2],
+    chunk_count[0] / chunks_per_shard[0],
+    chunk_count[1] / chunks_per_shard[1],
+    chunk_count[2] / chunks_per_shard[2],
   };
 
   const int total_elements = size[0] * size[1] * size[2];
   const int num_shards = shard_count[0] * shard_count[1] * shard_count[2];
-  const int tiles_per_shard_total =
-    tiles_per_shard[0] * tiles_per_shard[1] * tiles_per_shard[2];
-  const int voxels_per_tile = tile_size[0] * tile_size[1] * tile_size[2];
+  const int chunks_per_shard_total =
+    chunks_per_shard[0] * chunks_per_shard[1] * chunks_per_shard[2];
+  const int voxels_per_chunk = chunk_size[0] * chunk_size[1] * chunk_size[2];
 
-  uint32_t* src = generate_encoded_volume(size, tile_size, tiles_per_shard);
+  uint32_t* src = generate_encoded_volume(size, chunk_size, chunks_per_shard);
   CHECK(Fail, src);
 
   // Create zarr sink
   const struct dimension dims[] = {
     { .size = 12,
-      .tile_size = 2,
-      .tiles_per_shard = 3,
+      .chunk_size = 2,
+      .chunks_per_shard = 3,
       .name = "z",
       .storage_position = 0 },
     { .size = 8,
-      .tile_size = 4,
-      .tiles_per_shard = 2,
+      .chunk_size = 4,
+      .chunks_per_shard = 2,
       .name = "y",
       .storage_position = 1 },
     { .size = 12,
-      .tile_size = 3,
-      .tiles_per_shard = 2,
+      .chunk_size = 3,
+      .chunks_per_shard = 2,
       .name = "x",
       .storage_position = 2 },
   };
@@ -185,7 +185,7 @@ test_pipeline(const char* tmpdir)
   struct zarr_sink* zs = zarr_sink_create(&zcfg);
   CHECK(Fail2, zs);
 
-  // Configure tile stream
+  // Configure stream
   const struct tile_stream_configuration config = {
     .buffer_capacity_bytes = (size_t)total_elements * sizeof(uint32_t),
     .dtype = lod_dtype_u32,
@@ -213,7 +213,7 @@ test_pipeline(const char* tmpdir)
 
   // Verify shard files exist and contents are correct
   {
-    const int tps_inner = tiles_per_shard[1] * tiles_per_shard[2];
+    const int cps_inner = chunks_per_shard[1] * chunks_per_shard[2];
     int errors = 0;
 
     for (int i_shard = 0; i_shard < num_shards; ++i_shard) {
@@ -237,37 +237,41 @@ test_pipeline(const char* tmpdir)
       CHECK(Fail4, read_file_all(path, &shard_data, &shard_len) == 0);
 
       // Parse shard index
-      uint64_t tile_offsets[12], tile_nbytes[12];
-      CHECK(Fail4, shard_index_parse(shard_data, shard_len,
-                                     (size_t)tiles_per_shard_total,
-                                     tile_offsets, tile_nbytes) == 0);
+      uint64_t chunk_offsets[12], chunk_nbytes[12];
+      CHECK(Fail4,
+            shard_index_parse(shard_data,
+                              shard_len,
+                              (size_t)chunks_per_shard_total,
+                              chunk_offsets,
+                              chunk_nbytes) == 0);
 
-      // Decompress and verify each tile
-      // tile_stride may be padded; use actual tile_stride for decompression
-      size_t tile_stride_bytes = tile_stream_gpu_layout(s)->tile_stride * sizeof(uint32_t);
+      // Decompress and verify each chunk
+      // chunk_stride may be padded; use actual chunk_stride for decompression
+      size_t chunk_stride_bytes =
+        tile_stream_gpu_layout(s)->chunk_stride * sizeof(uint32_t);
 
-      for (int i_tile = 0; i_tile < tiles_per_shard_total; ++i_tile) {
-        if (tile_nbytes[i_tile] == 0 ||
-            tile_nbytes[i_tile] > ZSTD_compressBound(tile_stride_bytes)) {
-          log_error("shard %d tile %d: bad nbytes=%llu",
+      for (int i_chunk = 0; i_chunk < chunks_per_shard_total; ++i_chunk) {
+        if (chunk_nbytes[i_chunk] == 0 ||
+            chunk_nbytes[i_chunk] > ZSTD_compressBound(chunk_stride_bytes)) {
+          log_error("shard %d chunk %d: bad nbytes=%llu",
                     i_shard,
-                    i_tile,
-                    (unsigned long long)tile_nbytes[i_tile]);
+                    i_chunk,
+                    (unsigned long long)chunk_nbytes[i_chunk]);
           errors++;
           continue;
         }
 
-        uint8_t* decomp = (uint8_t*)calloc(1, tile_stride_bytes);
+        uint8_t* decomp = (uint8_t*)calloc(1, chunk_stride_bytes);
         CHECK(Fail4, decomp);
 
         size_t result = ZSTD_decompress(decomp,
-                                        tile_stride_bytes,
-                                        shard_data + tile_offsets[i_tile],
-                                        (size_t)tile_nbytes[i_tile]);
+                                        chunk_stride_bytes,
+                                        shard_data + chunk_offsets[i_chunk],
+                                        (size_t)chunk_nbytes[i_chunk]);
         if (ZSTD_isError(result)) {
-          log_error("shard %d tile %d: ZSTD error: %s",
+          log_error("shard %d chunk %d: ZSTD error: %s",
                     i_shard,
-                    i_tile,
+                    i_chunk,
                     ZSTD_getErrorName(result));
           free(decomp);
           errors++;
@@ -275,15 +279,15 @@ test_pipeline(const char* tmpdir)
         }
 
         // Tile-in-shard coordinates
-        int exp_t0 = i_tile / tps_inner;
-        int exp_t1 = (i_tile % tps_inner) / tiles_per_shard[2];
-        int exp_t2 = (i_tile % tps_inner) % tiles_per_shard[2];
+        int exp_t0 = i_chunk / cps_inner;
+        int exp_t1 = (i_chunk % cps_inner) / chunks_per_shard[2];
+        int exp_t2 = (i_chunk % cps_inner) % chunks_per_shard[2];
 
         const uint32_t* voxels = (const uint32_t*)decomp;
-        for (int e = 0; e < voxels_per_tile; ++e) {
-          int exp_v0 = e / (tile_size[1] * tile_size[2]);
-          int exp_v1 = (e / tile_size[2]) % tile_size[1];
-          int exp_v2 = e % tile_size[2];
+        for (int e = 0; e < voxels_per_chunk; ++e) {
+          int exp_v0 = e / (chunk_size[1] * chunk_size[2]);
+          int exp_v1 = (e / chunk_size[2]) % chunk_size[1];
+          int exp_v2 = e % chunk_size[2];
 
           uint32_t expected = encode_voxel(sc[0],
                                            sc[1],
@@ -297,9 +301,9 @@ test_pipeline(const char* tmpdir)
 
           if (voxels[e] != expected) {
             if (errors < 10) {
-              log_error("shard %d tile %d elem %d: got 0x%08x expected 0x%08x",
+              log_error("shard %d chunk %d elem %d: got 0x%08x expected 0x%08x",
                         i_shard,
-                        i_tile,
+                        i_chunk,
                         e,
                         voxels[e],
                         expected);
@@ -344,19 +348,19 @@ test_multiscale_metadata(const char* tmpdir)
 
   struct dimension dims[] = {
     { .size = 64,
-      .tile_size = 8,
-      .tiles_per_shard = 4,
+      .chunk_size = 8,
+      .chunks_per_shard = 4,
       .name = "z",
       .downsample = 1,
       .storage_position = 0 },
     { .size = 32,
-      .tile_size = 8,
-      .tiles_per_shard = 2,
+      .chunk_size = 8,
+      .chunks_per_shard = 2,
       .name = "y",
       .storage_position = 1 },
     { .size = 64,
-      .tile_size = 8,
-      .tiles_per_shard = 4,
+      .chunk_size = 8,
+      .chunks_per_shard = 4,
       .name = "x",
       .downsample = 1,
       .storage_position = 2 },
@@ -445,21 +449,21 @@ test_unbounded_metadata_update(const char* tmpdir)
 {
   log_info("=== test_unbounded_metadata_update ===");
 
-  // dim0 unbounded (size=0), tiles_per_shard must be > 0
+  // dim0 unbounded (size=0), chunks_per_shard must be > 0
   struct dimension dims[] = {
     { .size = 0,
-      .tile_size = 2,
-      .tiles_per_shard = 3,
+      .chunk_size = 2,
+      .chunks_per_shard = 3,
       .name = "z",
       .storage_position = 0 },
     { .size = 8,
-      .tile_size = 4,
-      .tiles_per_shard = 2,
+      .chunk_size = 4,
+      .chunks_per_shard = 2,
       .name = "y",
       .storage_position = 1 },
     { .size = 12,
-      .tile_size = 3,
-      .tiles_per_shard = 2,
+      .chunk_size = 3,
+      .chunks_per_shard = 2,
       .name = "x",
       .storage_position = 2 },
   };
@@ -505,11 +509,12 @@ test_unbounded_metadata_update(const char* tmpdir)
   struct tile_stream_gpu* s = NULL;
   CHECK(Fail2, (s = tile_stream_gpu_create(&config)) != NULL);
 
-  // epoch_elements = tiles_per_epoch * tile_elements
-  // tiles_per_epoch = tile_count[1] * tile_count[2] = 2 * 4 = 8
-  // tile_elements = 2 * 4 * 3 = 24
+  // epoch_elements = chunks_per_epoch * chunk_elements
+  // chunks_per_epoch = chunk_count[1] * chunk_count[2] = 2 * 4 = 8
+  // chunk_elements = 2 * 4 * 3 = 24
   // epoch_elements = 8 * 24 = 192
-  log_info("  epoch_elements=%lu", (unsigned long)tile_stream_gpu_layout(s)->epoch_elements);
+  log_info("  epoch_elements=%lu",
+           (unsigned long)tile_stream_gpu_layout(s)->epoch_elements);
 
   // Feed 4 epochs of data
   const size_t total = 4 * tile_stream_gpu_layout(s)->epoch_elements;
@@ -528,7 +533,7 @@ test_unbounded_metadata_update(const char* tmpdir)
   zarr_sink_flush(zs);
 
   // After flush, zarr.json shape[0] should reflect data written.
-  // 4 epochs of tile_size=2 → shape[0] = 8.
+  // 4 epochs of chunk_size=2 → shape[0] = 8.
   {
     char path[4096];
     snprintf(path, sizeof(path), "%s/0/zarr.json", tmpdir);
@@ -544,7 +549,7 @@ test_unbounded_metadata_update(const char* tmpdir)
     free(data);
 
     CHECK(Fail4, is_array);
-    CHECK(Fail4, has_shape); // 4 epochs * tile_size 2 = 8
+    CHECK(Fail4, has_shape); // 4 epochs * chunk_size 2 = 8
   }
 
   free(src);
@@ -573,19 +578,19 @@ test_multiscale_unbounded(const char* tmpdir)
 
   struct dimension dims[] = {
     { .size = 0,
-      .tile_size = 8,
-      .tiles_per_shard = 4,
+      .chunk_size = 8,
+      .chunks_per_shard = 4,
       .name = "z",
       .downsample = 1,
       .storage_position = 0 },
     { .size = 32,
-      .tile_size = 8,
-      .tiles_per_shard = 2,
+      .chunk_size = 8,
+      .chunks_per_shard = 2,
       .name = "y",
       .storage_position = 1 },
     { .size = 64,
-      .tile_size = 8,
-      .tiles_per_shard = 4,
+      .chunk_size = 8,
+      .chunks_per_shard = 4,
       .name = "x",
       .downsample = 1,
       .storage_position = 2 },
@@ -674,18 +679,18 @@ test_midstream_metadata_update(const char* tmpdir)
   // dim0 unbounded (size=0)
   struct dimension dims[] = {
     { .size = 0,
-      .tile_size = 2,
-      .tiles_per_shard = 3,
+      .chunk_size = 2,
+      .chunks_per_shard = 3,
       .name = "z",
       .storage_position = 0 },
     { .size = 8,
-      .tile_size = 4,
-      .tiles_per_shard = 2,
+      .chunk_size = 4,
+      .chunks_per_shard = 2,
       .name = "y",
       .storage_position = 1 },
     { .size = 12,
-      .tile_size = 3,
-      .tiles_per_shard = 2,
+      .chunk_size = 3,
+      .chunks_per_shard = 2,
       .name = "x",
       .storage_position = 2 },
   };
@@ -770,7 +775,7 @@ test_midstream_metadata_update(const char* tmpdir)
   }
   zarr_sink_flush(zs);
 
-  // Verify final shape after flush: 6 epochs * tile_size 2 = 12
+  // Verify final shape after flush: 6 epochs * chunk_size 2 = 12
   {
     char path[4096];
     snprintf(path, sizeof(path), "%s/0/zarr.json", tmpdir);
@@ -810,28 +815,28 @@ test_unbuffered_pipeline(const char* tmpdir)
   log_info("=== test_unbuffered_pipeline ===");
 
   // Simple 3D: 2 epochs, 1 shard
-  // dim0=4 (epoch dim), dim1=4, dim2=4, tile=2x2x2, tps=2x2x2 → 1 shard
+  // dim0=4 (epoch dim), dim1=4, dim2=4, chunk=2x2x2, cps=2x2x2 → 1 shard
   const struct dimension dims[] = {
     { .size = 4,
-      .tile_size = 2,
-      .tiles_per_shard = 2,
+      .chunk_size = 2,
+      .chunks_per_shard = 2,
       .name = "z",
       .storage_position = 0 },
     { .size = 4,
-      .tile_size = 2,
-      .tiles_per_shard = 2,
+      .chunk_size = 2,
+      .chunks_per_shard = 2,
       .name = "y",
       .storage_position = 1 },
     { .size = 4,
-      .tile_size = 2,
-      .tiles_per_shard = 2,
+      .chunk_size = 2,
+      .chunks_per_shard = 2,
       .name = "x",
       .storage_position = 2 },
   };
 
   const int total_elements = 4 * 4 * 4;
-  const int voxels_per_tile = 2 * 2 * 2;       // 8
-  const int tiles_per_shard_total = 2 * 2 * 2; // 8
+  const int voxels_per_chunk = 2 * 2 * 2;       // 8
+  const int chunks_per_shard_total = 2 * 2 * 2; // 8
 
   uint32_t src[64];
   for (int i = 0; i < total_elements; ++i)
@@ -889,40 +894,43 @@ test_unbuffered_pipeline(const char* tmpdir)
     CHECK(Fail3, read_file_all(path, &shard_data, &shard_len) == 0);
 
     size_t index_data_bytes =
-      (size_t)tiles_per_shard_total * 2 * sizeof(uint64_t);
+      (size_t)chunks_per_shard_total * 2 * sizeof(uint64_t);
     size_t index_total_bytes = index_data_bytes + 4;
     CHECK(Fail4, shard_len > index_total_bytes);
 
     const uint8_t* index_ptr = shard_data + shard_len - index_total_bytes;
 
-    uint64_t tile_offsets[8], tile_nbytes[8];
-    for (int i = 0; i < tiles_per_shard_total; ++i) {
-      memcpy(&tile_offsets[i], index_ptr + (size_t)i * 16, sizeof(uint64_t));
-      memcpy(&tile_nbytes[i], index_ptr + (size_t)i * 16 + 8, sizeof(uint64_t));
+    uint64_t chunk_offsets[8], chunk_nbytes[8];
+    for (int i = 0; i < chunks_per_shard_total; ++i) {
+      memcpy(&chunk_offsets[i], index_ptr + (size_t)i * 16, sizeof(uint64_t));
+      memcpy(
+        &chunk_nbytes[i], index_ptr + (size_t)i * 16 + 8, sizeof(uint64_t));
     }
 
-    size_t tile_stride_bytes = tile_stream_gpu_layout(s)->tile_stride * sizeof(uint32_t);
+    size_t chunk_stride_bytes =
+      tile_stream_gpu_layout(s)->chunk_stride * sizeof(uint32_t);
     int errors = 0;
 
-    for (int i_tile = 0; i_tile < tiles_per_shard_total; ++i_tile) {
-      if (tile_nbytes[i_tile] == 0 ||
-          tile_nbytes[i_tile] > ZSTD_compressBound(tile_stride_bytes)) {
-        log_error("tile %d: bad nbytes=%llu",
-                  i_tile,
-                  (unsigned long long)tile_nbytes[i_tile]);
+    for (int i_chunk = 0; i_chunk < chunks_per_shard_total; ++i_chunk) {
+      if (chunk_nbytes[i_chunk] == 0 ||
+          chunk_nbytes[i_chunk] > ZSTD_compressBound(chunk_stride_bytes)) {
+        log_error("chunk %d: bad nbytes=%llu",
+                  i_chunk,
+                  (unsigned long long)chunk_nbytes[i_chunk]);
         errors++;
         continue;
       }
 
-      uint8_t* decomp = (uint8_t*)calloc(1, tile_stride_bytes);
+      uint8_t* decomp = (uint8_t*)calloc(1, chunk_stride_bytes);
       CHECK(Fail4, decomp);
 
       size_t result = ZSTD_decompress(decomp,
-                                      tile_stride_bytes,
-                                      shard_data + tile_offsets[i_tile],
-                                      (size_t)tile_nbytes[i_tile]);
+                                      chunk_stride_bytes,
+                                      shard_data + chunk_offsets[i_chunk],
+                                      (size_t)chunk_nbytes[i_chunk]);
       if (ZSTD_isError(result)) {
-        log_error("tile %d: ZSTD error: %s", i_tile, ZSTD_getErrorName(result));
+        log_error(
+          "chunk %d: ZSTD error: %s", i_chunk, ZSTD_getErrorName(result));
         free(decomp);
         errors++;
         continue;
@@ -931,15 +939,15 @@ test_unbuffered_pipeline(const char* tmpdir)
       // Verify decompressed data is non-zero (basic sanity)
       const uint32_t* voxels = (const uint32_t*)decomp;
       int nonzero = 0;
-      for (int e = 0; e < voxels_per_tile; ++e)
+      for (int e = 0; e < voxels_per_chunk; ++e)
         if (voxels[e] != 0)
           nonzero++;
 
-      // At least some tiles should have non-zero data (only tile 0 could be
+      // At least some chunks should have non-zero data (only chunk 0 could be
       // all-zero since src starts at 0, but even then voxels from offset > 0
       // won't be zero).
-      if (i_tile > 0 && nonzero == 0) {
-        log_error("tile %d: all zeros after decompression", i_tile);
+      if (i_chunk > 0 && nonzero == 0) {
+        log_error("chunk %d: all zeros after decompression", i_chunk);
         errors++;
       }
 
@@ -971,7 +979,7 @@ Fail:
 }
 
 // --- Test: unbuffered pipeline with multiple shards ---
-// Uses the same geometry as test_pipeline (12x8x12, tile 2x4x3, tps 3x2x2
+// Uses the same geometry as test_pipeline (12x8x12, chunk 2x4x3, cps 3x2x2
 // → 4 shards) but with unbuffered IO and shard alignment.
 
 static int
@@ -980,25 +988,25 @@ test_unbuffered_pipeline_multishard(const char* tmpdir)
   log_info("=== test_unbuffered_pipeline_multishard ===");
 
   const int size[3] = { 12, 8, 12 };
-  const int tile_size[3] = { 2, 4, 3 };
-  const int tiles_per_shard[3] = { 3, 2, 2 };
+  const int chunk_size[3] = { 2, 4, 3 };
+  const int chunks_per_shard[3] = { 3, 2, 2 };
 
-  const int tile_count[3] = {
-    size[0] / tile_size[0],
-    size[1] / tile_size[1],
-    size[2] / tile_size[2],
+  const int chunk_count[3] = {
+    size[0] / chunk_size[0],
+    size[1] / chunk_size[1],
+    size[2] / chunk_size[2],
   };
   const int shard_count[3] = {
-    tile_count[0] / tiles_per_shard[0],
-    tile_count[1] / tiles_per_shard[1],
-    tile_count[2] / tiles_per_shard[2],
+    chunk_count[0] / chunks_per_shard[0],
+    chunk_count[1] / chunks_per_shard[1],
+    chunk_count[2] / chunks_per_shard[2],
   };
 
   const int total_elements = size[0] * size[1] * size[2];
   const int num_shards = shard_count[0] * shard_count[1] * shard_count[2];
-  const int tiles_per_shard_total =
-    tiles_per_shard[0] * tiles_per_shard[1] * tiles_per_shard[2];
-  const int voxels_per_tile = tile_size[0] * tile_size[1] * tile_size[2];
+  const int chunks_per_shard_total =
+    chunks_per_shard[0] * chunks_per_shard[1] * chunks_per_shard[2];
+  const int voxels_per_chunk = chunk_size[0] * chunk_size[1] * chunk_size[2];
 
   uint32_t* src = NULL;
 
@@ -1010,33 +1018,33 @@ test_unbuffered_pipeline_multishard(const char* tmpdir)
     for (int x1 = 0; x1 < size[1]; ++x1)
       for (int x2 = 0; x2 < size[2]; ++x2) {
         int gi = x0 * size[1] * size[2] + x1 * size[2] + x2;
-        int s0 = x0 / (tile_size[0] * tiles_per_shard[0]);
-        int s1 = x1 / (tile_size[1] * tiles_per_shard[1]);
-        int s2 = x2 / (tile_size[2] * tiles_per_shard[2]);
-        int t0 = (x0 / tile_size[0]) % tiles_per_shard[0];
-        int t1 = (x1 / tile_size[1]) % tiles_per_shard[1];
-        int t2 = (x2 / tile_size[2]) % tiles_per_shard[2];
-        int v0 = x0 % tile_size[0];
-        int v1 = x1 % tile_size[1];
-        int v2 = x2 % tile_size[2];
+        int s0 = x0 / (chunk_size[0] * chunks_per_shard[0]);
+        int s1 = x1 / (chunk_size[1] * chunks_per_shard[1]);
+        int s2 = x2 / (chunk_size[2] * chunks_per_shard[2]);
+        int t0 = (x0 / chunk_size[0]) % chunks_per_shard[0];
+        int t1 = (x1 / chunk_size[1]) % chunks_per_shard[1];
+        int t2 = (x2 / chunk_size[2]) % chunks_per_shard[2];
+        int v0 = x0 % chunk_size[0];
+        int v1 = x1 % chunk_size[1];
+        int v2 = x2 % chunk_size[2];
         src[gi] = encode_voxel(s0, s1, s2, t0, t1, t2, v0, v1, v2);
       }
 
   // Create zarr sink with unbuffered IO
   const struct dimension dims[] = {
     { .size = 12,
-      .tile_size = 2,
-      .tiles_per_shard = 3,
+      .chunk_size = 2,
+      .chunks_per_shard = 3,
       .name = "z",
       .storage_position = 0 },
     { .size = 8,
-      .tile_size = 4,
-      .tiles_per_shard = 2,
+      .chunk_size = 4,
+      .chunks_per_shard = 2,
       .name = "y",
       .storage_position = 1 },
     { .size = 12,
-      .tile_size = 3,
-      .tiles_per_shard = 2,
+      .chunk_size = 3,
+      .chunks_per_shard = 2,
       .name = "x",
       .storage_position = 2 },
   };
@@ -1054,7 +1062,7 @@ test_unbuffered_pipeline_multishard(const char* tmpdir)
   struct zarr_sink* zs = zarr_sink_create(&zcfg);
   CHECK(Fail2, zs);
 
-  // Configure tile stream with shard alignment for unbuffered IO
+  // Configure stream with shard alignment for unbuffered IO
   const struct tile_stream_configuration config = {
     .buffer_capacity_bytes = (size_t)total_elements * sizeof(uint32_t),
     .dtype = lod_dtype_u32,
@@ -1083,7 +1091,7 @@ test_unbuffered_pipeline_multishard(const char* tmpdir)
 
   // Verify shard files: same loop as test_pipeline
   {
-    const int tps_inner = tiles_per_shard[1] * tiles_per_shard[2];
+    const int cps_inner = chunks_per_shard[1] * chunks_per_shard[2];
     int errors = 0;
 
     for (int i_shard = 0; i_shard < num_shards; ++i_shard) {
@@ -1106,58 +1114,59 @@ test_unbuffered_pipeline_multishard(const char* tmpdir)
       CHECK(Fail4, read_file_all(path, &shard_data, &shard_len) == 0);
 
       size_t index_data_bytes =
-        (size_t)tiles_per_shard_total * 2 * sizeof(uint64_t);
+        (size_t)chunks_per_shard_total * 2 * sizeof(uint64_t);
       size_t index_total_bytes = index_data_bytes + 4;
       CHECK(Fail4, shard_len > index_total_bytes);
 
       const uint8_t* index_ptr = shard_data + shard_len - index_total_bytes;
 
-      uint64_t tile_offsets[12], tile_nbytes[12];
-      for (int i = 0; i < tiles_per_shard_total; ++i) {
-        memcpy(&tile_offsets[i], index_ptr + (size_t)i * 16, sizeof(uint64_t));
+      uint64_t chunk_offsets[12], chunk_nbytes[12];
+      for (int i = 0; i < chunks_per_shard_total; ++i) {
+        memcpy(&chunk_offsets[i], index_ptr + (size_t)i * 16, sizeof(uint64_t));
         memcpy(
-          &tile_nbytes[i], index_ptr + (size_t)i * 16 + 8, sizeof(uint64_t));
+          &chunk_nbytes[i], index_ptr + (size_t)i * 16 + 8, sizeof(uint64_t));
       }
 
-      size_t tile_stride_bytes = tile_stream_gpu_layout(s)->tile_stride * sizeof(uint32_t);
+      size_t chunk_stride_bytes =
+        tile_stream_gpu_layout(s)->chunk_stride * sizeof(uint32_t);
 
-      for (int i_tile = 0; i_tile < tiles_per_shard_total; ++i_tile) {
-        if (tile_nbytes[i_tile] == 0 ||
-            tile_nbytes[i_tile] > ZSTD_compressBound(tile_stride_bytes)) {
-          log_error("shard %d tile %d: bad nbytes=%llu",
+      for (int i_chunk = 0; i_chunk < chunks_per_shard_total; ++i_chunk) {
+        if (chunk_nbytes[i_chunk] == 0 ||
+            chunk_nbytes[i_chunk] > ZSTD_compressBound(chunk_stride_bytes)) {
+          log_error("shard %d chunk %d: bad nbytes=%llu",
                     i_shard,
-                    i_tile,
-                    (unsigned long long)tile_nbytes[i_tile]);
+                    i_chunk,
+                    (unsigned long long)chunk_nbytes[i_chunk]);
           errors++;
           continue;
         }
 
-        uint8_t* decomp = (uint8_t*)calloc(1, tile_stride_bytes);
+        uint8_t* decomp = (uint8_t*)calloc(1, chunk_stride_bytes);
         CHECK(Fail4, decomp);
 
         size_t result = ZSTD_decompress(decomp,
-                                        tile_stride_bytes,
-                                        shard_data + tile_offsets[i_tile],
-                                        (size_t)tile_nbytes[i_tile]);
+                                        chunk_stride_bytes,
+                                        shard_data + chunk_offsets[i_chunk],
+                                        (size_t)chunk_nbytes[i_chunk]);
         if (ZSTD_isError(result)) {
-          log_error("shard %d tile %d: ZSTD error: %s",
+          log_error("shard %d chunk %d: ZSTD error: %s",
                     i_shard,
-                    i_tile,
+                    i_chunk,
                     ZSTD_getErrorName(result));
           free(decomp);
           errors++;
           continue;
         }
 
-        int exp_t0 = i_tile / tps_inner;
-        int exp_t1 = (i_tile % tps_inner) / tiles_per_shard[2];
-        int exp_t2 = (i_tile % tps_inner) % tiles_per_shard[2];
+        int exp_t0 = i_chunk / cps_inner;
+        int exp_t1 = (i_chunk % cps_inner) / chunks_per_shard[2];
+        int exp_t2 = (i_chunk % cps_inner) % chunks_per_shard[2];
 
         const uint32_t* voxels = (const uint32_t*)decomp;
-        for (int e = 0; e < voxels_per_tile; ++e) {
-          int exp_v0 = e / (tile_size[1] * tile_size[2]);
-          int exp_v1 = (e / tile_size[2]) % tile_size[1];
-          int exp_v2 = e % tile_size[2];
+        for (int e = 0; e < voxels_per_chunk; ++e) {
+          int exp_v0 = e / (chunk_size[1] * chunk_size[2]);
+          int exp_v1 = (e / chunk_size[2]) % chunk_size[1];
+          int exp_v2 = e % chunk_size[2];
 
           uint32_t expected = encode_voxel(sc[0],
                                            sc[1],
@@ -1171,9 +1180,9 @@ test_unbuffered_pipeline_multishard(const char* tmpdir)
 
           if (voxels[e] != expected) {
             if (errors < 10) {
-              log_error("shard %d tile %d elem %d: got 0x%08x expected 0x%08x",
+              log_error("shard %d chunk %d elem %d: got 0x%08x expected 0x%08x",
                         i_shard,
-                        i_tile,
+                        i_chunk,
                         e,
                         voxels[e],
                         expected);
@@ -1218,27 +1227,27 @@ test_storage_order_validation(const char* tmpdir)
   log_info("=== test_storage_order_validation ===");
 
   struct dimension dims[] = {
-    { .size = 4, .tile_size = 2, .tiles_per_shard = 2, .name = "z" },
-    { .size = 4, .tile_size = 2, .tiles_per_shard = 2, .name = "y" },
-    { .size = 6, .tile_size = 3, .tiles_per_shard = 2, .name = "x" },
+    { .size = 4, .chunk_size = 2, .chunks_per_shard = 2, .name = "z" },
+    { .size = 4, .chunk_size = 2, .chunks_per_shard = 2, .name = "y" },
+    { .size = 6, .chunk_size = 3, .chunks_per_shard = 2, .name = "x" },
   };
 
   // storage_position[0] != 0 → should fail
   {
     struct dimension bad_dims[] = {
       { .size = 4,
-        .tile_size = 2,
-        .tiles_per_shard = 2,
+        .chunk_size = 2,
+        .chunks_per_shard = 2,
         .name = "z",
         .storage_position = 1 },
       { .size = 4,
-        .tile_size = 2,
-        .tiles_per_shard = 2,
+        .chunk_size = 2,
+        .chunks_per_shard = 2,
         .name = "y",
         .storage_position = 0 },
       { .size = 6,
-        .tile_size = 3,
-        .tiles_per_shard = 2,
+        .chunk_size = 3,
+        .chunks_per_shard = 2,
         .name = "x",
         .storage_position = 2 },
     };
@@ -1257,18 +1266,18 @@ test_storage_order_validation(const char* tmpdir)
   {
     struct dimension bad_dims[] = {
       { .size = 4,
-        .tile_size = 2,
-        .tiles_per_shard = 2,
+        .chunk_size = 2,
+        .chunks_per_shard = 2,
         .name = "z",
         .storage_position = 0 },
       { .size = 4,
-        .tile_size = 2,
-        .tiles_per_shard = 2,
+        .chunk_size = 2,
+        .chunks_per_shard = 2,
         .name = "y",
         .storage_position = 2 },
       { .size = 6,
-        .tile_size = 3,
-        .tiles_per_shard = 2,
+        .chunk_size = 3,
+        .chunks_per_shard = 2,
         .name = "x",
         .storage_position = 2 },
     };
@@ -1287,18 +1296,18 @@ test_storage_order_validation(const char* tmpdir)
   {
     struct dimension bad_dims[] = {
       { .size = 4,
-        .tile_size = 2,
-        .tiles_per_shard = 2,
+        .chunk_size = 2,
+        .chunks_per_shard = 2,
         .name = "z",
         .storage_position = 0 },
       { .size = 4,
-        .tile_size = 2,
-        .tiles_per_shard = 2,
+        .chunk_size = 2,
+        .chunks_per_shard = 2,
         .name = "y",
         .storage_position = 5 },
       { .size = 6,
-        .tile_size = 3,
-        .tiles_per_shard = 2,
+        .chunk_size = 3,
+        .chunks_per_shard = 2,
         .name = "x",
         .storage_position = 1 },
     };
@@ -1330,18 +1339,18 @@ test_storage_order_validation(const char* tmpdir)
   {
     struct dimension id_dims[] = {
       { .size = 4,
-        .tile_size = 2,
-        .tiles_per_shard = 2,
+        .chunk_size = 2,
+        .chunks_per_shard = 2,
         .name = "z",
         .storage_position = 0 },
       { .size = 4,
-        .tile_size = 2,
-        .tiles_per_shard = 2,
+        .chunk_size = 2,
+        .chunks_per_shard = 2,
         .name = "y",
         .storage_position = 1 },
       { .size = 6,
-        .tile_size = 3,
-        .tiles_per_shard = 2,
+        .chunk_size = 3,
+        .chunks_per_shard = 2,
         .name = "x",
         .storage_position = 2 },
     };
@@ -1360,18 +1369,18 @@ test_storage_order_validation(const char* tmpdir)
   {
     struct dimension perm_dims[] = {
       { .size = 4,
-        .tile_size = 2,
-        .tiles_per_shard = 2,
+        .chunk_size = 2,
+        .chunks_per_shard = 2,
         .name = "z",
         .storage_position = 0 },
       { .size = 4,
-        .tile_size = 2,
-        .tiles_per_shard = 2,
+        .chunk_size = 2,
+        .chunks_per_shard = 2,
         .name = "y",
         .storage_position = 2 },
       { .size = 6,
-        .tile_size = 3,
-        .tiles_per_shard = 2,
+        .chunk_size = 3,
+        .chunks_per_shard = 2,
         .name = "x",
         .storage_position = 1 },
     };
@@ -1411,27 +1420,27 @@ test_pipeline_storage_order(const char* tmpdir)
   const int acq_size[3] = { 4, 4, 6 };
   const int acq_tile[3] = { 2, 2, 3 };
 
-  // Storage-ordered sizes/tiles/tps (for verification)
+  // Storage-ordered sizes/chunks/cps (for verification)
   const int sto_size[3] = { 4, 6, 4 };
   const int sto_tile[3] = { 2, 3, 2 };
-  const int sto_tps[3] = { 1, 2, 2 };
+  const int sto_cps[3] = { 1, 2, 2 };
 
-  const int sto_tile_count[3] = {
+  const int sto_chunk_count[3] = {
     sto_size[0] / sto_tile[0],
     sto_size[1] / sto_tile[1],
     sto_size[2] / sto_tile[2],
   };
   const int sto_shard_count[3] = {
-    sto_tile_count[0] / sto_tps[0],
-    sto_tile_count[1] / sto_tps[1],
-    sto_tile_count[2] / sto_tps[2],
+    sto_chunk_count[0] / sto_cps[0],
+    sto_chunk_count[1] / sto_cps[1],
+    sto_chunk_count[2] / sto_cps[2],
   };
 
   const int total_elements = acq_size[0] * acq_size[1] * acq_size[2];
   const int num_shards =
     sto_shard_count[0] * sto_shard_count[1] * sto_shard_count[2];
-  const int tiles_per_shard_total = sto_tps[0] * sto_tps[1] * sto_tps[2];
-  const int voxels_per_tile = acq_tile[0] * acq_tile[1] * acq_tile[2];
+  const int chunks_per_shard_total = sto_cps[0] * sto_cps[1] * sto_cps[2];
+  const int voxels_per_chunk = acq_tile[0] * acq_tile[1] * acq_tile[2];
 
   uint32_t* src = NULL;
 
@@ -1452,18 +1461,18 @@ test_pipeline_storage_order(const char* tmpdir)
   // z→pos0, y→pos2, x→pos1  ⇒  storage order is [z, x, y]
   const struct dimension dims[] = {
     { .size = 4,
-      .tile_size = 2,
-      .tiles_per_shard = 1,
+      .chunk_size = 2,
+      .chunks_per_shard = 1,
       .name = "z",
       .storage_position = 0 },
     { .size = 4,
-      .tile_size = 2,
-      .tiles_per_shard = 2,
+      .chunk_size = 2,
+      .chunks_per_shard = 2,
       .name = "y",
       .storage_position = 2 },
     { .size = 6,
-      .tile_size = 3,
-      .tiles_per_shard = 2,
+      .chunk_size = 3,
+      .chunks_per_shard = 2,
       .name = "x",
       .storage_position = 1 },
   };
@@ -1472,18 +1481,18 @@ test_pipeline_storage_order(const char* tmpdir)
   // forward = {0, 2, 1}: storage pos 0→dim0(z), pos 1→dim2(x), pos 2→dim1(y)
   const struct dimension sto_dims[] = {
     { .size = 4,
-      .tile_size = 2,
-      .tiles_per_shard = 1,
+      .chunk_size = 2,
+      .chunks_per_shard = 1,
       .name = "z",
       .storage_position = 0 },
     { .size = 6,
-      .tile_size = 3,
-      .tiles_per_shard = 2,
+      .chunk_size = 3,
+      .chunks_per_shard = 2,
       .name = "x",
       .storage_position = 1 },
     { .size = 4,
-      .tile_size = 2,
-      .tiles_per_shard = 2,
+      .chunk_size = 2,
+      .chunks_per_shard = 2,
       .name = "y",
       .storage_position = 2 },
   };
@@ -1526,9 +1535,9 @@ test_pipeline_storage_order(const char* tmpdir)
 
   zarr_sink_flush(zs);
 
-  // Verify shard files and tile contents
+  // Verify shard files and chunk contents
   {
-    const int tps_inner = sto_tps[1] * sto_tps[2];
+    const int cps_inner = sto_cps[1] * sto_cps[2];
     int errors = 0;
 
     for (int i_shard = 0; i_shard < num_shards; ++i_shard) {
@@ -1552,43 +1561,44 @@ test_pipeline_storage_order(const char* tmpdir)
       CHECK(Fail4, read_file_all(path, &shard_data, &shard_len) == 0);
 
       size_t index_data_bytes =
-        (size_t)tiles_per_shard_total * 2 * sizeof(uint64_t);
+        (size_t)chunks_per_shard_total * 2 * sizeof(uint64_t);
       size_t index_total_bytes = index_data_bytes + 4;
       CHECK(Fail4, shard_len > index_total_bytes);
 
       const uint8_t* index_ptr = shard_data + shard_len - index_total_bytes;
 
-      uint64_t tile_offsets[4], tile_nbytes[4];
-      for (int i = 0; i < tiles_per_shard_total; ++i) {
-        memcpy(&tile_offsets[i], index_ptr + (size_t)i * 16, sizeof(uint64_t));
+      uint64_t chunk_offsets[4], chunk_nbytes[4];
+      for (int i = 0; i < chunks_per_shard_total; ++i) {
+        memcpy(&chunk_offsets[i], index_ptr + (size_t)i * 16, sizeof(uint64_t));
         memcpy(
-          &tile_nbytes[i], index_ptr + (size_t)i * 16 + 8, sizeof(uint64_t));
+          &chunk_nbytes[i], index_ptr + (size_t)i * 16 + 8, sizeof(uint64_t));
       }
 
-      size_t tile_stride_bytes = tile_stream_gpu_layout(s)->tile_stride * sizeof(uint32_t);
+      size_t chunk_stride_bytes =
+        tile_stream_gpu_layout(s)->chunk_stride * sizeof(uint32_t);
 
-      for (int i_tile = 0; i_tile < tiles_per_shard_total; ++i_tile) {
-        if (tile_nbytes[i_tile] == 0 ||
-            tile_nbytes[i_tile] > ZSTD_compressBound(tile_stride_bytes)) {
-          log_error("shard %d tile %d: bad nbytes=%llu",
+      for (int i_chunk = 0; i_chunk < chunks_per_shard_total; ++i_chunk) {
+        if (chunk_nbytes[i_chunk] == 0 ||
+            chunk_nbytes[i_chunk] > ZSTD_compressBound(chunk_stride_bytes)) {
+          log_error("shard %d chunk %d: bad nbytes=%llu",
                     i_shard,
-                    i_tile,
-                    (unsigned long long)tile_nbytes[i_tile]);
+                    i_chunk,
+                    (unsigned long long)chunk_nbytes[i_chunk]);
           errors++;
           continue;
         }
 
-        uint8_t* decomp = (uint8_t*)calloc(1, tile_stride_bytes);
+        uint8_t* decomp = (uint8_t*)calloc(1, chunk_stride_bytes);
         CHECK(Fail4, decomp);
 
         size_t result = ZSTD_decompress(decomp,
-                                        tile_stride_bytes,
-                                        shard_data + tile_offsets[i_tile],
-                                        (size_t)tile_nbytes[i_tile]);
+                                        chunk_stride_bytes,
+                                        shard_data + chunk_offsets[i_chunk],
+                                        (size_t)chunk_nbytes[i_chunk]);
         if (ZSTD_isError(result)) {
-          log_error("shard %d tile %d: ZSTD error: %s",
+          log_error("shard %d chunk %d: ZSTD error: %s",
                     i_shard,
-                    i_tile,
+                    i_chunk,
                     ZSTD_getErrorName(result));
           free(decomp);
           errors++;
@@ -1596,18 +1606,18 @@ test_pipeline_storage_order(const char* tmpdir)
         }
 
         // Tile-in-shard coordinates (storage order: z, x, y)
-        int st_z = i_tile / tps_inner;
-        int st_x = (i_tile % tps_inner) / sto_tps[2];
-        int st_y = (i_tile % tps_inner) % sto_tps[2];
+        int st_z = i_chunk / cps_inner;
+        int st_x = (i_chunk % cps_inner) / sto_cps[2];
+        int st_y = (i_chunk % cps_inner) % sto_cps[2];
 
-        // Global tile coords in storage order
-        int gt_z = sc[0] * sto_tps[0] + st_z;
-        int gt_x = sc[1] * sto_tps[1] + st_x;
-        int gt_y = sc[2] * sto_tps[2] + st_y;
+        // Global chunk coords in storage order
+        int gt_z = sc[0] * sto_cps[0] + st_z;
+        int gt_x = sc[1] * sto_cps[1] + st_x;
+        int gt_y = sc[2] * sto_cps[2] + st_y;
 
         const uint32_t* voxels = (const uint32_t*)decomp;
-        for (int e = 0; e < voxels_per_tile; ++e) {
-          // Within-tile coords in storage order (z, x, y)
+        for (int e = 0; e < voxels_per_chunk; ++e) {
+          // Within-chunk coords in storage order (z, x, y)
           int vt_z = e / (sto_tile[1] * sto_tile[2]);
           int vt_x = (e / sto_tile[2]) % sto_tile[1];
           int vt_y = e % sto_tile[2];
@@ -1624,12 +1634,12 @@ test_pipeline_storage_order(const char* tmpdir)
           if (voxels[e] != expected) {
             if (errors < 10) {
               log_error(
-                "shard (%d,%d,%d) tile %d elem %d: got 0x%08x expected 0x%08x"
+                "shard (%d,%d,%d) chunk %d elem %d: got 0x%08x expected 0x%08x"
                 " (gz=%d gy=%d gx=%d)",
                 sc[0],
                 sc[1],
                 sc[2],
-                i_tile,
+                i_chunk,
                 e,
                 voxels[e],
                 expected,

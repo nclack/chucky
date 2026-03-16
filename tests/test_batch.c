@@ -311,10 +311,8 @@ Fail0:
   return 1;
 }
 
-RUN_GPU_TESTS(
-  { "batch_counter_one_epoch", test_batch_counter_one_epoch },
-  { "batch_full_triggers_swap", test_batch_full_triggers_swap },
-  { "batch_multi_cycle", test_batch_multi_cycle },
-  { "batch_partial_flush", test_batch_partial_flush },
-  { "batch_3epochs_flush", test_batch_3epochs_flush },
-)
+RUN_GPU_TESTS({ "batch_counter_one_epoch", test_batch_counter_one_epoch },
+              { "batch_full_triggers_swap", test_batch_full_triggers_swap },
+              { "batch_multi_cycle", test_batch_multi_cycle },
+              { "batch_partial_flush", test_batch_partial_flush },
+              { "batch_3epochs_flush", test_batch_3epochs_flush }, )

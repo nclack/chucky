@@ -15,7 +15,7 @@ emit_shards(struct shard_state* ss, size_t shard_alignment)
     if (!sh->writer)
       continue;
 
-    size_t index_data_bytes = ss->tiles_per_shard_total * 2 * sizeof(uint64_t);
+    size_t index_data_bytes = ss->chunks_per_shard_total * 2 * sizeof(uint64_t);
     size_t index_total_bytes = index_data_bytes + 4;
 
     uint8_t* index_buf;
@@ -56,7 +56,7 @@ emit_shards(struct shard_state* ss, size_t shard_alignment)
 
     sh->writer = NULL;
     sh->data_cursor = 0;
-    memset(sh->index, 0xFF, ss->tiles_per_shard_total * 2 * sizeof(uint64_t));
+    memset(sh->index, 0xFF, ss->chunks_per_shard_total * 2 * sizeof(uint64_t));
   }
 
   ss->epoch_in_shard = 0;
@@ -76,7 +76,7 @@ deliver_to_shards_batch(uint8_t level,
                         size_t shard_alignment,
                         size_t* out_bytes)
 {
-  const uint64_t tps_inner = ss->tiles_per_shard_inner;
+  const uint64_t cps_inner = ss->chunks_per_shard_inner;
   const size_t sa = shard_alignment;
   size_t total_bytes = 0;
 
@@ -86,7 +86,7 @@ deliver_to_shards_batch(uint8_t level,
   uint32_t a = 0;
   while (a < n_active) {
     uint32_t remaining_in_shard =
-      (uint32_t)(ss->tiles_per_shard_0 - ss->epoch_in_shard);
+      (uint32_t)(ss->chunks_per_shard_0 - ss->epoch_in_shard);
     uint32_t remaining_in_batch = n_active - a;
     uint32_t run_len = remaining_in_shard < remaining_in_batch
                          ? remaining_in_shard
@@ -102,8 +102,8 @@ deliver_to_shards_batch(uint8_t level,
       }
 
       // Contiguous range in aggregated buffer for this run
-      uint64_t j_run_start = si * n_active * tps_inner + a * tps_inner;
-      uint64_t j_run_end = j_run_start + (uint64_t)run_len * tps_inner;
+      uint64_t j_run_start = si * n_active * cps_inner + a * cps_inner;
+      uint64_t j_run_end = j_run_start + (uint64_t)run_len * cps_inner;
 
       size_t run_bytes =
         agg_slot->h_offsets[j_run_end] - agg_slot->h_offsets[j_run_start];
@@ -134,17 +134,17 @@ deliver_to_shards_batch(uint8_t level,
       // Record shard index entries for each epoch in the run
       for (uint32_t r = 0; r < run_len; ++r) {
         uint64_t eis = ss->epoch_in_shard + r;
-        uint64_t j_start = j_run_start + (uint64_t)r * tps_inner;
-        for (uint64_t j = j_start; j < j_start + tps_inner; ++j) {
-          size_t tile_size = agg_slot->h_permuted_sizes[j];
-          if (tile_size > 0) {
+        uint64_t j_start = j_run_start + (uint64_t)r * cps_inner;
+        for (uint64_t j = j_start; j < j_start + cps_inner; ++j) {
+          size_t chunk_size = agg_slot->h_permuted_sizes[j];
+          if (chunk_size > 0) {
             uint64_t within_inner = j - j_start;
-            uint64_t slot_idx = eis * tps_inner + within_inner;
-            size_t tile_off =
+            uint64_t slot_idx = eis * cps_inner + within_inner;
+            size_t chunk_off =
               sh->data_cursor +
               (agg_slot->h_offsets[j] - agg_slot->h_offsets[j_run_start]);
-            sh->index[2 * slot_idx] = tile_off;
-            sh->index[2 * slot_idx + 1] = tile_size;
+            sh->index[2 * slot_idx] = chunk_off;
+            sh->index[2 * slot_idx + 1] = chunk_size;
           }
         }
       }
@@ -155,7 +155,7 @@ deliver_to_shards_batch(uint8_t level,
     ss->epoch_in_shard += run_len;
     a += run_len;
 
-    if (ss->epoch_in_shard >= ss->tiles_per_shard_0) {
+    if (ss->epoch_in_shard >= ss->chunks_per_shard_0) {
       CHECK(Error, emit_shards(ss, sa) == 0);
     }
   }

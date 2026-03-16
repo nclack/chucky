@@ -71,7 +71,7 @@ ingest_dispatch_scatter(struct staging_state* stage,
   CU(Error, cuMemcpyHtoDAsync(ss->d_in, ss->h_in, stage->bytes_written, h2d));
   CU(Error, cuEventRecord(ss->t_h2d_end, h2d));
 
-  // Scatter into tile pool
+  // Scatter into chunk pool
   CU(Error, cuStreamWaitEvent(compute, ss->t_h2d_end, 0));
   CU(Error, cuEventRecord(ss->t_scatter_start, compute));
   transpose((CUdeviceptr)pool_epoch,

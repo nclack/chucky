@@ -31,9 +31,9 @@ test_compress_roundtrip(void)
 {
   log_info("=== test_compress_roundtrip ===");
 
-  const size_t tile_bytes = 1048576; // 1 MiB
-  const size_t num_tiles = 96;
-  const size_t pool_bytes = num_tiles * tile_bytes;
+  const size_t chunk_bytes = 1048576; // 1 MiB
+  const size_t n_chunks = 96;
+  const size_t pool_bytes = n_chunks * chunk_bytes;
 
   struct codec c = { 0 };
   uint16_t* h_data = NULL;
@@ -45,13 +45,13 @@ test_compress_roundtrip(void)
   CUstream stream = 0;
   int ok = 0;
 
-  CHECK(Fail, codec_init(&c, CODEC_ZSTD, tile_bytes, num_tiles) == 0);
+  CHECK(Fail, codec_init(&c, CODEC_ZSTD, chunk_bytes, n_chunks) == 0);
 
-  const size_t comp_pool = num_tiles * c.max_output_size;
+  const size_t comp_pool = n_chunks * c.max_output_size;
 
-  log_info("  tile_bytes=%zu num_tiles=%zu max_comp=%zu",
-           tile_bytes,
-           num_tiles,
+  log_info("  chunk_bytes=%zu n_chunks=%zu max_comp=%zu",
+           chunk_bytes,
+           n_chunks,
            c.max_output_size);
 
   h_data = (uint16_t*)malloc(pool_bytes);
@@ -59,9 +59,9 @@ test_compress_roundtrip(void)
   CHECK(Fail, h_data);
   h_compressed = (uint8_t*)malloc(comp_pool);
   CHECK(Fail, h_compressed);
-  h_comp_sizes = (size_t*)malloc(num_tiles * sizeof(size_t));
+  h_comp_sizes = (size_t*)malloc(n_chunks * sizeof(size_t));
   CHECK(Fail, h_comp_sizes);
-  decomp_buf = (uint8_t*)malloc(tile_bytes);
+  decomp_buf = (uint8_t*)malloc(chunk_bytes);
   CHECK(Fail, decomp_buf);
 
   CU(Fail, cuStreamCreate(&stream, CU_STREAM_NON_BLOCKING));
@@ -81,47 +81,47 @@ test_compress_roundtrip(void)
 
     // Compress
     CHECK(Fail,
-          codec_compress(&c, d_data, tile_bytes, d_compressed, 0, stream) == 0);
+          codec_compress(&c, d_data, chunk_bytes, d_compressed, 0, stream) ==
+            0);
 
     // Wait for compress to finish, then D2H
     CU(Fail, cuStreamSynchronize(stream));
     CU(Fail, cuMemcpyDtoH(h_compressed, (CUdeviceptr)d_compressed, comp_pool));
     CU(Fail,
-       cuMemcpyDtoH(h_comp_sizes,
-                    (CUdeviceptr)c.d_comp_sizes,
-                    num_tiles * sizeof(size_t)));
+       cuMemcpyDtoH(
+         h_comp_sizes, (CUdeviceptr)c.d_comp_sizes, n_chunks * sizeof(size_t)));
 
-    // Verify: decompress each tile and compare
+    // Verify: decompress each chunk and compare
     int round_errors = 0;
-    for (size_t t = 0; t < num_tiles; ++t) {
-      const uint8_t* comp_tile = h_compressed + t * c.max_output_size;
+    for (size_t t = 0; t < n_chunks; ++t) {
+      const uint8_t* comp_chunk = h_compressed + t * c.max_output_size;
       size_t result =
-        ZSTD_decompress(decomp_buf, tile_bytes, comp_tile, h_comp_sizes[t]);
+        ZSTD_decompress(decomp_buf, chunk_bytes, comp_chunk, h_comp_sizes[t]);
       if (ZSTD_isError(result)) {
-        log_error("  round %d tile %zu: ZSTD_decompress failed: %s",
+        log_error("  round %d chunk %zu: ZSTD_decompress failed: %s",
                   round,
                   t,
                   ZSTD_getErrorName(result));
         round_errors++;
         continue;
       }
-      if (result != tile_bytes) {
-        log_error("  round %d tile %zu: size mismatch: expected %zu got %zu",
+      if (result != chunk_bytes) {
+        log_error("  round %d chunk %zu: size mismatch: expected %zu got %zu",
                   round,
                   t,
-                  tile_bytes,
+                  chunk_bytes,
                   result);
         round_errors++;
         continue;
       }
 
       const uint16_t* actual = (const uint16_t*)decomp_buf;
-      const uint16_t* expected = h_data + t * (tile_bytes / sizeof(uint16_t));
+      const uint16_t* expected = h_data + t * (chunk_bytes / sizeof(uint16_t));
       int mismatch = 0;
-      for (size_t e = 0; e < tile_bytes / sizeof(uint16_t); ++e) {
+      for (size_t e = 0; e < chunk_bytes / sizeof(uint16_t); ++e) {
         if (actual[e] != expected[e]) {
           if (mismatch == 0)
-            log_error("  round %d tile %zu elem %zu: expected %u got %u",
+            log_error("  round %d chunk %zu elem %zu: expected %u got %u",
                       round,
                       t,
                       e,
@@ -131,13 +131,13 @@ test_compress_roundtrip(void)
         }
       }
       if (mismatch > 0) {
-        log_error("  round %d tile %zu: %d mismatches", round, t, mismatch);
+        log_error("  round %d chunk %zu: %d mismatches", round, t, mismatch);
         round_errors++;
       }
     }
 
     if (round_errors > 0) {
-      log_error("  round %d: %d tile errors", round, round_errors);
+      log_error("  round %d: %d chunk errors", round, round_errors);
       goto Fail;
     }
     log_info("  round %d: OK", round);
@@ -170,9 +170,9 @@ test_compress_lz4_roundtrip(void)
 {
   log_info("=== test_compress_lz4_roundtrip ===");
 
-  const size_t tile_bytes = 1048576; // 1 MiB
-  const size_t num_tiles = 96;
-  const size_t pool_bytes = num_tiles * tile_bytes;
+  const size_t chunk_bytes = 1048576; // 1 MiB
+  const size_t n_chunks = 96;
+  const size_t pool_bytes = n_chunks * chunk_bytes;
 
   struct codec c = { 0 };
   uint16_t* h_data = NULL;
@@ -185,20 +185,20 @@ test_compress_lz4_roundtrip(void)
   CUstream stream = 0;
   int ok = 0;
 
-  CHECK(Fail, codec_init(&c, CODEC_LZ4, tile_bytes, num_tiles) == 0);
+  CHECK(Fail, codec_init(&c, CODEC_LZ4, chunk_bytes, n_chunks) == 0);
 
-  const size_t comp_pool = num_tiles * c.max_output_size;
+  const size_t comp_pool = n_chunks * c.max_output_size;
 
-  log_info("  tile_bytes=%zu num_tiles=%zu max_comp=%zu",
-           tile_bytes,
-           num_tiles,
+  log_info("  chunk_bytes=%zu n_chunks=%zu max_comp=%zu",
+           chunk_bytes,
+           n_chunks,
            c.max_output_size);
 
   h_data = (uint16_t*)malloc(pool_bytes);
   CHECK(Fail, h_data);
   h_result = (uint8_t*)malloc(pool_bytes);
   CHECK(Fail, h_result);
-  h_comp_sizes = (size_t*)malloc(num_tiles * sizeof(size_t));
+  h_comp_sizes = (size_t*)malloc(n_chunks * sizeof(size_t));
   CHECK(Fail, h_comp_sizes);
 
   CU(Fail, cuStreamCreate(&stream, CU_STREAM_NON_BLOCKING));
@@ -218,31 +218,31 @@ test_compress_lz4_roundtrip(void)
 
   // Compress
   CHECK(Fail,
-        codec_compress(&c, d_data, tile_bytes, d_compressed, 0, stream) == 0);
+        codec_compress(&c, d_data, chunk_bytes, d_compressed, 0, stream) == 0);
   CU(Fail, cuStreamSynchronize(stream));
 
   // Read compressed sizes
   CU(Fail,
      cuMemcpyDtoH(
-       h_comp_sizes, (CUdeviceptr)c.d_comp_sizes, num_tiles * sizeof(size_t)));
+       h_comp_sizes, (CUdeviceptr)c.d_comp_sizes, n_chunks * sizeof(size_t)));
 
   // Set up nvcomp LZ4 batch decompress on GPU
   // Build pointer arrays for decompress: compressed input ptrs, decompressed
   // output ptrs, compressed sizes, decompressed sizes.
   {
-    void** h_comp_ptrs = (void**)malloc(num_tiles * sizeof(void*));
-    void** h_decomp_ptrs = (void**)malloc(num_tiles * sizeof(void*));
-    size_t* h_uncomp_sizes = (size_t*)malloc(num_tiles * sizeof(size_t));
-    size_t* h_actual_uncomp_sizes = (size_t*)malloc(num_tiles * sizeof(size_t));
-    int* h_statuses = (int*)calloc(num_tiles, sizeof(int));
+    void** h_comp_ptrs = (void**)malloc(n_chunks * sizeof(void*));
+    void** h_decomp_ptrs = (void**)malloc(n_chunks * sizeof(void*));
+    size_t* h_uncomp_sizes = (size_t*)malloc(n_chunks * sizeof(size_t));
+    size_t* h_actual_uncomp_sizes = (size_t*)malloc(n_chunks * sizeof(size_t));
+    int* h_statuses = (int*)calloc(n_chunks, sizeof(int));
     CHECK(Fail,
           h_comp_ptrs && h_decomp_ptrs && h_uncomp_sizes &&
             h_actual_uncomp_sizes && h_statuses);
 
-    for (size_t t = 0; t < num_tiles; ++t) {
+    for (size_t t = 0; t < n_chunks; ++t) {
       h_comp_ptrs[t] = (uint8_t*)d_compressed + t * c.max_output_size;
-      h_decomp_ptrs[t] = (uint8_t*)d_decomp + t * tile_bytes;
-      h_uncomp_sizes[t] = tile_bytes;
+      h_decomp_ptrs[t] = (uint8_t*)d_decomp + t * chunk_bytes;
+      h_uncomp_sizes[t] = chunk_bytes;
     }
 
     // Allocate device arrays for nvcomp decompress
@@ -253,33 +253,32 @@ test_compress_lz4_roundtrip(void)
     size_t* d_actual_uncomp_sizes = NULL;
     int* d_statuses = NULL;
 
+    CU(Fail2, cuMemAlloc((CUdeviceptr*)&d_comp_ptrs, n_chunks * sizeof(void*)));
     CU(Fail2,
-       cuMemAlloc((CUdeviceptr*)&d_comp_ptrs, num_tiles * sizeof(void*)));
+       cuMemAlloc((CUdeviceptr*)&d_decomp_ptrs, n_chunks * sizeof(void*)));
     CU(Fail2,
-       cuMemAlloc((CUdeviceptr*)&d_decomp_ptrs, num_tiles * sizeof(void*)));
+       cuMemAlloc((CUdeviceptr*)&d_comp_sizes_arr, n_chunks * sizeof(size_t)));
     CU(Fail2,
-       cuMemAlloc((CUdeviceptr*)&d_comp_sizes_arr, num_tiles * sizeof(size_t)));
-    CU(Fail2,
-       cuMemAlloc((CUdeviceptr*)&d_uncomp_sizes, num_tiles * sizeof(size_t)));
+       cuMemAlloc((CUdeviceptr*)&d_uncomp_sizes, n_chunks * sizeof(size_t)));
     CU(Fail2,
        cuMemAlloc((CUdeviceptr*)&d_actual_uncomp_sizes,
-                  num_tiles * sizeof(size_t)));
-    CU(Fail2, cuMemAlloc((CUdeviceptr*)&d_statuses, num_tiles * sizeof(int)));
+                  n_chunks * sizeof(size_t)));
+    CU(Fail2, cuMemAlloc((CUdeviceptr*)&d_statuses, n_chunks * sizeof(int)));
 
     CU(Fail2,
        cuMemcpyHtoD(
-         (CUdeviceptr)d_comp_ptrs, h_comp_ptrs, num_tiles * sizeof(void*)));
+         (CUdeviceptr)d_comp_ptrs, h_comp_ptrs, n_chunks * sizeof(void*)));
     CU(Fail2,
        cuMemcpyHtoD(
-         (CUdeviceptr)d_decomp_ptrs, h_decomp_ptrs, num_tiles * sizeof(void*)));
+         (CUdeviceptr)d_decomp_ptrs, h_decomp_ptrs, n_chunks * sizeof(void*)));
     CU(Fail2,
        cuMemcpyHtoD((CUdeviceptr)d_comp_sizes_arr,
                     h_comp_sizes,
-                    num_tiles * sizeof(size_t)));
+                    n_chunks * sizeof(size_t)));
     CU(Fail2,
        cuMemcpyHtoD((CUdeviceptr)d_uncomp_sizes,
                     h_uncomp_sizes,
-                    num_tiles * sizeof(size_t)));
+                    n_chunks * sizeof(size_t)));
 
     // Get temp buffer size for LZ4 decompress
     size_t temp_bytes = 0;
@@ -287,11 +286,11 @@ test_compress_lz4_roundtrip(void)
       nvcompBatchedLZ4DecompressDefaultOpts;
     {
       nvcompStatus_t status =
-        nvcompBatchedLZ4DecompressGetTempSizeAsync(num_tiles,
-                                                   tile_bytes,
+        nvcompBatchedLZ4DecompressGetTempSizeAsync(n_chunks,
+                                                   chunk_bytes,
                                                    decomp_opts,
                                                    &temp_bytes,
-                                                   num_tiles * tile_bytes);
+                                                   n_chunks * chunk_bytes);
       CHECK(Fail2, status == nvcompSuccess);
     }
 
@@ -306,7 +305,7 @@ test_compress_lz4_roundtrip(void)
                                         d_comp_sizes_arr,
                                         d_uncomp_sizes,
                                         d_actual_uncomp_sizes,
-                                        num_tiles,
+                                        n_chunks,
                                         d_temp,
                                         temp_bytes,
                                         (void* const*)d_decomp_ptrs,
@@ -375,7 +374,5 @@ Fail:
   return 1;
 }
 
-RUN_GPU_TESTS(
-  { "compress_roundtrip", test_compress_roundtrip },
-  { "compress_lz4_roundtrip", test_compress_lz4_roundtrip },
-)
+RUN_GPU_TESTS({ "compress_roundtrip", test_compress_roundtrip },
+              { "compress_lz4_roundtrip", test_compress_lz4_roundtrip }, )

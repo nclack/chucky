@@ -9,7 +9,7 @@ main(int ac, char* av[])
   uint8_t rank = dims_create(dims, "tcyx", sizes);
 
   uint8_t ratios[] = { 1, 0, 2, 2 };
-  dims_budget_tile_size(dims, rank, 1ULL << 16, ratios);
+  dims_budget_chunk_size(dims, rank, 1ULL << 16, ratios);
 
   uint64_t shard_counts[] = { 2, 1, 2, 2 };
   dims_set_shard_counts(dims, rank, shard_counts);
@@ -20,8 +20,8 @@ main(int ac, char* av[])
 }
 
 /* NOTES
-on auk, 1 MB/tile will oom. Epoch too thick.
-Can fix by going to 0.5 MB/tile.
+on auk, 1 MB/chunk will oom. Epoch too thick.
+Can fix by going to 0.5 MB/chunk.
 
 z  xy   t_nelem
 16 128  1<<18     1.28 GB/s
@@ -31,7 +31,7 @@ z  xy   t_nelem
 16 64   1<<16     1.75 GB/s
 4  128  1<<16     1.22 GB/s
 
-adjusted min tiles (2048) and max epochs/batch (256)
+adjusted min chunks (2048) and max epochs/batch (256)
 4  256  1<<18     oom
 2  256  1<<17     1.21 GB/s
 8  128  1<<17     1.26 GB/s

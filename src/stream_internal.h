@@ -49,9 +49,9 @@ struct level_flush_state
   struct aggregate_slot agg[2]; // double-buffered, indexed by flush_current
   struct shard_state shard;
   CUdeviceptr
-    d_batch_gather; // [K_l * M_l] uint32: batch-tile -> compressed idx
+    d_batch_gather; // [K_l * M_l] uint32: batch-chunk -> compressed idx
   CUdeviceptr
-    d_batch_perm; // [K_l * M_l] uint32: batch-tile -> shard-ordered pos
+    d_batch_perm; // [K_l * M_l] uint32: batch-chunk -> shard-ordered pos
   uint32_t batch_active_count; // K_l = K / 2^l for this level
 };
 
@@ -71,12 +71,12 @@ struct lod_state
   CUdeviceptr d_parent_shapes[LOD_MAX_LEVELS];
   CUdeviceptr d_level_ends[LOD_MAX_LEVELS];
 
-  // Per-level tile layouts [1..nlod-1], index 0 unused
+  // Per-level chunk layouts [1..nlod-1], index 0 unused
   struct stream_layout layouts[LOD_MAX_LEVELS];
 
-  // Morton-to-tile scatter LUTs (precomputed)
-  CUdeviceptr d_morton_tile_lut[LOD_MAX_LEVELS]; // u32, lod_counts[lv]
-  CUdeviceptr d_morton_batch_tile_offsets[LOD_MAX_LEVELS]; // u32, batch_count
+  // Morton-to-chunk scatter LUTs (precomputed)
+  CUdeviceptr d_morton_chunk_lut[LOD_MAX_LEVELS]; // u32, lod_counts[lv]
+  CUdeviceptr d_morton_batch_chunk_offsets[LOD_MAX_LEVELS]; // u32, batch_count
 
   CUevent t_start;
   CUevent t_scatter_end;
@@ -103,15 +103,15 @@ struct gpu_streams
   CUstream h2d, compute, compress, d2h;
 };
 
-// Per-level tile geometry (all immutable after create)
+// Per-level chunk geometry (all immutable after create)
 struct level_geometry
 {
-  int nlod;                             // number of LOD levels
-  int enable_multiscale;                // has inner LOD
-  int dim0_downsample;                  // has dim0 LOD
-  uint64_t total_tiles;                 // sum across all levels per epoch
-  uint64_t tile_offset[LOD_MAX_LEVELS]; // first tile index per level
-  uint64_t tile_count[LOD_MAX_LEVELS];  // tiles_per_epoch per level
+  int nlod;                              // number of LOD levels
+  int enable_multiscale;                 // has inner LOD
+  int dim0_downsample;                   // has dim0 LOD
+  uint64_t total_chunks;                 // sum across all levels per epoch
+  uint64_t chunk_offset[LOD_MAX_LEVELS]; // first chunk index per level
+  uint64_t chunk_count[LOD_MAX_LEVELS];  // chunks_per_epoch per level
 };
 
 // Batch accumulation: config + mutable counter + per-epoch events
@@ -131,7 +131,7 @@ struct compress_agg_input
   uint32_t n_epochs;                             // epochs in this batch
   uint32_t active_levels_mask;                   // union of per-epoch masks
   uint32_t batch_active_masks[MAX_BATCH_EPOCHS]; // per-epoch active level masks
-  CUdeviceptr pool_buf;                          // tile pool for this slot
+  CUdeviceptr pool_buf;                          // chunk pool for this slot
   CUevent epoch_events[MAX_BATCH_EPOCHS];        // per-epoch pool-ready signals
   CUevent lod_done;                              // NULL if no multiscale
   uint32_t epochs_per_batch;                     // K, for LUT path decisions
@@ -175,7 +175,7 @@ struct tile_stream_gpu
 {
   struct writer writer;
   struct tile_stream_configuration config;
-  struct stream_layout layout;  // L0 tile layout
+  struct stream_layout layout;  // L0 chunk layout
   struct level_geometry levels; // per-level accounting
   struct gpu_streams streams;   // CUDA stream handles
   struct batch_state batch;     // epoch accumulation
@@ -184,7 +184,7 @@ struct tile_stream_gpu
   struct d2h_deliver_stage d2h_deliver;   // D2H+deliver stage
   struct lod_state lod;                   // LOD buffers + plan
 
-  struct pool_state pools;       // tile pools
+  struct pool_state pools;       // chunk pools
   struct staging_state stage;    // H2D staging buffers
   uint64_t cursor;               // current element position
   struct stream_metrics metrics; // telemetry
@@ -204,9 +204,9 @@ struct level_layout_info
 {
   struct aggregate_layout agg_layout; // host fields only, d_* = NULL
   uint32_t batch_active_count;
-  uint64_t tiles_per_shard_0;
-  uint64_t tiles_per_shard_inner;
-  uint64_t tiles_per_shard_total;
+  uint64_t chunks_per_shard_0;
+  uint64_t chunks_per_shard_inner;
+  uint64_t chunks_per_shard_total;
   uint64_t shard_inner_count;
 };
 
@@ -221,7 +221,7 @@ struct computed_stream_layouts
     lod_layouts[LOD_MAX_LEVELS]; // host; d_* = NULL; [0] unused
   struct level_geometry levels;
   uint32_t epochs_per_batch;
-  size_t max_output_size; // codec-derived compressed tile bound
+  size_t max_output_size; // codec-derived compressed chunk bound
   struct level_layout_info per_level[LOD_MAX_LEVELS];
 };
 

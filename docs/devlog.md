@@ -13,7 +13,7 @@
 - [ ] make a report to characterize performance/memory by chunk size
 - [ ] metadata
 - [x] fix "temporal" vs "spatial" naming.
-- [ ] fix uses of the work chunk, then fix uses of the word tile.
+- [x] fix uses of the work chunk, then fix uses of the word tile.
 - [x] boundary conditions for dim0 downsampling - it's a ceil like it should be
 - [x] lod for dim0
 - [x] move benchmark suite out of tests
@@ -41,6 +41,8 @@ Looking at api examples and cleaning up a little bit.
 Resolving spatial/temporal naming. Now "outer"/"dim0"/"append" and "inner."
 
 Fixing uses of the word chunk that are a bit off target.
+
+Analyzing acquire-zarr integration.
 
 ## 2026-03-15
 

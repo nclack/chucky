@@ -139,15 +139,15 @@ lod_segment(const struct lod_plan* p, int level)
   return (struct lod_span){ .beg = next.beg - base, .end = next.end - base };
 }
 
-// Would halving produce a level where any LOD dim < its tile size?
+// Would halving produce a level where any LOD dim < its chunk size?
 static int
-next_level_below_tile(int lod_ndim,
-                      const uint64_t* lod_shape,
-                      const uint64_t* lod_tile)
+next_level_below_chunk(int lod_ndim,
+                       const uint64_t* lod_shape,
+                       const uint64_t* lod_chunk)
 {
   for (int d = 0; d < lod_ndim; ++d) {
     uint64_t next = (lod_shape[d] + 1) / 2;
-    if (next < lod_tile[d])
+    if (next < lod_chunk[d])
       return 1;
   }
   return 0;
@@ -157,12 +157,11 @@ int
 lod_plan_init(struct lod_plan* p,
               int ndim,
               const uint64_t* shape,
-              const uint64_t* tile_shape,
+              const uint64_t* chunk_shape,
               uint32_t lod_mask,
               int max_levels)
 {
-  if (lod_plan_init_shapes(
-        p, ndim, shape, tile_shape, lod_mask, max_levels))
+  if (lod_plan_init_shapes(p, ndim, shape, chunk_shape, lod_mask, max_levels))
     return 1;
 
   for (int k = 0; k < p->nlod; ++k) {
@@ -214,7 +213,7 @@ int
 lod_plan_init_shapes(struct lod_plan* p,
                      int ndim,
                      const uint64_t* shape,
-                     const uint64_t* tile_shape,
+                     const uint64_t* chunk_shape,
                      uint32_t lod_mask,
                      int max_levels)
 {
@@ -239,15 +238,15 @@ lod_plan_init_shapes(struct lod_plan* p,
   for (int k = 0; k < p->lod_ndim; ++k)
     p->lod_shapes[0][k] = shape[p->lod_map[k]];
 
-  uint64_t lod_tile[LOD_MAX_NDIM];
+  uint64_t lod_chunk[LOD_MAX_NDIM];
   for (int k = 0; k < p->lod_ndim; ++k)
-    lod_tile[k] = tile_shape ? tile_shape[p->lod_map[k]] : 1;
+    lod_chunk[k] = chunk_shape ? chunk_shape[p->lod_map[k]] : 1;
 
   p->nlod = 1;
-  while (
-    p->nlod < max_levels &&
-    !is_all_ones(p->lod_ndim, p->lod_shapes[p->nlod - 1]) &&
-    !next_level_below_tile(p->lod_ndim, p->lod_shapes[p->nlod - 1], lod_tile)) {
+  while (p->nlod < max_levels &&
+         !is_all_ones(p->lod_ndim, p->lod_shapes[p->nlod - 1]) &&
+         !next_level_below_chunk(
+           p->lod_ndim, p->lod_shapes[p->nlod - 1], lod_chunk)) {
     for (int k = 0; k < p->lod_ndim; ++k)
       p->lod_shapes[p->nlod][k] = (p->lod_shapes[p->nlod - 1][k] + 1) / 2;
     memcpy(p->shapes[p->nlod],

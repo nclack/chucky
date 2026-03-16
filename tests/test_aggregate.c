@@ -19,9 +19,9 @@ test_aggregate_even(void)
   int ok = 0;
 
   const uint8_t rank = 3;
-  const uint64_t tile_count[3] = { 4, 6, 8 };
-  const uint64_t tiles_per_shard[3] = { 0, 3, 4 };
-  const uint64_t M = tile_count[1] * tile_count[2]; // 48
+  const uint64_t chunk_count[3] = { 4, 6, 8 };
+  const uint64_t chunks_per_shard[3] = { 0, 3, 4 };
+  const uint64_t M = chunk_count[1] * chunk_count[2]; // 48
   const size_t max_comp = 64;
 
   struct aggregate_layout layout;
@@ -37,7 +37,7 @@ test_aggregate_even(void)
 
   CHECK(Fail,
         aggregate_layout_init(
-          &layout, rank, tile_count, tiles_per_shard, M, max_comp, 0) == 0);
+          &layout, rank, chunk_count, chunks_per_shard, M, max_comp, 0) == 0);
 
   const uint64_t C = layout.covering_count;
   printf("  M=%llu C=%llu lifted_rank=%u\n",
@@ -113,7 +113,7 @@ test_aggregate_even(void)
       for (size_t b = 0; b < h_sizes[i]; ++b) {
         if (h_agg[off + b] != expected_val) {
           fprintf(stderr,
-                  "  MISMATCH tile %llu P[i]=%u byte %zu: got %u want %u\n",
+                  "  MISMATCH chunk %llu P[i]=%u byte %zu: got %u want %u\n",
                   (unsigned long long)i,
                   pi,
                   b,
@@ -155,9 +155,9 @@ test_aggregate_uneven(void)
   int ok = 0;
 
   const uint8_t rank = 2;
-  const uint64_t tile_count[2] = { 1, 7 };
-  const uint64_t tiles_per_shard[2] = { 0, 3 };
-  const uint64_t M = tile_count[1]; // 7
+  const uint64_t chunk_count[2] = { 1, 7 };
+  const uint64_t chunks_per_shard[2] = { 0, 3 };
+  const uint64_t M = chunk_count[1]; // 7
   const size_t max_comp = 32;
 
   struct aggregate_layout layout;
@@ -173,7 +173,7 @@ test_aggregate_uneven(void)
 
   CHECK(Fail,
         aggregate_layout_init(
-          &layout, rank, tile_count, tiles_per_shard, M, max_comp, 0) == 0);
+          &layout, rank, chunk_count, chunks_per_shard, M, max_comp, 0) == 0);
 
   const uint64_t C = layout.covering_count;
   printf("  M=%llu C=%llu lifted_rank=%u\n",
@@ -252,7 +252,7 @@ test_aggregate_uneven(void)
       for (size_t b = 0; b < h_sizes[i]; ++b) {
         if (h_agg[off + b] != expected_val) {
           fprintf(stderr,
-                  "  MISMATCH tile %llu P[i]=%u byte %zu: got %u want %u\n",
+                  "  MISMATCH chunk %llu P[i]=%u byte %zu: got %u want %u\n",
                   (unsigned long long)i,
                   pi,
                   b,
@@ -282,7 +282,5 @@ Fail:
   return ok ? 0 : 1;
 }
 
-RUN_GPU_TESTS(
-  { "aggregate_even", test_aggregate_even },
-  { "aggregate_uneven", test_aggregate_uneven },
-)
+RUN_GPU_TESTS({ "aggregate_even", test_aggregate_even },
+              { "aggregate_uneven", test_aggregate_uneven }, )

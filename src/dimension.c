@@ -50,8 +50,8 @@ dims_create(struct dimension* dims, const char* names, const uint64_t* sizes)
       return 0;
     dims[i] = (struct dimension){
       .size = sizes[i],
-      .tile_size = sizes[i],
-      .tiles_per_shard = 0,
+      .chunk_size = sizes[i],
+      .chunks_per_shard = 0,
       .name = name_table[ch],
       .downsample = 0,
       .storage_position = i,
@@ -99,19 +99,19 @@ dims_set_downsample_by_name(struct dimension* dims,
 }
 
 void
-dims_set_tile_sizes(struct dimension* dims,
-                    uint8_t rank,
-                    const uint64_t* tile_sizes)
+dims_set_chunk_sizes(struct dimension* dims,
+                     uint8_t rank,
+                     const uint64_t* chunk_sizes)
 {
   for (uint8_t i = 0; i < rank; ++i)
-    dims[i].tile_size = tile_sizes[i];
+    dims[i].chunk_size = chunk_sizes[i];
 }
 
 void
-dims_budget_tile_size(struct dimension* dims,
-                      uint8_t rank,
-                      uint64_t nelem,
-                      const uint8_t* ratios)
+dims_budget_chunk_size(struct dimension* dims,
+                       uint8_t rank,
+                       uint64_t nelem,
+                       const uint8_t* ratios)
 {
   if (nelem == 0)
     return;
@@ -137,12 +137,12 @@ dims_budget_tile_size(struct dimension* dims,
 
   for (uint8_t i = 0; i < rank; ++i) {
     if (ratios[i] == 0) {
-      dims[i].tile_size = 1;
+      dims[i].chunk_size = 1;
     } else {
       int bits = ratios[i] * bits_per_part;
       if (i == first_nonzero)
         bits += remainder;
-      dims[i].tile_size = (uint64_t)1 << bits;
+      dims[i].chunk_size = (uint64_t)1 << bits;
     }
   }
 }
@@ -155,8 +155,8 @@ dims_set_shard_counts(struct dimension* dims,
   for (uint8_t i = 0; i < rank; ++i) {
     if (shard_counts[i] == 0)
       continue;
-    uint64_t tile_count = ceildiv(dims[i].size, dims[i].tile_size);
-    dims[i].tiles_per_shard = ceildiv(tile_count, shard_counts[i]);
+    uint64_t n_chunks = ceildiv(dims[i].size, dims[i].chunk_size);
+    dims[i].chunks_per_shard = ceildiv(n_chunks, shard_counts[i]);
   }
 }
 
@@ -165,33 +165,33 @@ dims_print(const struct dimension* dims, uint8_t rank)
 {
   printf("dim  name  %10s  %10s  %8s  %6s  %8s  storage  ds\n",
          "size",
-         "tile",
-         "tiles",
-         "tps",
+         "chunk",
+         "chunks",
+         "cps",
          "shards");
-  uint64_t tile_elements = 1;
-  uint64_t tiles_per_epoch = 1;
+  uint64_t chunk_elements = 1;
+  uint64_t chunks_per_epoch = 1;
   for (uint8_t i = 0; i < rank; ++i) {
-    uint64_t tc = ceildiv(dims[i].size, dims[i].tile_size);
-    uint64_t tps = dims[i].tiles_per_shard ? dims[i].tiles_per_shard : tc;
-    uint64_t sc = ceildiv(tc, tps);
+    uint64_t tc = ceildiv(dims[i].size, dims[i].chunk_size);
+    uint64_t cps = dims[i].chunks_per_shard ? dims[i].chunks_per_shard : tc;
+    uint64_t sc = ceildiv(tc, cps);
     printf("%3d  %-4s  %10llu  %10llu  %8llu  %6llu  %8llu  %7d  %s\n",
            i,
            dims[i].name ? dims[i].name : "?",
            (unsigned long long)dims[i].size,
-           (unsigned long long)dims[i].tile_size,
+           (unsigned long long)dims[i].chunk_size,
            (unsigned long long)tc,
-           (unsigned long long)tps,
+           (unsigned long long)cps,
            (unsigned long long)sc,
            (int)dims[i].storage_position,
            dims[i].downsample ? "Y" : ".");
-    tile_elements *= dims[i].tile_size;
+    chunk_elements *= dims[i].chunk_size;
     if (i > 0)
-      tiles_per_epoch *= tc;
+      chunks_per_epoch *= tc;
   }
-  double epoch_elements = (double)tiles_per_epoch * (double)tile_elements;
-  printf("tile_elements: %llu  tiles/epoch: %llu  epoch_elements: %.3g\n",
-         (unsigned long long)tile_elements,
-         (unsigned long long)tiles_per_epoch,
+  double epoch_elements = (double)chunks_per_epoch * (double)chunk_elements;
+  printf("chunk_elements: %llu  chunks/epoch: %llu  epoch_elements: %.3g\n",
+         (unsigned long long)chunk_elements,
+         (unsigned long long)chunks_per_epoch,
          epoch_elements);
 }

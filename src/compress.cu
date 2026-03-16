@@ -93,21 +93,21 @@ codec_alignment(enum compression_codec type)
 // --- codec_max_output_size ---
 
 extern "C" size_t
-codec_max_output_size(enum compression_codec type, size_t tile_bytes)
+codec_max_output_size(enum compression_codec type, size_t chunk_bytes)
 {
   size_t max_comp = 0;
   switch (type) {
     case CODEC_NONE:
-      return tile_bytes;
+      return chunk_bytes;
     case CODEC_LZ4:
       NVCOMP(Fail,
              nvcompBatchedLZ4CompressGetMaxOutputChunkSize(
-               tile_bytes, nvcompBatchedLZ4CompressDefaultOpts, &max_comp));
+               chunk_bytes, nvcompBatchedLZ4CompressDefaultOpts, &max_comp));
       return max_comp;
     case CODEC_ZSTD:
       NVCOMP(Fail,
              nvcompBatchedZstdCompressGetMaxOutputChunkSize(
-               tile_bytes, nvcompBatchedZstdCompressDefaultOpts, &max_comp));
+               chunk_bytes, nvcompBatchedZstdCompressDefaultOpts, &max_comp));
       return max_comp;
     default:
       break;
@@ -120,7 +120,7 @@ Fail:
 
 extern "C" size_t
 codec_temp_bytes(enum compression_codec type,
-                 size_t tile_bytes,
+                 size_t chunk_bytes,
                  size_t batch_size)
 {
   size_t temp = 0;
@@ -131,19 +131,19 @@ codec_temp_bytes(enum compression_codec type,
       NVCOMP(Fail,
              nvcompBatchedLZ4CompressGetTempSizeAsync(
                batch_size,
-               tile_bytes,
+               chunk_bytes,
                nvcompBatchedLZ4CompressDefaultOpts,
                &temp,
-               batch_size * tile_bytes));
+               batch_size * chunk_bytes));
       return temp;
     case CODEC_ZSTD:
       NVCOMP(Fail,
              nvcompBatchedZstdCompressGetTempSizeAsync(
                batch_size,
-               tile_bytes,
+               chunk_bytes,
                nvcompBatchedZstdCompressDefaultOpts,
                &temp,
-               batch_size * tile_bytes));
+               batch_size * chunk_bytes));
       return temp;
     default:
       break;
@@ -157,18 +157,18 @@ Fail:
 extern "C" int
 codec_init(struct codec* c,
            enum compression_codec type,
-           size_t tile_bytes,
+           size_t chunk_bytes,
            size_t batch_size)
 {
   memset(c, 0, sizeof(*c));
   c->type = type;
-  c->tile_bytes = tile_bytes;
+  c->chunk_bytes = chunk_bytes;
   c->batch_size = batch_size;
   c->alignment = codec_alignment(type);
 
   switch (type) {
     case CODEC_NONE:
-      c->max_output_size = tile_bytes;
+      c->max_output_size = chunk_bytes;
       c->temp_bytes = 0;
       break;
 
@@ -176,15 +176,15 @@ codec_init(struct codec* c,
       size_t max_comp = 0;
       NVCOMP(Fail,
              nvcompBatchedLZ4CompressGetMaxOutputChunkSize(
-               tile_bytes, nvcompBatchedLZ4CompressDefaultOpts, &max_comp));
+               chunk_bytes, nvcompBatchedLZ4CompressDefaultOpts, &max_comp));
       c->max_output_size = max_comp;
       NVCOMP(Fail,
              nvcompBatchedLZ4CompressGetTempSizeAsync(
                batch_size,
-               tile_bytes,
+               chunk_bytes,
                nvcompBatchedLZ4CompressDefaultOpts,
                &c->temp_bytes,
-               batch_size * tile_bytes));
+               batch_size * chunk_bytes));
       break;
     }
 
@@ -192,15 +192,15 @@ codec_init(struct codec* c,
       size_t max_comp = 0;
       NVCOMP(Fail,
              nvcompBatchedZstdCompressGetMaxOutputChunkSize(
-               tile_bytes, nvcompBatchedZstdCompressDefaultOpts, &max_comp));
+               chunk_bytes, nvcompBatchedZstdCompressDefaultOpts, &max_comp));
       c->max_output_size = max_comp;
       NVCOMP(Fail,
              nvcompBatchedZstdCompressGetTempSizeAsync(
                batch_size,
-               tile_bytes,
+               chunk_bytes,
                nvcompBatchedZstdCompressDefaultOpts,
                &c->temp_bytes,
-               batch_size * tile_bytes));
+               batch_size * chunk_bytes));
       break;
     }
 
@@ -214,26 +214,26 @@ codec_init(struct codec* c,
   CU(Fail,
      cuMemAlloc((CUdeviceptr*)&c->d_uncomp_sizes, batch_size * sizeof(size_t)));
 
-  // Pre-fill d_uncomp_sizes with tile_bytes
+  // Pre-fill d_uncomp_sizes with chunk_bytes
   {
     size_t* h = (size_t*)malloc(batch_size * sizeof(size_t));
     if (!h)
       goto Fail;
     for (size_t i = 0; i < batch_size; ++i)
-      h[i] = tile_bytes;
+      h[i] = chunk_bytes;
     CUresult rc = cuMemcpyHtoD(
       (CUdeviceptr)c->d_uncomp_sizes, h, batch_size * sizeof(size_t));
     free(h);
     CU(Fail, rc);
   }
 
-  // For CODEC_NONE, pre-fill d_comp_sizes with tile_bytes
+  // For CODEC_NONE, pre-fill d_comp_sizes with chunk_bytes
   if (type == CODEC_NONE) {
     size_t* h = (size_t*)malloc(batch_size * sizeof(size_t));
     if (!h)
       goto Fail;
     for (size_t i = 0; i < batch_size; ++i)
-      h[i] = tile_bytes;
+      h[i] = chunk_bytes;
     CUresult rc = cuMemcpyHtoD(
       (CUdeviceptr)c->d_comp_sizes, h, batch_size * sizeof(size_t));
     free(h);
@@ -289,22 +289,22 @@ codec_compress(struct codec* c,
   cudaStream_t cuda_stream = (cudaStream_t)stream;
 
   if (c->type == CODEC_NONE) {
-    // All callers pass input_stride == tile_bytes.
+    // All callers pass input_stride == chunk_bytes.
     // The strided path is dead code, but kept as a defensive fallback.
-    if (input_stride != c->tile_bytes) {
+    if (input_stride != c->chunk_bytes) {
       for (size_t i = 0; i < n; ++i) {
         CU(Fail,
            cuMemcpyDtoDAsync(
-             (CUdeviceptr)((char*)d_output + i * c->tile_bytes),
+             (CUdeviceptr)((char*)d_output + i * c->chunk_bytes),
              (CUdeviceptr)((const char*)d_input + i * input_stride),
-             c->tile_bytes,
+             c->chunk_bytes,
              stream));
       }
     } else {
       CU(Fail,
          cuMemcpyDtoDAsync((CUdeviceptr)d_output,
                            (CUdeviceptr)d_input,
-                           n * c->tile_bytes,
+                           n * c->chunk_bytes,
                            stream));
     }
     return 0;
@@ -326,7 +326,7 @@ codec_compress(struct codec* c,
       NVCOMP(Fail,
              nvcompBatchedLZ4CompressAsync(uncomp_ptrs,
                                            c->d_uncomp_sizes,
-                                           c->tile_bytes,
+                                           c->chunk_bytes,
                                            n,
                                            c->d_temp,
                                            c->temp_bytes,
@@ -342,7 +342,7 @@ codec_compress(struct codec* c,
         Fail,
         nvcompBatchedZstdCompressAsync(uncomp_ptrs,
                                        c->d_uncomp_sizes,
-                                       c->tile_bytes,
+                                       c->chunk_bytes,
                                        n,
                                        c->d_temp,
                                        c->temp_bytes,

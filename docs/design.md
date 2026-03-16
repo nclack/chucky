@@ -15,24 +15,22 @@ access to rectangular sub-regions for downstream analysis.
 
 [Zarr v3][zarr-v3] addresses this by partitioning the array into independent,
 individually addressable **chunks** that can each be compressed and read in
-isolation. (We use the term **tile** for chunk throughout this document to avoid
-overloading "chunk," which is used in other contexts.) Zarr's
-[sharding codec][zarr-shard] groups tiles into **shards** — single storage
-objects containing multiple tiles plus an index — reducing the number of files
-and amortizing I/O overhead. Tile sizes balance compression ratio against
-random-access granularity; shard sizes balance file count against write
-amplification.
+isolation. Zarr's [sharding codec][zarr-shard] groups chunks into **shards** —
+single storage objects containing multiple chunks plus an index — reducing the
+number of files and amortizing I/O overhead. Chunk sizes balance compression
+ratio against random-access granularity; shard sizes balance file count against
+write amplification.
 
 [zarr-v3]: https://zarr-specs.readthedocs.io/en/latest/v3/core/v3.0.html
 [zarr-shard]: https://zarr-specs.readthedocs.io/en/latest/v3/codecs/sharding-indexed/index.html
 
 Because the stream is potentially unbounded, the pipeline cannot buffer the
-full array before writing. It must tile and compress data incrementally. The
+full array before writing. It must chunk and compress data incrementally. The
 key observation is that as data arrives in row-major order, only a bounded set
-of tiles are active at any time — those sharing the same position along the
+of chunks are active at any time — those sharing the same position along the
 outermost (slowest-varying) dimension, the **append dimension**. We call this
-set of simultaneously live tiles an **epoch**. The pipeline processes one epoch
-at a time, flushes the completed tiles, and reuses the memory. This bounds
+set of simultaneously live chunks an **epoch**. The pipeline processes one epoch
+at a time, flushes the completed chunks, and reuses the memory. This bounds
 the working set regardless of how long the stream runs. (The formal analysis
 is in [streaming.md](streaming.md); the mathematical details appear in the
 [Approach](#approach) section below.)
@@ -59,7 +57,7 @@ each element is identified by a flat index $i \in [0, \prod_d s_d)$.
 
 ### Mixed-radix representation
 
-The pipeline performs several index-space transformations — tiling, storage
+The pipeline performs several index-space transformations — chunking, storage
 reordering, shard aggregation — that look different but share a common
 mechanism. Mixed-radix arithmetic gives us a uniform language for all of them.
 
@@ -93,50 +91,50 @@ position and vice versa. This is a transposition.
 
 The pipeline's transformations all reduce to unraveling against one shape and
 raveling with the strides of another. The scatter kernel, shard
-aggregation, and LOD-to-tiles scatter differ only in which radix and stride
+aggregation, and LOD-to-chunks scatter differ only in which radix and stride
 tables they use.
 
 ### Lifted coordinates and scatter
 
-The central operation is reorganizing a flat row-major stream into tiles. We do
+The central operation is reorganizing a flat row-major stream into chunks. We do
 this by **lifting** — replacing the array shape with a finer one that separates
-tile identity from position within a tile.
+chunk identity from position within a chunk.
 
-Given the array shape $(s_0, \ldots, s_{D-1})$ and tile shape $(n_0, \ldots,
-n_{D-1})$, define the tile count $t_d = \lceil s_d / n_d \rceil$ for each
+Given the array shape $(s_0, \ldots, s_{D-1})$ and chunk shape $(n_0, \ldots,
+n_{D-1})$, define the chunk count $t_d = \lceil s_d / n_d \rceil$ for each
 dimension. The original rank-$D$ shape is replaced by a rank-$2D$ **lifted
 shape**:
 
 $$(t_0, n_0, \; t_1, n_1, \; \ldots, \; t_{D-1}, n_{D-1})$$
 
 Unraveling a flat index against this shape produces coordinates where $t_d$
-identifies the tile along dimension $d$ and $n_d$ is the position within that
-tile. To assemble tiles, we ravel these same coordinates with the strides of
-the **tile-major** shape:
+identifies the chunk along dimension $d$ and $n_d$ is the position within that
+chunk. To assemble chunks, we ravel these same coordinates with the strides of
+the **chunk-major** shape:
 
 $$(t_0, \ldots, t_{D-1}, \; n_0, \ldots, n_{D-1})$$
 
-The first $D$ coordinates identify the tile; the last $D$ identify the position
+The first $D$ coordinates identify the chunk; the last $D$ identify the position
 within it. The two shapes share the same elements, just in a different order,
 so the mapping is an isomorphism.
 
 A GPU **scatter kernel** implements this: each thread unravels its input index
-against the lifted shape, then ravels the coordinates with the tile-major
-strides, writing the element directly to its tile slot.
+against the lifted shape, then ravels the coordinates with the chunk-major
+strides, writing the element directly to its chunk slot.
 
-**Epochs and bounded memory.** The coordinate $t_0$ — the tile index along the
+**Epochs and bounded memory.** The coordinate $t_0$ — the chunk index along the
 append dimension — partitions the stream into **epochs**. Within an epoch, all
-tiles share the same $t_0$ value; there are
+chunks share the same $t_0$ value; there are
 
 $$M = \prod_{d=1}^{D-1} t_d$$
 
-tiles (the product over all dimensions except the append dimension). When
-assembling tiles, we map $t_0 \to 0$ so that every epoch's tiles land in the
+chunks (the product over all dimensions except the append dimension). When
+assembling chunks, we map $t_0 \to 0$ so that every epoch's chunks land in the
 same $M$ pool slots. The pipeline processes one epoch (or a small batch of $K$
-epochs), flushes the completed tiles, and reuses the pool — bounding the
+epochs), flushes the completed chunks, and reuses the pool — bounding the
 working set regardless of stream length.
 
-**Storage order.** The tile-major strides encode the desired dimension ordering
+**Storage order.** The chunk-major strides encode the desired dimension ordering
 in the on-disk layout. Changing the storage order (e.g., from `tzcyx` to
 `tczyx`) is a different permutation of the same shape, producing different
 strides. The scatter kernel itself is unchanged — only the stride table differs.
@@ -145,26 +143,26 @@ the storage order.
 
 ### Batching and compression
 
-Once tiles are assembled in GPU memory, they are compressed in a single batched
-call using NVIDIA's nvcomp library (zstd or lz4). nvcomp compresses all tiles
-simultaneously, but is most efficient when the batch contains many tiles
+Once chunks are assembled in GPU memory, they are compressed in a single batched
+call using NVIDIA's nvcomp library (zstd or lz4). nvcomp compresses all chunks
+simultaneously, but is most efficient when the batch contains many chunks
 (1000+). Depending on the configuration, a single epoch may produce relatively
-few tiles, so the pipeline accumulates $K$ consecutive epochs into a **batch**
+few chunks, so the pipeline accumulates $K$ consecutive epochs into a **batch**
 before triggering the compress → aggregate → transfer sequence. $K$ is chosen
-so the total tile count ($K \times M$ times the number of LOD levels) is large
+so the total chunk count ($K \times M$ times the number of LOD levels) is large
 enough for good GPU occupancy.
 
-The **tile pool** is a contiguous GPU buffer holding all $K \times M$ tile
+The **chunk pool** is a contiguous GPU buffer holding all $K \times M$ chunk
 slots (plus LOD level slots). Two pools are allocated: while one receives
 scatter writes from the current batch, the other drains through compression and
 transfer. This double-buffering ensures the scatter and compress stages overlap
 completely.
 
-Each tile is compressed in place into a fixed-size slot bounded by the codec's
-worst-case output. Since compressed sizes vary, gaps appear between tiles:
+Each chunk is compressed in place into a fixed-size slot bounded by the codec's
+worst-case output. Since compressed sizes vary, gaps appear between chunks:
 
 ```
-   tile 0           tile 1           tile 2           tile 3
+   chunk 0          chunk 1          chunk 2          chunk 3
   ┌────────────────┬────────────────┬────────────────┬────────────────┐
   │▓▓▓▓▓░░░░░░░░░░░│▓▓▓▓▓▓▓▓░░░░░░░░│▓▓░░░░░░░░░░░░░░│▓▓▓▓▓▓▓▓▓▓░░░░░░│
   └────────────────┴────────────────┴────────────────┴────────────────┘
@@ -176,24 +174,24 @@ the aggregation step.
 
 ### Shard aggregation
 
-After compression, tiles sit in the pool in the order they were scattered
-into — epoch-major, then tile-major within each epoch. But shards group tiles
-by tile locality, which is a different order. A GPU **aggregation** kernel
-reorders compressed tiles into shard-major order using a three-pass algorithm:
+After compression, chunks sit in the pool in the order they were scattered
+into — epoch-major, then chunk-major within each epoch. But shards group chunks
+by chunk locality, which is a different order. A GPU **aggregation** kernel
+reorders compressed chunks into shard-major order using a three-pass algorithm:
 
-1. **Permute sizes.** Compute the shard-major destination for each tile and
+1. **Permute sizes.** Compute the shard-major destination for each chunk and
    write its compressed size to that position.
 2. **Prefix sum.** Exclusive scan over the permuted sizes to compute byte
    offsets.
-3. **Gather.** Copy each tile's compressed bytes to its destination offset.
+3. **Gather.** Copy each chunk's compressed bytes to its destination offset.
 
-The result is a single contiguous buffer where tiles are grouped by shard and
+The result is a single contiguous buffer where chunks are grouped by shard and
 packed without gaps:
 
 ```
-  Before (compressed pool — tile-major order, fixed-size slots):
+  Before (compressed pool — chunk-major order, fixed-size slots):
 
-   tile 0    tile 1    tile 2    tile 3    tile 4    tile 5
+   chunk 0   chunk 1   chunk 2   chunk 3   chunk 4   chunk 5
   ┌─────────┬─────────┬─────────┬─────────┬─────────┬─────────┐
   │▓▓▓░░░░░░│▓▓▓▓▓░░░░│▓▓░░░░░░░│▓▓▓▓▓▓░░░│▓▓▓▓░░░░░│▓▓▓▓▓▓▓░░│
   └─────────┴─────────┴─────────┴─────────┴─────────┴─────────┘
@@ -207,11 +205,11 @@ packed without gaps:
   |◄─shard A─►|◄────shard B───────►|
 ```
 
-Each shard's tiles are contiguous, so the shard can be written to disk with a
+Each shard's chunks are contiguous, so the shard can be written to disk with a
 single I/O call. A configurable amount of padding is inserted between
 shards to align to page boundaries to support efficient I/O downstream.
 
-The permutation is another instance of the unravel/ravel pattern. Each tile
+The permutation is another instance of the unravel/ravel pattern. Each chunk
 coordinate $t_d$ is unraveled into a shard index $s_d$ and within-shard
 position $w_d$ (using radix $p_d$), then the full coordinate vector is raveled
 with shard-major strides. See [sharding.md](sharding.md) for the derivation.
@@ -346,13 +344,13 @@ Continuing the 3×5 example:
 Run lengths vary at each level due to boundary effects and are precomputed
 from the shape.
 
-**Morton-to-tiles scatter.** The reduced data at each level is still in
+**Morton-to-chunks scatter.** The reduced data at each level is still in
 compacted morton order, but the downstream compress and aggregate stages expect
-tiles. A final scatter step unravels each element's compacted morton index back
-to coordinates and ravels with tile-major strides — the same unravel/ravel
+chunks. A final scatter step unravels each element's compacted morton index back
+to coordinates and ravels with chunk-major strides — the same unravel/ravel
 pattern used for L0 scatter, but applied per level against the level's coarser
-shape and tile configuration. Each level's tiles are placed into the shared
-tile pool alongside L0.
+shape and chunk configuration. Each level's chunks are placed into the shared
+chunk pool alongside L0.
 
 #### Separable fold on the append dimension
 
@@ -364,7 +362,7 @@ The pipeline splits the multiscale reduction into two independent phases:
 
 2. **Outer fold** (across epochs, along the append dimension): a per-level
    accumulator collects the inner-reduced output. When $2^l$ epochs have
-   been accumulated for level $l$, the level emits its reduced tiles and
+   been accumulated for level $l$, the level emits its reduced chunks and
    resets. This keeps the memory cost proportional to a single epoch regardless
    of pyramid depth.
 
@@ -398,13 +396,13 @@ synchronization overlap every stage.
                stream  │  │  │ Scatter │   │ LOD (if multiscale)          │ │
                        │  │  │ kernel  │   │                              │ │
                        │  │  │         │   │  gather → reduce → dim0 fold │ │
-                       │  │  │         │   │   → morton-to-tiles scatter  │ │
+                       │  │  │         │   │   → morton-to-chunks scatter │ │
                        │  │  └────┬────┘   └──────────────────────────────┘ │
                        │  │       │                │                        │
                        │  │       ▼                ▼                        │
                        │  │  ┌──────────────────────────┐                   │
-                       │  │  │ Tile pool (2× batched)   │                   │
-                       │  │  │ L0..Ln LOD tiles         │                   │
+                       │  │  │ Chunk pool (2× batched)  │                   │
+                       │  │  │ L0..Ln LOD chunks        │                   │
                        └► │  └──────────────┬───────────┘                   │
                           │                 │                               │
                           │                 ▼                               │
@@ -448,8 +446,8 @@ the GPU asynchronously. The H2D stream waits on the prior scatter to finish
 before overwriting the staging area on the device.
 
 **Scatter (compute stream).** Each thread unravels its input index against the
-lifted shape and ravels with tile-major strides, writing the element to
-its tile pool slot. When multiscale is enabled, the raw data is instead copied
+lifted shape and ravels with chunk-major strides, writing the element to
+its chunk pool slot. When multiscale is enabled, the raw data is instead copied
 linearly for the LOD pipeline, and L0 scatter happens as part of the LOD stage.
 
 **LOD (compute stream).** If multiscale is enabled, each epoch triggers:
@@ -457,16 +455,16 @@ linearly for the LOD pipeline, and L0 scatter happens as part of the LOD stage.
 2. *Reduce* — apply the reduction operator across $2 \times \ldots \times 2$
    blocks for each level
 3. *Dim0 fold* — accumulate into dim0 reduction buffers
-4. *Morton-to-tiles* — unravel morton indices and ravel with per-level
-   tile-major strides to scatter reduced data into tile regions
+4. *Morton-to-chunks* — unravel morton indices and ravel with per-level
+   chunk-major strides to scatter reduced data into chunk regions
 
-Each LOD level produces its own set of tiles, interleaved in the same tile pool
+Each LOD level produces its own set of chunks, interleaved in the same chunk pool
 as L0.
 
-**Compress (compress stream).** All tiles in the batch (across all levels) are
+**Compress (compress stream).** All chunks in the batch (across all levels) are
 compressed in a single nvcomp batch call.
 
-**Aggregate (compress stream).** Compressed tiles are reordered from tile-major
+**Aggregate (compress stream).** Compressed chunks are reordered from chunk-major
 to shard-major order using the three-pass algorithm described above.
 
 **D2H (D2H stream).** Two-phase transfer: first the offsets array (small), then
@@ -500,7 +498,7 @@ delivering completed shards to the sink.
 | Resource          | Count | Purpose                                    |
 |-------------------|-------|--------------------------------------------|
 | Staging buffers   | 2     | Overlap host memcpy with H2D transfer      |
-| Tile pools        | 2     | Overlap scatter with compress+aggregate    |
+| Chunk pools       | 2     | Overlap scatter with compress+aggregate    |
 | Compressed pools  | 2     | Overlap compress with D2H                  |
 | Aggregate buffers | 2     | Overlap aggregate with D2H                 |
 
@@ -508,7 +506,7 @@ Synchronization is event-based, not stream-wide: each double-buffered resource
 has a pair of events (one per slot) so that writes to slot A and reads from
 slot B proceed concurrently without blocking the entire stream.
 
-D2H transfer is two-phase: first the per-tile offset array (a small,
+D2H transfer is two-phase: first the per-chunk offset array (a small,
 synchronous transfer so the host can compute shard boundaries), then the
 compressed byte data (asynchronous, sized by actual compressed output rather
 than worst-case bounds).
@@ -521,15 +519,15 @@ growth during streaming. The six pools and how they scale:
 | Pool | Size | Notes |
 |---|---|---|
 | Staging (device) | $2 \times \text{buffer\_capacity}$ | Pinned host mirrors of equal size |
-| Tile pool | $2 \times K \times M_{\text{total}} \times \text{tile\_stride} \times \text{bpe}$ | $M_{\text{total}}$ = sum of tiles across all LOD levels |
-| Compressed pool | $2 \times K \times M_{\text{total}} \times \text{max\_output\_size}$ | Worst-case compressed tile bound |
+| Chunk pool | $2 \times K \times M_{\text{total}} \times \text{chunk\_stride} \times \text{bpe}$ | $M_{\text{total}}$ = sum of chunks across all LOD levels |
+| Compressed pool | $2 \times K \times M_{\text{total}} \times \text{max\_output\_size}$ | Worst-case compressed chunk bound |
 | Codec workspace | batch pointer arrays + nvcomp temp buffer | Scales with $K \times M_{\text{total}}$ |
 | Aggregate | per-level: 2 slots × (offset + size arrays + gather buffer) | Plus permutation LUTs when $K > 1$ |
 | LOD | `d_linear` + `d_morton` + per-level shape/stride/LUT arrays + dim0 accumulators | Only allocated when multiscale is enabled |
 
-The dominant terms are the tile pool and compressed pool, both proportional to
-$K \times M_{\text{total}}$. Increasing the tile size reduces $M$ (fewer tiles
-per epoch) at the cost of larger per-tile buffers. Increasing $K$ improves GPU
+The dominant terms are the chunk pool and compressed pool, both proportional to
+$K \times M_{\text{total}}$. Increasing the chunk size reduces $M$ (fewer chunks
+per epoch) at the cost of larger per-chunk buffers. Increasing $K$ improves GPU
 occupancy during compression but increases memory proportionally.
 
 `tile_stream_gpu_memory_estimate` computes the exact budget from a
@@ -550,7 +548,7 @@ A stream is configured by filling a `tile_stream_configuration`:
 | `buffer_capacity_bytes` | > 0 | H2D staging buffer size (doubled internally) |
 | `codec` | none / lz4 / zstd | Compression codec |
 | `epochs_per_batch` | 0 or power of 2 | Epochs per batch ($K$); 0 = auto |
-| `target_batch_tiles` | > 0 | Target tile count for auto-$K$ (default 1024) |
+| `target_batch_chunks` | > 0 | Target chunk count for auto-$K$ (default 1024) |
 | `shard_sink` | `struct shard_sink*` | Downstream storage factory |
 | `reduce_method` | mean / median / min / max | Inner LOD reduction |
 | `dim0_reduce_method` | (same) | Dim0 LOD reduction |
@@ -562,8 +560,8 @@ Each `struct dimension` describes one axis:
 | Field | Semantics |
 |---|---|
 | `size` | Extent; 0 = unbounded (append dimension only) |
-| `tile_size` | Tile extent in this dimension |
-| `tiles_per_shard` | Tiles per shard; must be > 0 when `size` is 0 |
+| `chunk_size` | Chunk extent in this dimension |
+| `chunks_per_shard` | Chunks per shard; must be > 0 when `size` is 0 |
 | `name` | Optional label (e.g. `"x"`) |
 | `downsample` | Include in LOD pyramid (0 or 1) |
 | `storage_position` | Position in storage layout; append dimension must be position 0 |
@@ -573,7 +571,7 @@ Each `struct dimension` describes one axis:
 The caller interacts with the pipeline through a `struct writer` vtable:
 
 - **`append(self, data)`** — push a contiguous slice of row-major elements.
-  The library tiles, compresses, and delivers internally. Returns a result
+  The library chunks, compresses, and delivers internally. Returns a result
   indicating bytes consumed and whether the stream is ready for more.
 
 - **`flush(self)`** — drain any partially filled epochs. Call once at end of
@@ -609,9 +607,9 @@ Each `struct shard_writer` returned by `open` provides:
 
 `tile_stream_gpu_memory_estimate` takes a `tile_stream_configuration` and
 returns a `tile_stream_memory_info` containing total `device_bytes` and
-`host_pinned_bytes`, plus a per-component breakdown (staging, tile pool,
+`host_pinned_bytes`, plus a per-component breakdown (staging, chunk pool,
 compressed pool, aggregate, LOD, codec workspace) and derived parameters
-(`tiles_per_epoch`, `total_tiles`, `epochs_per_batch`). This lets callers
+(`chunks_per_epoch`, `total_chunks`, `epochs_per_batch`). This lets callers
 verify resource requirements before allocating.
 
 #### Example
@@ -623,9 +621,9 @@ stream compressed with zstd:
 // 1. Describe the dimensions (slowest to fastest).
 //    Dimension 0 has size 0, marking it as the append dimension.
 struct dimension dims[3] = {
-  { .name = "z", .size = 0,   .tile_size = 64,  .tiles_per_shard = 2 },
-  { .name = "y", .size = 512, .tile_size = 128, .tiles_per_shard = 2 },
-  { .name = "x", .size = 512, .tile_size = 128, .tiles_per_shard = 2 },
+  { .name = "z", .size = 0,   .chunk_size = 64,  .chunks_per_shard = 2 },
+  { .name = "y", .size = 512, .chunk_size = 128, .chunks_per_shard = 2 },
+  { .name = "x", .size = 512, .chunk_size = 128, .chunks_per_shard = 2 },
 };
 
 // 2. Configure the stream.
@@ -664,7 +662,7 @@ sharding codec.
 LOD level — and manages OME-NGFF group metadata.
 
 **Writer pool.** Each sink maintains a pool of `shard_writer` objects (one per
-inner shard index), reused across shard epochs. This bounds open file
+inner shard index), reused across epochs. This bounds open file
 descriptors regardless of how many shards are written over the stream's
 lifetime.
 
@@ -685,14 +683,14 @@ For the zarr shard binary format, see [sharding.md](sharding.md) and the
 
 ## Related documents
 
-- [streaming.md](streaming.md) — tile lifetime analysis, FIFO proof, epoch
+- [streaming.md](streaming.md) — chunk lifetime analysis, FIFO proof, epoch
   derivation
-- [sharding.md](sharding.md) — tile-to-shard lifting, aggregation kernel, zarr
+- [sharding.md](sharding.md) — chunk-to-shard lifting, aggregation kernel, zarr
   shard binary format
 
 ## Glossary
 
-**Aggregate.** The GPU stage that reorders compressed tiles from tile-major to
+**Aggregate.** The GPU stage that reorders compressed chunks from chunk-major to
 shard-major order, packing them contiguously for single-call shard writes.
 
 **Append dimension.** The outermost (slowest-varying) dimension of the input
@@ -706,14 +704,14 @@ compression.
 bit-interleaved coordinates, skipping out-of-bounds entries. Groups
 $2^{D'}$-element reduction blocks into contiguous runs.
 
-**Epoch.** The set of tiles sharing the same append-dimension tile index $t_0$.
-One epoch's worth of data fills $M$ tile slots in the pool.
+**Epoch.** The set of chunks sharing the same append-dimension chunk index $t_0$.
+One epoch's worth of data fills $M$ chunk slots in the pool.
 
 **Inner dimensions.** All dimensions except the append dimension — the
 faster-varying dimensions whose full extent is available within a single epoch.
 
 **Lifted shape.** The rank-$2D$ shape $(t_0, n_0, \ldots, t_{D-1}, n_{D-1})$
-that separates tile identity from intra-tile position.
+that separates chunk identity from intra-chunk position.
 
 **LOD level.** One layer of the multiscale pyramid. Level 0 is the original
 resolution; level $l$ is reduced by $2^l$ along each downsampled dimension.
@@ -724,15 +722,16 @@ converting to a flat index: $\sigma_d = \prod_{k>d} b_k$.
 **Radix vector.** The shape interpreted as mixed-radix bases — each entry is
 the number of distinct values a coordinate can take.
 
-**Scatter.** A GPU kernel that writes each input element to its tile-pool
+**Scatter.** A GPU kernel that writes each input element to its chunk-pool
 destination by unraveling against the lifted shape and raveling with
-tile-major strides.
+chunk-major strides.
 
-**Shard.** A storage object grouping multiple tiles with an appended index.
+**Shard.** A storage object grouping multiple chunks with an appended index.
 Corresponds to a single file or object in the zarr store.
 
-**Tile.** The smallest independently addressable and compressible unit of the
-array. Called "chunk" in zarr terminology.
+**Chunk.** The smallest independently addressable and compressible unit of the
+array. Called "chunk" in zarr v3; not to be confused with the zarr outer chunk,
+which is a **shard**.
 
-**Tile pool.** A contiguous GPU buffer holding $K \times M_{\text{total}}$ tile
-slots (across all LOD levels), double-buffered.
+**Chunk pool.** A contiguous GPU buffer holding $K \times M_{\text{total}}$
+chunk slots (across all LOD levels), double-buffered.

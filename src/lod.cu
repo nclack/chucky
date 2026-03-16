@@ -19,43 +19,75 @@ max(__half a, __half b)
   return __hmax(a, b);
 }
 
-#define FOR_EACH_DTYPE(X)       \
-  X(lod_dtype_u8,  uint8_t)    \
-  X(lod_dtype_u16, uint16_t)   \
-  X(lod_dtype_u32, uint32_t)   \
-  X(lod_dtype_u64, uint64_t)   \
-  X(lod_dtype_i8,  int8_t)     \
-  X(lod_dtype_i16, int16_t)    \
-  X(lod_dtype_i32, int32_t)    \
-  X(lod_dtype_i64, int64_t)    \
-  X(lod_dtype_f16, __half)     \
-  X(lod_dtype_f32, float)      \
+#define FOR_EACH_DTYPE(X)                                                      \
+  X(lod_dtype_u8, uint8_t)                                                     \
+  X(lod_dtype_u16, uint16_t)                                                   \
+  X(lod_dtype_u32, uint32_t)                                                   \
+  X(lod_dtype_u64, uint64_t)                                                   \
+  X(lod_dtype_i8, int8_t)                                                      \
+  X(lod_dtype_i16, int16_t)                                                    \
+  X(lod_dtype_i32, int32_t)                                                    \
+  X(lod_dtype_i64, int64_t)                                                    \
+  X(lod_dtype_f16, __half)                                                     \
+  X(lod_dtype_f32, float)                                                      \
   X(lod_dtype_f64, double)
 
 // Widened accumulator for lod_reduce (register-only).
-template<typename T> struct reduce_acc { using type = T; };
-template<> struct reduce_acc<uint8_t>  { using type = uint32_t; };
-template<> struct reduce_acc<uint16_t> { using type = uint32_t; };
-template<> struct reduce_acc<uint32_t> { using type = uint64_t; };
-template<> struct reduce_acc<int8_t>   { using type = int32_t; };
-template<> struct reduce_acc<int16_t>  { using type = int32_t; };
-template<> struct reduce_acc<int32_t>  { using type = int64_t; };
-template<> struct reduce_acc<__half>   { using type = float; };
+template<typename T>
+struct reduce_acc
+{
+  using type = T;
+};
+template<>
+struct reduce_acc<uint8_t>
+{
+  using type = uint32_t;
+};
+template<>
+struct reduce_acc<uint16_t>
+{
+  using type = uint32_t;
+};
+template<>
+struct reduce_acc<uint32_t>
+{
+  using type = uint64_t;
+};
+template<>
+struct reduce_acc<int8_t>
+{
+  using type = int32_t;
+};
+template<>
+struct reduce_acc<int16_t>
+{
+  using type = int32_t;
+};
+template<>
+struct reduce_acc<int32_t>
+{
+  using type = int64_t;
+};
+template<>
+struct reduce_acc<__half>
+{
+  using type = float;
+};
 // u64, i64, float, double: default (type = T)
 
 #define LOD_BLOCK 256
 
-// Number of elements in a tile of `tile_size` starting at `start`
+// Number of elements in a chunk of `chunk_size` starting at `start`
 // within a dimension of `dimension_size`, clamped to the boundary.
 __device__ static uint64_t
-clamped_tile_extent_d(uint64_t dimension_size,
-                      uint64_t start,
-                      uint64_t tile_size)
+clamped_chunk_extent_d(uint64_t dimension_size,
+                       uint64_t start,
+                       uint64_t chunk_size)
 {
   if (start >= dimension_size)
     return 0;
   uint64_t remaining = dimension_size - start;
-  return (remaining < tile_size) ? remaining : tile_size;
+  return (remaining < chunk_size) ? remaining : chunk_size;
 }
 
 // Index of the low child node for dimension d at the given tree level,
@@ -115,7 +147,7 @@ morton_rank_d(int ndim,
   uint64_t products[NdimMax + 1];
 
   for (int level = 0; level < total_levels; ++level) {
-    uint64_t tile_size = 1ull << (total_levels - 1 - level);
+    uint64_t block_size = 1ull << (total_levels - 1 - level);
 
     int digit = 0;
 
@@ -127,9 +159,9 @@ morton_rank_d(int ndim,
       if (level < nlod)
         digit |= (int)((coord >> (nlod - 1 - level)) & 1) << d;
       uint64_t extent_low =
-        clamped_tile_extent_d(shape[d], node_low * tile_size, tile_size);
-      uint64_t extent_high =
-        clamped_tile_extent_d(shape[d], (node_low + 1) * tile_size, tile_size);
+        clamped_chunk_extent_d(shape[d], node_low * block_size, block_size);
+      uint64_t extent_high = clamped_chunk_extent_d(
+        shape[d], (node_low + 1) * block_size, block_size);
       products[d + 1] = products[d] * (extent_low + extent_high);
     }
 
@@ -140,11 +172,11 @@ morton_rank_d(int ndim,
       uint64_t node_low = tree_child_low(coord, level, nlod);
       int bit = (digit >> d) & 1;
       uint64_t extent_low =
-        clamped_tile_extent_d(shape[d], node_low * tile_size, tile_size);
+        clamped_chunk_extent_d(shape[d], node_low * block_size, block_size);
       if (bit == 1)
         rank += suffix * extent_low * products[d];
-      uint64_t extent_chosen = clamped_tile_extent_d(
-        shape[d], (node_low + (uint64_t)bit) * tile_size, tile_size);
+      uint64_t extent_chosen = clamped_chunk_extent_d(
+        shape[d], (node_low + (uint64_t)bit) * block_size, block_size);
       suffix *= extent_chosen;
     }
   }
@@ -270,20 +302,20 @@ __global__ void __launch_bounds__(256, 4)
   }
 }
 
-// --- Build tile-scatter LUT kernel ---
-// Builds tile_lut: tile_lut[morton_pos] = tile_pool_offset from LOD dims.
+// --- Build chunk-scatter LUT kernel ---
+// Builds chunk_lut: chunk_lut[morton_pos] = chunk_pool_offset from LOD dims.
 // Uses forward LUT to map lod_linear -> morton_pos, then decomposes
 // lod_linear into coords and computes lifted-stride offset.
 
 template<int NdimMax>
 __global__ void
-lod_build_tile_scatter_lut_k(uint32_t* __restrict__ tile_lut,
-                             int lod_ndim,
-                             const uint64_t* __restrict__ lod_shape,
-                             const uint64_t* __restrict__ lod_tile_sizes,
-                             const int64_t* __restrict__ lod_tile_strides,
-                             int lod_nlod,
-                             uint64_t lod_count)
+lod_build_chunk_scatter_lut_k(uint32_t* __restrict__ chunk_lut,
+                              int lod_ndim,
+                              const uint64_t* __restrict__ lod_shape,
+                              const uint64_t* __restrict__ lod_chunk_sizes,
+                              const int64_t* __restrict__ lod_chunk_strides,
+                              int lod_nlod,
+                              uint64_t lod_count)
 {
   const uint64_t gid = (uint64_t)blockIdx.x * LOD_BLOCK + threadIdx.x;
   if (gid >= lod_count)
@@ -296,28 +328,28 @@ lod_build_tile_scatter_lut_k(uint32_t* __restrict__ tile_lut,
     uint64_t coord = remainder % lod_shape[d];
     remainder /= lod_shape[d];
     coords[d] = coord;
-    uint64_t tile_idx = coord / lod_tile_sizes[d];
-    uint64_t within = coord % lod_tile_sizes[d];
-    offset += (int64_t)tile_idx * lod_tile_strides[2 * d];
-    offset += (int64_t)within * lod_tile_strides[2 * d + 1];
+    uint64_t chunk_idx = coord / lod_chunk_sizes[d];
+    uint64_t within = coord % lod_chunk_sizes[d];
+    offset += (int64_t)chunk_idx * lod_chunk_strides[2 * d];
+    offset += (int64_t)within * lod_chunk_strides[2 * d + 1];
   }
 
   uint64_t morton_pos =
     morton_rank_d<NdimMax>(lod_ndim, lod_shape, lod_nlod, coords, 0);
-  tile_lut[morton_pos] = (uint32_t)offset;
+  chunk_lut[morton_pos] = (uint32_t)offset;
 }
 
-// --- Morton-to-tile scatter kernel using LUT ---
-// Sequential reads from morton buffer, LUT-directed writes to tile pool.
+// --- Morton-to-chunk scatter kernel using LUT ---
+// Sequential reads from morton buffer, LUT-directed writes to chunk pool.
 
 template<typename T>
 __global__ void
-lod_morton_to_tiles_lut_k(T* __restrict__ dst,
-                          const T* __restrict__ src,
-                          const uint32_t* __restrict__ tile_lut,
-                          const uint32_t* __restrict__ batch_tile_offsets,
-                          uint64_t lod_count,
-                          uint64_t total)
+lod_morton_to_chunks_lut_k(T* __restrict__ dst,
+                           const T* __restrict__ src,
+                           const uint32_t* __restrict__ chunk_lut,
+                           const uint32_t* __restrict__ batch_chunk_offsets,
+                           uint64_t lod_count,
+                           uint64_t total)
 {
   const uint64_t gid = (uint64_t)blockIdx.x * LOD_BLOCK + threadIdx.x;
   if (gid >= total)
@@ -325,7 +357,7 @@ lod_morton_to_tiles_lut_k(T* __restrict__ dst,
 
   uint64_t batch = gid / lod_count;
   uint64_t morton_pos = gid % lod_count;
-  dst[(uint64_t)batch_tile_offsets[batch] + tile_lut[morton_pos]] = src[gid];
+  dst[(uint64_t)batch_chunk_offsets[batch] + chunk_lut[morton_pos]] = src[gid];
 }
 
 // --- Fill ends kernel (templated on NdimMax) ---
@@ -550,49 +582,49 @@ lod_build_gather_lut(CUdeviceptr d_src_lut,
 
 template<int NdimMax>
 static void
-lod_build_tile_scatter_lut_launch(CUdeviceptr d_tile_lut,
-                                  CUdeviceptr d_lod_shape,
-                                  CUdeviceptr d_lod_tile_sizes,
-                                  CUdeviceptr d_lod_tile_strides,
-                                  int lod_ndim,
-                                  int lod_nlod,
-                                  uint64_t lod_count,
-                                  CUstream stream)
+lod_build_chunk_scatter_lut_launch(CUdeviceptr d_chunk_lut,
+                                   CUdeviceptr d_lod_shape,
+                                   CUdeviceptr d_lod_chunk_sizes,
+                                   CUdeviceptr d_lod_chunk_strides,
+                                   int lod_ndim,
+                                   int lod_nlod,
+                                   uint64_t lod_count,
+                                   CUstream stream)
 {
   const int grid_size = (int)((lod_count + LOD_BLOCK - 1) / LOD_BLOCK);
 
-  lod_build_tile_scatter_lut_k<NdimMax>
-    <<<grid_size, LOD_BLOCK, 0, stream>>>((uint32_t*)d_tile_lut,
+  lod_build_chunk_scatter_lut_k<NdimMax>
+    <<<grid_size, LOD_BLOCK, 0, stream>>>((uint32_t*)d_chunk_lut,
                                           lod_ndim,
                                           (const uint64_t*)d_lod_shape,
-                                          (const uint64_t*)d_lod_tile_sizes,
-                                          (const int64_t*)d_lod_tile_strides,
+                                          (const uint64_t*)d_lod_chunk_sizes,
+                                          (const int64_t*)d_lod_chunk_strides,
                                           lod_nlod,
                                           lod_count);
 }
 
 extern "C" int
-lod_build_tile_scatter_lut(CUdeviceptr d_tile_lut,
-                           CUdeviceptr d_lod_shape,
-                           CUdeviceptr d_lod_tile_sizes,
-                           CUdeviceptr d_lod_tile_strides,
-                           int lod_ndim,
-                           const uint64_t* lod_shape_host,
-                           uint64_t lod_count,
-                           CUstream stream)
+lod_build_chunk_scatter_lut(CUdeviceptr d_chunk_lut,
+                            CUdeviceptr d_lod_shape,
+                            CUdeviceptr d_lod_chunk_sizes,
+                            CUdeviceptr d_lod_chunk_strides,
+                            int lod_ndim,
+                            const uint64_t* lod_shape_host,
+                            uint64_t lod_count,
+                            CUstream stream)
 {
   int lod_nlod = ceil_log2(max_shape(lod_ndim, lod_shape_host));
 
 #define XXX(maxdim)                                                            \
   if (lod_ndim <= maxdim) {                                                    \
-    lod_build_tile_scatter_lut_launch<maxdim>(d_tile_lut,                      \
-                                              d_lod_shape,                     \
-                                              d_lod_tile_sizes,                \
-                                              d_lod_tile_strides,              \
-                                              lod_ndim,                        \
-                                              lod_nlod,                        \
-                                              lod_count,                       \
-                                              stream);                         \
+    lod_build_chunk_scatter_lut_launch<maxdim>(d_chunk_lut,                    \
+                                               d_lod_shape,                    \
+                                               d_lod_chunk_sizes,              \
+                                               d_lod_chunk_strides,            \
+                                               lod_ndim,                       \
+                                               lod_nlod,                       \
+                                               lod_count,                      \
+                                               stream);                        \
     return 0;                                                                  \
   }
 
@@ -604,45 +636,45 @@ lod_build_tile_scatter_lut(CUdeviceptr d_tile_lut,
 
 template<typename T>
 static void
-lod_morton_to_tiles_lut_launch(CUdeviceptr d_tiles,
-                               CUdeviceptr d_morton,
-                               CUdeviceptr d_tile_lut,
-                               CUdeviceptr d_batch_tile_offsets,
-                               uint64_t lod_count,
-                               uint64_t batch_count,
-                               CUstream stream)
+lod_morton_to_chunks_lut_launch(CUdeviceptr d_chunks,
+                                CUdeviceptr d_morton,
+                                CUdeviceptr d_chunk_lut,
+                                CUdeviceptr d_batch_chunk_offsets,
+                                uint64_t lod_count,
+                                uint64_t batch_count,
+                                CUstream stream)
 {
   const uint64_t total = batch_count * lod_count;
   const int grid_size = (int)((total + LOD_BLOCK - 1) / LOD_BLOCK);
 
-  lod_morton_to_tiles_lut_k<T>
-    <<<grid_size, LOD_BLOCK, 0, stream>>>((T*)d_tiles,
-                                          (const T*)d_morton,
-                                          (const uint32_t*)d_tile_lut,
-                                          (const uint32_t*)d_batch_tile_offsets,
-                                          lod_count,
-                                          total);
+  lod_morton_to_chunks_lut_k<T><<<grid_size, LOD_BLOCK, 0, stream>>>(
+    (T*)d_chunks,
+    (const T*)d_morton,
+    (const uint32_t*)d_chunk_lut,
+    (const uint32_t*)d_batch_chunk_offsets,
+    lod_count,
+    total);
 }
 
 extern "C" int
-lod_morton_to_tiles_lut(CUdeviceptr d_tiles,
-                        CUdeviceptr d_morton,
-                        CUdeviceptr d_tile_lut,
-                        CUdeviceptr d_batch_tile_offsets,
-                        enum lod_dtype dtype,
-                        uint64_t lod_count,
-                        uint64_t batch_count,
-                        CUstream stream)
+lod_morton_to_chunks_lut(CUdeviceptr d_chunks,
+                         CUdeviceptr d_morton,
+                         CUdeviceptr d_chunk_lut,
+                         CUdeviceptr d_batch_chunk_offsets,
+                         enum lod_dtype dtype,
+                         uint64_t lod_count,
+                         uint64_t batch_count,
+                         CUstream stream)
 {
 #define DISPATCH(D, T)                                                         \
   if (dtype == D) {                                                            \
-    lod_morton_to_tiles_lut_launch<T>(d_tiles,                                 \
-                                      d_morton,                                \
-                                      d_tile_lut,                              \
-                                      d_batch_tile_offsets,                    \
-                                      lod_count,                               \
-                                      batch_count,                             \
-                                      stream);                                 \
+    lod_morton_to_chunks_lut_launch<T>(d_chunks,                               \
+                                       d_morton,                               \
+                                       d_chunk_lut,                            \
+                                       d_batch_chunk_offsets,                  \
+                                       lod_count,                              \
+                                       batch_count,                            \
+                                       stream);                                \
     return 0;                                                                  \
   }
   FOR_EACH_DTYPE(DISPATCH)
@@ -839,8 +871,13 @@ lod_accum_emit(CUdeviceptr d_dst,
       return 1;                                                                \
   }
 
-#define DISPATCH(D, T) case D: EMIT_METHOD(T); break;
-  switch (dtype) { FOR_EACH_DTYPE(DISPATCH) }
+#define DISPATCH(D, T)                                                         \
+  case D:                                                                      \
+    EMIT_METHOD(T);                                                            \
+    break;
+  switch (dtype) {
+    FOR_EACH_DTYPE(DISPATCH)
+  }
 #undef DISPATCH
 #undef EMIT_METHOD
 #undef LAUNCH_EMIT
@@ -935,8 +972,13 @@ lod_accum_fold_fused(CUdeviceptr d_accum,
       return 1;                                                                \
   }
 
-#define DISPATCH(D, T) case D: FUSED_METHOD(T); break;
-  switch (dtype) { FOR_EACH_DTYPE(DISPATCH) }
+#define DISPATCH(D, T)                                                         \
+  case D:                                                                      \
+    FUSED_METHOD(T);                                                           \
+    break;
+  switch (dtype) {
+    FOR_EACH_DTYPE(DISPATCH)
+  }
 #undef DISPATCH
 #undef FUSED_METHOD
 #undef LAUNCH_FUSED
@@ -985,7 +1027,9 @@ lod_reduce(CUdeviceptr d_values,
   case D:                                                                      \
     REDUCE_METHODS(T, reduce_acc<T>::type);                                    \
     break;
-  switch (dtype) { FOR_EACH_DTYPE(DISPATCH) }
+  switch (dtype) {
+    FOR_EACH_DTYPE(DISPATCH)
+  }
 #undef DISPATCH
 #undef REDUCE_METHODS
 #undef LAUNCH_REDUCE

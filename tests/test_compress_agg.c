@@ -62,8 +62,8 @@ ca_ctx_setup(struct ca_test_ctx* c,
         compress_agg_init(&c->stage, &c->cl, &c->config, c->compute) == 0);
   c->stage_inited = 1;
 
-  size_t pool_bytes = (uint64_t)n_pool_epochs * c->cl.levels.total_tiles *
-                      c->cl.l0.tile_stride * lod_dtype_bpe(c->config.dtype);
+  size_t pool_bytes = (uint64_t)n_pool_epochs * c->cl.levels.total_chunks *
+                      c->cl.l0.chunk_stride * lod_dtype_bpe(c->config.dtype);
   CU(Fail, cuMemAlloc(&c->d_pool, pool_bytes));
 
   c->batch = (struct batch_state){
@@ -82,13 +82,13 @@ ca_ctx_fill_epoch(struct ca_test_ctx* c,
                   int epoch_idx,
                   uint16_t (*fill_fn)(uint64_t))
 {
-  const uint64_t total_tiles = c->cl.levels.total_tiles;
-  const uint64_t tile_stride = c->cl.l0.tile_stride;
+  const uint64_t total_chunks = c->cl.levels.total_chunks;
+  const uint64_t chunk_stride = c->cl.l0.chunk_stride;
   const size_t bpe = lod_dtype_bpe(c->config.dtype);
   CUdeviceptr epoch_ptr =
-    c->d_pool + (uint64_t)epoch_idx * total_tiles * tile_stride * bpe;
+    c->d_pool + (uint64_t)epoch_idx * total_chunks * chunk_stride * bpe;
   CHECK(Fail,
-        fill_pool_epoch(epoch_ptr, total_tiles, tile_stride, bpe, fill_fn) ==
+        fill_pool_epoch(epoch_ptr, total_chunks, chunk_stride, bpe, fill_fn) ==
           0);
 
   CU(Fail, cuEventCreate(&c->epoch_events[epoch_idx], CU_EVENT_DEFAULT));
@@ -121,8 +121,8 @@ ca_ctx_kick(struct ca_test_ctx* c,
   memset(handoff, 0, sizeof(*handoff));
 
   CHECK(Fail,
-        compress_agg_kick(&c->stage, &in, &c->cl.levels, &c->batch, c->compute,
-                          handoff) == 0);
+        compress_agg_kick(
+          &c->stage, &in, &c->cl.levels, &c->batch, c->compute, handoff) == 0);
   CU(Fail, cuStreamSynchronize(c->compute));
   return 0;
 
@@ -139,8 +139,9 @@ ca_ctx_fetch_agg(struct flush_handoff* handoff,
   struct aggregate_slot* agg = handoff->agg[0];
 
   CU(Fail,
-     cuMemcpyDtoH(agg->h_offsets, (CUdeviceptr)agg->d_offsets,
-                   (n_covering + 1) * sizeof(size_t)));
+     cuMemcpyDtoH(agg->h_offsets,
+                  (CUdeviceptr)agg->d_offsets,
+                  (n_covering + 1) * sizeof(size_t)));
 
   size_t total_data = agg->h_offsets[n_covering];
   void* h_agg = malloc(total_data);
@@ -154,7 +155,7 @@ Fail:
   return 1;
 }
 
-// Verify uncompressed tile data for a single-epoch (non-batch) aggregate.
+// Verify uncompressed chunk data for a single-epoch (non-batch) aggregate.
 static int
 verify_tiles_none(const struct flush_handoff* handoff,
                   const struct ca_test_ctx* c,
@@ -163,31 +164,36 @@ verify_tiles_none(const struct flush_handoff* handoff,
 {
   const struct aggregate_layout* al = handoff->agg_layout[0];
   const struct aggregate_slot* agg = handoff->agg[0];
-  const uint64_t total_tiles = c->cl.levels.total_tiles;
-  const uint64_t tile_stride = c->cl.l0.tile_stride;
-  const size_t tile_bytes = tile_stride * lod_dtype_bpe(c->config.dtype);
+  const uint64_t total_chunks = c->cl.levels.total_chunks;
+  const uint64_t chunk_stride = c->cl.l0.chunk_stride;
+  const size_t chunk_bytes = chunk_stride * lod_dtype_bpe(c->config.dtype);
 
   int errors = 0;
-  for (uint64_t t = 0; t < total_tiles; ++t) {
+  for (uint64_t t = 0; t < total_chunks; ++t) {
     uint32_t pi =
       cpu_perm(t, al->lifted_rank, al->lifted_shape, al->lifted_strides);
     size_t off = agg->h_offsets[pi];
     size_t sz = agg->h_offsets[pi + 1] - off;
-    if (sz != tile_bytes) {
+    if (sz != chunk_bytes) {
       if (errors < 5)
-        log_error("  tile %lu: size=%zu expected=%zu", (unsigned long)t, sz,
-                  tile_bytes);
+        log_error("  chunk %lu: size=%zu expected=%zu",
+                  (unsigned long)t,
+                  sz,
+                  chunk_bytes);
       errors++;
       continue;
     }
 
     uint16_t expected_val = fill_fn(t);
     const uint16_t* got = (const uint16_t*)((const char*)h_agg + off);
-    for (uint64_t e = 0; e < tile_stride; ++e) {
+    for (uint64_t e = 0; e < chunk_stride; ++e) {
       if (got[e] != expected_val) {
         if (errors < 5)
-          log_error("  tile %lu elem %lu: expected %u got %u",
-                    (unsigned long)t, (unsigned long)e, expected_val, got[e]);
+          log_error("  chunk %lu elem %lu: expected %u got %u",
+                    (unsigned long)t,
+                    (unsigned long)e,
+                    expected_val,
+                    got[e]);
         errors++;
       }
     }
@@ -215,15 +221,15 @@ test_compress_agg_single_epoch(void)
   CHECK(Fail, ca_ctx_kick(&c, 1, &handoff) == 0);
 
   // Verify handoff
-  const size_t tile_bytes =
-    c.cl.l0.tile_stride * lod_dtype_bpe(c.config.dtype);
+  const size_t chunk_bytes =
+    c.cl.l0.chunk_stride * lod_dtype_bpe(c.config.dtype);
   CHECK(Fail, handoff.fc == 0);
   CHECK(Fail, handoff.n_epochs == 1);
   CHECK(Fail, handoff.active_levels_mask == 0x1);
   CHECK(Fail, handoff.t_aggregate_end != 0);
   CHECK(Fail, handoff.t_compress_start != 0);
   CHECK(Fail, handoff.t_compress_end != 0);
-  CHECK(Fail, handoff.max_output_size == tile_bytes);
+  CHECK(Fail, handoff.max_output_size == chunk_bytes);
   CHECK(Fail, handoff.agg[0] != NULL);
   CHECK(Fail, handoff.agg_layout[0] != NULL);
 
@@ -232,7 +238,7 @@ test_compress_agg_single_epoch(void)
   CHECK(Fail, ca_ctx_fetch_agg(&handoff, C, &h_agg) == 0);
   CHECK(Fail, verify_offsets_monotonic(handoff.agg[0]->h_offsets, C) == 0);
 
-  size_t expected_total = c.cl.levels.total_tiles * tile_bytes;
+  size_t expected_total = c.cl.levels.total_chunks * chunk_bytes;
   CHECK(Fail, handoff.agg[0]->h_offsets[C] == expected_total);
   CHECK(Fail, verify_tiles_none(&handoff, &c, h_agg, fill_epoch0) == 0);
 
@@ -267,10 +273,10 @@ test_compress_agg_batch(void)
   struct flush_handoff handoff;
   CHECK(Fail, ca_ctx_kick(&c, 2, &handoff) == 0);
 
-  const uint64_t tile_stride = c.cl.l0.tile_stride;
-  const size_t tile_bytes = tile_stride * lod_dtype_bpe(c.config.dtype);
+  const uint64_t chunk_stride = c.cl.l0.chunk_stride;
+  const size_t chunk_bytes = chunk_stride * lod_dtype_bpe(c.config.dtype);
   CHECK(Fail, handoff.n_epochs == 2);
-  CHECK(Fail, handoff.max_output_size == tile_bytes);
+  CHECK(Fail, handoff.max_output_size == chunk_bytes);
 
   // D2H aggregate
   const struct aggregate_layout* al = handoff.agg_layout[0];
@@ -283,16 +289,15 @@ test_compress_agg_batch(void)
         verify_offsets_monotonic(handoff.agg[0]->h_offsets, batch_covering) ==
           0);
 
-  size_t expected_total =
-    2 * c.cl.levels.total_tiles * tile_bytes;
+  size_t expected_total = 2 * c.cl.levels.total_chunks * chunk_bytes;
   CHECK(Fail, handoff.agg[0]->h_offsets[batch_covering] == expected_total);
 
   // Verify data per epoch
-  uint64_t tiles_lv = c.cl.levels.tile_count[0];
+  uint64_t chunks_lv = c.cl.levels.chunk_count[0];
   int errors = 0;
   for (uint32_t a = 0; a < batch_count; ++a) {
     uint16_t (*fill_fn)(uint64_t) = (a == 0) ? fill_epoch0 : fill_epoch1;
-    for (uint64_t j = 0; j < tiles_lv; ++j) {
+    for (uint64_t j = 0; j < chunks_lv; ++j) {
       uint64_t perm_pos = 0;
       uint64_t rest = j;
       for (int d = al->lifted_rank - 1; d >= 0; --d) {
@@ -303,20 +308,27 @@ test_compress_agg_batch(void)
       uint64_t out_idx = perm_pos * batch_count + a;
       size_t off = handoff.agg[0]->h_offsets[out_idx];
       size_t sz = handoff.agg[0]->h_offsets[out_idx + 1] - off;
-      if (sz != tile_bytes) {
+      if (sz != chunk_bytes) {
         if (errors < 5)
-          log_error("  epoch %u tile %lu: size=%zu expected=%zu", a,
-                    (unsigned long)j, sz, tile_bytes);
+          log_error("  epoch %u chunk %lu: size=%zu expected=%zu",
+                    a,
+                    (unsigned long)j,
+                    sz,
+                    chunk_bytes);
         errors++;
         continue;
       }
       uint16_t expected_val = fill_fn(j);
       const uint16_t* got = (const uint16_t*)((char*)h_agg + off);
-      for (uint64_t e = 0; e < tile_stride; ++e) {
+      for (uint64_t e = 0; e < chunk_stride; ++e) {
         if (got[e] != expected_val) {
           if (errors < 5)
-            log_error("  epoch %u tile %lu elem %lu: expected %u got %u", a,
-                      (unsigned long)j, (unsigned long)e, expected_val, got[e]);
+            log_error("  epoch %u chunk %lu elem %lu: expected %u got %u",
+                      a,
+                      (unsigned long)j,
+                      (unsigned long)e,
+                      expected_val,
+                      got[e]);
           errors++;
         }
       }
@@ -356,13 +368,13 @@ test_compress_agg_partial_batch(void)
   CHECK(Fail, ca_ctx_kick(&c, 1, &handoff) == 0);
   CHECK(Fail, handoff.n_epochs == 1);
 
-  const size_t tile_bytes =
-    c.cl.l0.tile_stride * lod_dtype_bpe(c.config.dtype);
+  const size_t chunk_bytes =
+    c.cl.l0.chunk_stride * lod_dtype_bpe(c.config.dtype);
   uint64_t C = handoff.agg_layout[0]->covering_count;
   CHECK(Fail, ca_ctx_fetch_agg(&handoff, C, &h_agg) == 0);
   CHECK(Fail, verify_offsets_monotonic(handoff.agg[0]->h_offsets, C) == 0);
 
-  size_t expected_total = c.cl.levels.total_tiles * tile_bytes;
+  size_t expected_total = c.cl.levels.total_chunks * chunk_bytes;
   CHECK(Fail, handoff.agg[0]->h_offsets[C] == expected_total);
   CHECK(Fail, verify_tiles_none(&handoff, &c, h_agg, fill_epoch0) == 0);
 
@@ -395,20 +407,20 @@ test_compress_agg_zstd_single_epoch(void)
   struct flush_handoff handoff;
   CHECK(Fail, ca_ctx_kick(&c, 1, &handoff) == 0);
 
-  const uint64_t total_tiles = c.cl.levels.total_tiles;
-  const uint64_t tile_stride = c.cl.l0.tile_stride;
-  const size_t tile_bytes = tile_stride * lod_dtype_bpe(c.config.dtype);
+  const uint64_t total_chunks = c.cl.levels.total_chunks;
+  const uint64_t chunk_stride = c.cl.l0.chunk_stride;
+  const size_t chunk_bytes = chunk_stride * lod_dtype_bpe(c.config.dtype);
 
   const struct aggregate_layout* al = handoff.agg_layout[0];
   uint64_t C = al->covering_count;
   CHECK(Fail, ca_ctx_fetch_agg(&handoff, C, &h_agg) == 0);
   CHECK(Fail, verify_offsets_monotonic(handoff.agg[0]->h_offsets, C) == 0);
 
-  decomp_buf = (uint8_t*)malloc(tile_bytes);
+  decomp_buf = (uint8_t*)malloc(chunk_bytes);
   CHECK(Fail, decomp_buf);
 
   int errors = 0;
-  for (uint64_t t = 0; t < total_tiles; ++t) {
+  for (uint64_t t = 0; t < total_chunks; ++t) {
     uint32_t pi =
       cpu_perm(t, al->lifted_rank, al->lifted_shape, al->lifted_strides);
     size_t off = handoff.agg[0]->h_offsets[pi];
@@ -417,22 +429,26 @@ test_compress_agg_zstd_single_epoch(void)
     CHECK(Fail, comp_sz <= handoff.max_output_size);
 
     size_t result =
-      ZSTD_decompress(decomp_buf, tile_bytes, (char*)h_agg + off, comp_sz);
+      ZSTD_decompress(decomp_buf, chunk_bytes, (char*)h_agg + off, comp_sz);
     if (ZSTD_isError(result)) {
-      log_error("  tile %lu: ZSTD_decompress failed: %s", (unsigned long)t,
+      log_error("  chunk %lu: ZSTD_decompress failed: %s",
+                (unsigned long)t,
                 ZSTD_getErrorName(result));
       errors++;
       continue;
     }
-    CHECK(Fail, result == tile_bytes);
+    CHECK(Fail, result == chunk_bytes);
 
     uint16_t expected_val = fill_epoch0(t);
     const uint16_t* got = (const uint16_t*)decomp_buf;
-    for (uint64_t e = 0; e < tile_stride; ++e) {
+    for (uint64_t e = 0; e < chunk_stride; ++e) {
       if (got[e] != expected_val) {
         if (errors < 5)
-          log_error("  tile %lu elem %lu: expected %u got %u",
-                    (unsigned long)t, (unsigned long)e, expected_val, got[e]);
+          log_error("  chunk %lu elem %lu: expected %u got %u",
+                    (unsigned long)t,
+                    (unsigned long)e,
+                    expected_val,
+                    got[e]);
         errors++;
       }
     }
@@ -472,8 +488,8 @@ test_compress_agg_zstd_batch(void)
   struct flush_handoff handoff;
   CHECK(Fail, ca_ctx_kick(&c, 2, &handoff) == 0);
 
-  const uint64_t tile_stride = c.cl.l0.tile_stride;
-  const size_t tile_bytes = tile_stride * lod_dtype_bpe(c.config.dtype);
+  const uint64_t chunk_stride = c.cl.l0.chunk_stride;
+  const size_t chunk_bytes = chunk_stride * lod_dtype_bpe(c.config.dtype);
   const struct aggregate_layout* al = handoff.agg_layout[0];
   uint64_t C = al->covering_count;
   uint32_t batch_count = c.stage.levels[0].batch_active_count;
@@ -484,14 +500,14 @@ test_compress_agg_zstd_batch(void)
         verify_offsets_monotonic(handoff.agg[0]->h_offsets, batch_covering) ==
           0);
 
-  decomp_buf = (uint8_t*)malloc(tile_bytes);
+  decomp_buf = (uint8_t*)malloc(chunk_bytes);
   CHECK(Fail, decomp_buf);
 
-  uint64_t tiles_lv = c.cl.levels.tile_count[0];
+  uint64_t chunks_lv = c.cl.levels.chunk_count[0];
   int errors = 0;
   for (uint32_t a = 0; a < batch_count; ++a) {
     uint16_t (*fill_fn)(uint64_t) = (a == 0) ? fill_epoch0 : fill_epoch1;
-    for (uint64_t j = 0; j < tiles_lv; ++j) {
+    for (uint64_t j = 0; j < chunks_lv; ++j) {
       uint64_t perm_pos = 0;
       uint64_t rest = j;
       for (int d = al->lifted_rank - 1; d >= 0; --d) {
@@ -506,23 +522,29 @@ test_compress_agg_zstd_batch(void)
       CHECK(Fail, comp_sz > 0);
       CHECK(Fail, comp_sz <= handoff.max_output_size);
 
-      size_t result = ZSTD_decompress(decomp_buf, tile_bytes,
-                                      (char*)h_agg + off, comp_sz);
+      size_t result =
+        ZSTD_decompress(decomp_buf, chunk_bytes, (char*)h_agg + off, comp_sz);
       if (ZSTD_isError(result)) {
-        log_error("  epoch %u tile %lu: ZSTD_decompress failed: %s", a,
-                  (unsigned long)j, ZSTD_getErrorName(result));
+        log_error("  epoch %u chunk %lu: ZSTD_decompress failed: %s",
+                  a,
+                  (unsigned long)j,
+                  ZSTD_getErrorName(result));
         errors++;
         continue;
       }
-      CHECK(Fail, result == tile_bytes);
+      CHECK(Fail, result == chunk_bytes);
 
       uint16_t expected_val = fill_fn(j);
       const uint16_t* got = (const uint16_t*)decomp_buf;
-      for (uint64_t e = 0; e < tile_stride; ++e) {
+      for (uint64_t e = 0; e < chunk_stride; ++e) {
         if (got[e] != expected_val) {
           if (errors < 5)
-            log_error("  epoch %u tile %lu elem %lu: expected %u got %u", a,
-                      (unsigned long)j, (unsigned long)e, expected_val, got[e]);
+            log_error("  epoch %u chunk %lu elem %lu: expected %u got %u",
+                      a,
+                      (unsigned long)j,
+                      (unsigned long)e,
+                      expected_val,
+                      got[e]);
           errors++;
         }
       }
@@ -540,10 +562,9 @@ Fail:
   return ok ? 0 : 1;
 }
 
-RUN_GPU_TESTS(
-  { "compress_agg_single_epoch", test_compress_agg_single_epoch },
-  { "compress_agg_batch", test_compress_agg_batch },
-  { "compress_agg_partial_batch", test_compress_agg_partial_batch },
-  { "compress_agg_zstd_single_epoch", test_compress_agg_zstd_single_epoch },
-  { "compress_agg_zstd_batch", test_compress_agg_zstd_batch },
-)
+RUN_GPU_TESTS({ "compress_agg_single_epoch", test_compress_agg_single_epoch },
+              { "compress_agg_batch", test_compress_agg_batch },
+              { "compress_agg_partial_batch", test_compress_agg_partial_batch },
+              { "compress_agg_zstd_single_epoch",
+                test_compress_agg_zstd_single_epoch },
+              { "compress_agg_zstd_batch", test_compress_agg_zstd_batch }, )

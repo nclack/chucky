@@ -8,14 +8,14 @@
 #include "test_runner.h"
 
 // Run transpose kernel and verify against CPU ravel() reference.
-// dim_sizes/tile_sizes: per-dimension sizes.
+// dim_sizes/chunk_sizes: per-dimension sizes.
 // bpe: bytes per element (2 or 4).
 // Returns 0 on success.
 static int
 run_transpose_test(const char* name,
                    int rank,
                    const uint64_t* dim_sizes,
-                   const uint64_t* tile_sizes,
+                   const uint64_t* chunk_sizes,
                    const uint8_t* storage_order,
                    uint8_t bpe)
 {
@@ -24,30 +24,30 @@ run_transpose_test(const char* name,
   uint8_t lifted_rank;
   uint64_t lifted_shape[MAX_RANK];
   int64_t lifted_strides[MAX_RANK];
-  uint64_t tile_elements, tile_stride, tiles_per_epoch, epoch_elements;
+  uint64_t chunk_elements, chunk_stride, chunks_per_epoch, epoch_elements;
 
   build_lifted_layout(rank,
                       dim_sizes,
-                      tile_sizes,
+                      chunk_sizes,
                       storage_order,
                       &lifted_rank,
                       lifted_shape,
                       lifted_strides,
-                      &tile_elements,
-                      &tile_stride,
-                      &tiles_per_epoch,
+                      &chunk_elements,
+                      &chunk_stride,
+                      &chunks_per_epoch,
                       &epoch_elements);
-  uint64_t pool_elements = tiles_per_epoch * tile_stride;
+  uint64_t pool_elements = chunks_per_epoch * chunk_stride;
   size_t src_bytes = epoch_elements * bpe;
   size_t dst_bytes = pool_elements * bpe;
 
-  log_info("  rank=%d lifted_rank=%d tile_elements=%lu tile_stride=%lu "
-           "tiles_per_epoch=%lu epoch_elements=%lu",
+  log_info("  rank=%d lifted_rank=%d chunk_elements=%lu chunk_stride=%lu "
+           "chunks_per_epoch=%lu epoch_elements=%lu",
            rank,
            lifted_rank,
-           (unsigned long)tile_elements,
-           (unsigned long)tile_stride,
-           (unsigned long)tiles_per_epoch,
+           (unsigned long)chunk_elements,
+           (unsigned long)chunk_stride,
+           (unsigned long)chunks_per_epoch,
            (unsigned long)epoch_elements);
 
   void* h_src = NULL;
@@ -157,31 +157,31 @@ Fail:
 static int
 test_transpose_2d(void)
 {
-  // 2D: 4×6 with tile 2×3
+  // 2D: 4×6 with chunk 2×3
   uint64_t dim_sizes[] = { 4, 6 };
-  uint64_t tile_sizes[] = { 2, 3 };
+  uint64_t chunk_sizes[] = { 2, 3 };
   return run_transpose_test(
-    "test_transpose_2d", 2, dim_sizes, tile_sizes, NULL, 2);
+    "test_transpose_2d", 2, dim_sizes, chunk_sizes, NULL, 2);
 }
 
 static int
 test_transpose_3d(void)
 {
-  // 3D: matching test_stream's shape (4, 4, 6) tile (2, 2, 3)
+  // 3D: matching test_stream's shape (4, 4, 6) chunk (2, 2, 3)
   uint64_t dim_sizes[] = { 4, 4, 6 };
-  uint64_t tile_sizes[] = { 2, 2, 3 };
+  uint64_t chunk_sizes[] = { 2, 2, 3 };
   return run_transpose_test(
-    "test_transpose_3d", 3, dim_sizes, tile_sizes, NULL, 2);
+    "test_transpose_3d", 3, dim_sizes, chunk_sizes, NULL, 2);
 }
 
 static int
 test_transpose_identity(void)
 {
-  // 2D: 6×4 with tile 6×4 — single tile, identity layout
+  // 2D: 6×4 with chunk 6×4 — single chunk, identity layout
   uint64_t dim_sizes[] = { 6, 4 };
-  uint64_t tile_sizes[] = { 6, 4 };
+  uint64_t chunk_sizes[] = { 6, 4 };
   return run_transpose_test(
-    "test_transpose_identity", 2, dim_sizes, tile_sizes, NULL, 2);
+    "test_transpose_identity", 2, dim_sizes, chunk_sizes, NULL, 2);
 }
 
 static int
@@ -189,23 +189,23 @@ test_transpose_bpe4(void)
 {
   // 3D with 4-byte elements (u32)
   uint64_t dim_sizes[] = { 4, 4, 6 };
-  uint64_t tile_sizes[] = { 2, 2, 3 };
+  uint64_t chunk_sizes[] = { 2, 2, 3 };
   return run_transpose_test(
-    "test_transpose_bpe4", 3, dim_sizes, tile_sizes, NULL, 4);
+    "test_transpose_bpe4", 3, dim_sizes, chunk_sizes, NULL, 4);
 }
 
 static int
 test_transpose_3d_storage_order(void)
 {
   // 3D with storage_order={0,2,1}: storage dims are [z,x,y]
-  // Acquisition: z=4, y=4, x=6, tiles 2,2,3
+  // Acquisition: z=4, y=4, x=6, chunks 2,2,3
   uint64_t dim_sizes[] = { 4, 4, 6 };
-  uint64_t tile_sizes[] = { 2, 2, 3 };
+  uint64_t chunk_sizes[] = { 2, 2, 3 };
   uint8_t storage_order[] = { 0, 2, 1 };
   return run_transpose_test("test_transpose_3d_storage_order",
                             3,
                             dim_sizes,
-                            tile_sizes,
+                            chunk_sizes,
                             storage_order,
                             2);
 }
@@ -214,23 +214,22 @@ static int
 test_transpose_4d_storage_order(void)
 {
   // 4D with storage_order={0,3,1,2}: stress test
-  // Acquisition: t=2, z=4, y=4, x=6, tiles 2,2,2,3
+  // Acquisition: t=2, z=4, y=4, x=6, chunks 2,2,2,3
   uint64_t dim_sizes[] = { 2, 4, 4, 6 };
-  uint64_t tile_sizes[] = { 2, 2, 2, 3 };
+  uint64_t chunk_sizes[] = { 2, 2, 2, 3 };
   uint8_t storage_order[] = { 0, 3, 1, 2 };
   return run_transpose_test("test_transpose_4d_storage_order",
                             4,
                             dim_sizes,
-                            tile_sizes,
+                            chunk_sizes,
                             storage_order,
                             2);
 }
 
-RUN_GPU_TESTS(
-  { "transpose_2d", test_transpose_2d },
-  { "transpose_3d", test_transpose_3d },
-  { "transpose_identity", test_transpose_identity },
-  { "transpose_bpe4", test_transpose_bpe4 },
-  { "transpose_3d_storage_order", test_transpose_3d_storage_order },
-  { "transpose_4d_storage_order", test_transpose_4d_storage_order },
-)
+RUN_GPU_TESTS({ "transpose_2d", test_transpose_2d },
+              { "transpose_3d", test_transpose_3d },
+              { "transpose_identity", test_transpose_identity },
+              { "transpose_bpe4", test_transpose_bpe4 },
+              { "transpose_3d_storage_order", test_transpose_3d_storage_order },
+              { "transpose_4d_storage_order",
+                test_transpose_4d_storage_order }, )

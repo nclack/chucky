@@ -67,16 +67,15 @@ orch_ctx_destroy(struct orch_ctx* c)
 
 // Set up all components for the flush orchestration test.
 static int
-orch_ctx_setup(struct orch_ctx* c,
-               struct tile_stream_configuration* config)
+orch_ctx_setup(struct orch_ctx* c, struct tile_stream_configuration* config)
 {
   CHECK(Fail, compute_stream_layouts(config, &c->cl) == 0);
 
   const uint32_t K = c->cl.epochs_per_batch;
-  const uint64_t total_tiles = c->cl.levels.total_tiles;
-  const uint64_t tile_stride = c->cl.l0.tile_stride;
+  const uint64_t total_chunks = c->cl.levels.total_chunks;
+  const uint64_t chunk_stride = c->cl.l0.chunk_stride;
   const size_t bpe = lod_dtype_bpe(config->dtype);
-  const size_t pool_bytes = (uint64_t)K * total_tiles * tile_stride * bpe;
+  const size_t pool_bytes = (uint64_t)K * total_chunks * chunk_stride * bpe;
 
   // GPU streams
   CU(Fail, cuStreamCreate(&c->streams.compute, CU_STREAM_NON_BLOCKING));
@@ -84,7 +83,8 @@ orch_ctx_setup(struct orch_ctx* c,
   CU(Fail, cuStreamCreate(&c->streams.d2h, CU_STREAM_NON_BLOCKING));
 
   // Compress+aggregate stage
-  CHECK(Fail, compress_agg_init(&c->ca, &c->cl, config, c->streams.compute) == 0);
+  CHECK(Fail,
+        compress_agg_init(&c->ca, &c->cl, config, c->streams.compute) == 0);
   c->ca_inited = 1;
 
   // D2H+deliver stage
@@ -93,11 +93,11 @@ orch_ctx_setup(struct orch_ctx* c,
           &c->d2h, c->ca.levels, c->cl.levels.nlod, c->streams.compute) == 0);
   c->d2h_inited = 1;
 
-  // Double-buffered tile pools
+  // Double-buffered chunk pools
   for (int i = 0; i < 2; ++i) {
     CU(Fail, cuMemAlloc(&c->pools.buf[i], pool_bytes));
-    CU(Fail, cuMemsetD8Async(c->pools.buf[i], 0, pool_bytes,
-                              c->streams.compute));
+    CU(Fail,
+       cuMemsetD8Async(c->pools.buf[i], 0, pool_bytes, c->streams.compute));
     CU(Fail, cuEventCreate(&c->pools.ready[i], CU_EVENT_DEFAULT));
     CU(Fail, cuEventRecord(c->pools.ready[i], c->streams.compute));
   }
@@ -164,13 +164,13 @@ orch_ctx_fill_epoch(struct orch_ctx* c,
 {
   CU(Fail, cuStreamSynchronize(c->streams.compute));
 
-  const uint64_t total_tiles = c->cl.levels.total_tiles;
-  const uint64_t tile_stride = c->cl.l0.tile_stride;
+  const uint64_t total_chunks = c->cl.levels.total_chunks;
+  const uint64_t chunk_stride = c->cl.l0.chunk_stride;
   const size_t bpe = lod_dtype_bpe(config->dtype);
   CUdeviceptr epoch_ptr =
     c->pools.buf[c->pools.current] +
-    (uint64_t)epoch_in_batch * total_tiles * tile_stride * bpe;
-  return fill_pool_epoch(epoch_ptr, total_tiles, tile_stride, bpe, fill_fn);
+    (uint64_t)epoch_in_batch * total_chunks * chunk_stride * bpe;
+  return fill_pool_epoch(epoch_ptr, total_chunks, chunk_stride, bpe, fill_fn);
 
 Fail:
   return 1;
@@ -262,9 +262,9 @@ test_full_batch_auto_flush(void)
 
   // After full batch: drain_kick_and_swap fired
   CHECK(Fail, c.batch.accumulated == 0);
-  CHECK(Fail, c.pools.current == 1);       // swapped to pool 1
-  CHECK(Fail, c.flush.pending == 1);        // batch 1 pending delivery
-  CHECK(Fail, c.flush.current == 0);        // batch 1 was on pool 0
+  CHECK(Fail, c.pools.current == 1); // swapped to pool 1
+  CHECK(Fail, c.flush.pending == 1); // batch 1 pending delivery
+  CHECK(Fail, c.flush.current == 0); // batch 1 was on pool 0
 
   // Fresh pool slot is reset
   CHECK(Fail, c.flush.slot[1].active_levels_mask == 0);
@@ -427,9 +427,9 @@ test_two_batch_cycle(void)
   CHECK(Fail, flush_accumulate_epoch(&fctx).error == 0);
 
   // Batch 2 auto-drained batch 1 (pending was set), then kicked batch 2
-  CHECK(Fail, c.pools.current == 0);       // swapped back to pool 0
-  CHECK(Fail, c.flush.pending == 1);        // batch 2 now pending
-  CHECK(Fail, c.flush.current == 1);        // batch 2 was on pool 1
+  CHECK(Fail, c.pools.current == 0); // swapped back to pool 0
+  CHECK(Fail, c.flush.pending == 1); // batch 2 now pending
+  CHECK(Fail, c.flush.current == 1); // batch 2 was on pool 1
   CHECK(Fail, c.batch.accumulated == 0);
 
   // Batch 1 was already drained (by drain_kick_and_swap during batch 2)
@@ -456,10 +456,8 @@ Fail:
   return ok ? 0 : 1;
 }
 
-RUN_GPU_TESTS(
-  { "accumulate_one_epoch", test_accumulate_one_epoch },
-  { "full_batch_auto_flush", test_full_batch_auto_flush },
-  { "drain_delivers_data", test_drain_delivers_data },
-  { "accumulated_sync_partial", test_accumulated_sync_partial },
-  { "two_batch_cycle", test_two_batch_cycle },
-)
+RUN_GPU_TESTS({ "accumulate_one_epoch", test_accumulate_one_epoch },
+              { "full_batch_auto_flush", test_full_batch_auto_flush },
+              { "drain_delivers_data", test_drain_delivers_data },
+              { "accumulated_sync_partial", test_accumulated_sync_partial },
+              { "two_batch_cycle", test_two_batch_cycle }, )

@@ -299,8 +299,7 @@ test_lod_gpu_method(const char* label,
   for (uint64_t i = 0; i < n; ++i)
     src[i] = (float)(i + 1);
 
-  CHECK(Fail,
-        lod_plan_init(&plan, ndim, shape, NULL, lod_mask, MAX_LOD) == 0);
+  CHECK(Fail, lod_plan_init(&plan, ndim, shape, NULL, lod_mask, MAX_LOD) == 0);
   log_info(
     "  lod_mask=0x%x  lod_ndim=%d  batch_ndim=%d  batch_count=%llu  nlod=%d",
     lod_mask,
@@ -325,9 +324,9 @@ test_lod_gpu_method(const char* label,
     for (uint64_t i = 0; i < total; ++i) {
       if (fabsf(gpu_values[i] - cpu_values[i]) > 1e-5f) {
         log_error("  FAIL at i=%llu: gpu=%f cpu=%f",
-               (unsigned long long)i,
-               gpu_values[i],
-               cpu_values[i]);
+                  (unsigned long long)i,
+                  gpu_values[i],
+                  cpu_values[i]);
         goto Fail;
       }
     }
@@ -504,8 +503,7 @@ test_lod_gpu_u16_method(const char* label,
   for (uint64_t i = 0; i < n; ++i)
     src[i] = (uint16_t)((i + 1) & 0xFFFF);
 
-  CHECK(Fail,
-        lod_plan_init(&plan, ndim, shape, NULL, lod_mask, MAX_LOD) == 0);
+  CHECK(Fail, lod_plan_init(&plan, ndim, shape, NULL, lod_mask, MAX_LOD) == 0);
   log_info(
     "  lod_mask=0x%x  lod_ndim=%d  batch_ndim=%d  batch_count=%llu  nlod=%d",
     lod_mask,
@@ -530,9 +528,9 @@ test_lod_gpu_u16_method(const char* label,
     for (uint64_t i = 0; i < total; ++i) {
       if (gpu_values[i] != cpu_values[i]) {
         log_error("  FAIL at i=%llu: gpu=%u cpu=%u",
-               (unsigned long long)i,
-               (unsigned)gpu_values[i],
-               (unsigned)cpu_values[i]);
+                  (unsigned long long)i,
+                  (unsigned)gpu_values[i],
+                  (unsigned)cpu_values[i]);
         goto Fail;
       }
     }
@@ -599,8 +597,8 @@ test_accum_fold_u16(const char* label,
       uint16_t mask = (uint16_t)((1u << s) - 1);
       for (int e = 1; e < n_epochs; ++e) {
         uint16_t b = h_data[e * n_elements + i];
-        accum = (uint16_t)((accum >> s) + (b >> s)
-                           + (((accum & mask) + (b & mask)) >> s));
+        accum = (uint16_t)((accum >> s) + (b >> s) +
+                           (((accum & mask) + (b & mask)) >> s));
       }
       h_expected[i] = accum;
     } else if (method == lod_reduce_min) {
@@ -659,9 +657,9 @@ test_accum_fold_u16(const char* label,
   for (uint64_t i = 0; i < n_elements; ++i) {
     if (h_result[i] != h_expected[i]) {
       log_error("  FAIL at i=%llu: gpu=%u expected=%u",
-             (unsigned long long)i,
-             (unsigned)h_result[i],
-             (unsigned)h_expected[i]);
+                (unsigned long long)i,
+                (unsigned)h_result[i],
+                (unsigned)h_expected[i]);
       goto Fail;
     }
   }
@@ -773,9 +771,9 @@ test_accum_fold_f32(const char* label,
   for (uint64_t i = 0; i < n_elements; ++i) {
     if (fabsf(h_result[i] - h_expected[i]) > 1e-3f) {
       log_error("  FAIL at i=%llu: gpu=%f expected=%f",
-             (unsigned long long)i,
-             h_result[i],
-             h_expected[i]);
+                (unsigned long long)i,
+                h_result[i],
+                h_expected[i]);
       goto Fail;
     }
   }
@@ -879,8 +877,8 @@ test_accum_fold_fused_u16(const char* label, enum lod_reduce_method method)
         uint16_t mask = (uint16_t)((1u << s) - 1);
         for (int e = 1; e < n_epochs; ++e) {
           uint16_t b = h_data[e * total + i];
-          accum = (uint16_t)((accum >> s) + (b >> s)
-                             + (((accum & mask) + (b & mask)) >> s));
+          accum = (uint16_t)((accum >> s) + (b >> s) +
+                             (((accum & mask) + (b & mask)) >> s));
         }
         expected = accum;
       } else if (method == lod_reduce_min) {
@@ -896,9 +894,9 @@ test_accum_fold_fused_u16(const char* label, enum lod_reduce_method method)
       }
       if (h_result[i] != expected) {
         log_error("  FAIL lv1 at i=%llu: gpu=%u expected=%u",
-               (unsigned long long)i,
-               (unsigned)h_result[i],
-               (unsigned)expected);
+                  (unsigned long long)i,
+                  (unsigned)h_result[i],
+                  (unsigned)expected);
         goto Fail;
       }
     }
@@ -925,8 +923,8 @@ test_accum_fold_fused_u16(const char* label, enum lod_reduce_method method)
         uint16_t mask = (uint16_t)((1u << s) - 1);
         for (int e = 1; e < n_epochs; ++e) {
           uint16_t b = h_data[e * total + si];
-          accum = (uint16_t)((accum >> s) + (b >> s)
-                             + (((accum & mask) + (b & mask)) >> s));
+          accum = (uint16_t)((accum >> s) + (b >> s) +
+                             (((accum & mask) + (b & mask)) >> s));
         }
         expected = accum;
       } else if (method == lod_reduce_min) {
@@ -942,9 +940,9 @@ test_accum_fold_fused_u16(const char* label, enum lod_reduce_method method)
       }
       if (h_result[i] != expected) {
         log_error("  FAIL lv2 at i=%llu: gpu=%u expected=%u",
-               (unsigned long long)i,
-               (unsigned)h_result[i],
-               (unsigned)expected);
+                  (unsigned long long)i,
+                  (unsigned)h_result[i],
+                  (unsigned)expected);
         goto Fail;
       }
     }
@@ -1011,8 +1009,8 @@ main(void)
     test_lod_gpu_u16("gpu_lod_u16_3d_d02", 3, (uint64_t[]){ 6, 3, 5 }, 0x5, 1);
   nfail +=
     test_lod_gpu_u16("gpu_lod_u16_3d_d1", 3, (uint64_t[]){ 4, 6, 3 }, 0x2, 1);
-  nfail += test_lod_gpu_u16(
-    "gpu_lod_u16_3d_none", 3, (uint64_t[]){ 3, 2, 5 }, 0x0, 1);
+  nfail +=
+    test_lod_gpu_u16("gpu_lod_u16_3d_none", 3, (uint64_t[]){ 3, 2, 5 }, 0x0, 1);
   nfail += test_lod_gpu_u16("gpu_lod_u16_1d", 1, (uint64_t[]){ 9 }, 0x1, 1);
   nfail += test_lod_gpu_u16(
     "gpu_lod_u16_4d_d13", 4, (uint64_t[]){ 3, 8, 2, 6 }, 0xA, 1);

@@ -20,8 +20,7 @@ upload_layout(struct stream_layout* layout,
   size_t stb = lifted_rank * sizeof(int64_t);
   CU(Fail, cuMemAlloc((CUdeviceptr*)&layout->d_lifted_shape, sb));
   CU(Fail, cuMemAlloc((CUdeviceptr*)&layout->d_lifted_strides, stb));
-  CU(Fail,
-     cuMemcpyHtoD((CUdeviceptr)layout->d_lifted_shape, lifted_shape, sb));
+  CU(Fail, cuMemcpyHtoD((CUdeviceptr)layout->d_lifted_shape, lifted_shape, sb));
   CU(Fail,
      cuMemcpyHtoD((CUdeviceptr)layout->d_lifted_strides, lifted_strides, stb));
   return 0;
@@ -39,7 +38,7 @@ destroy_layout(struct stream_layout* layout)
 // --- Tests ---
 
 // Single full-epoch ingest: write all epoch elements into staging, dispatch
-// once, verify tiles in pool match CPU ravel reference.
+// once, verify chunks in pool match CPU ravel reference.
 static int
 test_ingest_single_epoch(void)
 {
@@ -47,23 +46,32 @@ test_ingest_single_epoch(void)
 
   const int rank = 3;
   const uint64_t dim_sizes[] = { 4, 4, 6 };
-  const uint64_t tile_sizes[] = { 2, 2, 3 };
+  const uint64_t chunk_sizes[] = { 2, 2, 3 };
   const size_t bpe = 2;
 
   uint8_t lifted_rank;
   uint64_t lifted_shape[MAX_RANK];
   int64_t lifted_strides[MAX_RANK];
-  uint64_t tile_elements, tile_stride, tiles_per_epoch, epoch_elements;
+  uint64_t chunk_elements, chunk_stride, chunks_per_epoch, epoch_elements;
 
-  build_lifted_layout(rank, dim_sizes, tile_sizes, NULL, &lifted_rank,
-                      lifted_shape, lifted_strides, &tile_elements,
-                      &tile_stride, &tiles_per_epoch, &epoch_elements);
+  build_lifted_layout(rank,
+                      dim_sizes,
+                      chunk_sizes,
+                      NULL,
+                      &lifted_rank,
+                      lifted_shape,
+                      lifted_strides,
+                      &chunk_elements,
+                      &chunk_stride,
+                      &chunks_per_epoch,
+                      &epoch_elements);
 
   const size_t src_bytes = epoch_elements * bpe;
-  const size_t pool_bytes = tiles_per_epoch * tile_stride * bpe;
+  const size_t pool_bytes = chunks_per_epoch * chunk_stride * bpe;
 
-  log_info("  epoch_elements=%lu tiles_per_epoch=%lu pool_bytes=%lu",
-           (unsigned long)epoch_elements, (unsigned long)tiles_per_epoch,
+  log_info("  epoch_elements=%lu chunks_per_epoch=%lu pool_bytes=%lu",
+           (unsigned long)epoch_elements,
+           (unsigned long)chunks_per_epoch,
            (unsigned long)pool_bytes);
 
   struct staging_state stage = { 0 };
@@ -87,9 +95,9 @@ test_ingest_single_epoch(void)
   layout.lifted_rank = lifted_rank;
   memcpy(layout.lifted_shape, lifted_shape, lifted_rank * sizeof(uint64_t));
   memcpy(layout.lifted_strides, lifted_strides, lifted_rank * sizeof(int64_t));
-  layout.tile_elements = tile_elements;
-  layout.tile_stride = tile_stride;
-  layout.tiles_per_epoch = tiles_per_epoch;
+  layout.chunk_elements = chunk_elements;
+  layout.chunk_stride = chunk_stride;
+  layout.chunks_per_epoch = chunks_per_epoch;
   layout.epoch_elements = epoch_elements;
   CHECK(Fail,
         upload_layout(&layout, lifted_rank, lifted_shape, lifted_strides) == 0);
@@ -105,8 +113,14 @@ test_ingest_single_epoch(void)
   {
     uint64_t cursor = 0;
     CHECK(Fail,
-          ingest_dispatch_scatter(&stage, &layout, (void*)d_pool, pool_ready,
-                                  &cursor, bpe, h2d, compute) == 0);
+          ingest_dispatch_scatter(&stage,
+                                  &layout,
+                                  (void*)d_pool,
+                                  pool_ready,
+                                  &cursor,
+                                  bpe,
+                                  h2d,
+                                  compute) == 0);
     CHECK(Fail, cursor == epoch_elements);
   }
 
@@ -126,7 +140,10 @@ test_ingest_single_epoch(void)
       if (dst_val != src_val) {
         if (errors < 5)
           log_error("  elem %lu: expected pool[%lu]=%u, got %u",
-                    (unsigned long)i, (unsigned long)off, src_val, dst_val);
+                    (unsigned long)i,
+                    (unsigned long)off,
+                    src_val,
+                    dst_val);
         errors++;
       }
     }
@@ -160,20 +177,28 @@ test_ingest_incremental(void)
 
   const int rank = 3;
   const uint64_t dim_sizes[] = { 4, 4, 6 };
-  const uint64_t tile_sizes[] = { 2, 2, 3 };
+  const uint64_t chunk_sizes[] = { 2, 2, 3 };
   const size_t bpe = 2;
 
   uint8_t lifted_rank;
   uint64_t lifted_shape[MAX_RANK];
   int64_t lifted_strides[MAX_RANK];
-  uint64_t tile_elements, tile_stride, tiles_per_epoch, epoch_elements;
+  uint64_t chunk_elements, chunk_stride, chunks_per_epoch, epoch_elements;
 
-  build_lifted_layout(rank, dim_sizes, tile_sizes, NULL, &lifted_rank,
-                      lifted_shape, lifted_strides, &tile_elements,
-                      &tile_stride, &tiles_per_epoch, &epoch_elements);
+  build_lifted_layout(rank,
+                      dim_sizes,
+                      chunk_sizes,
+                      NULL,
+                      &lifted_rank,
+                      lifted_shape,
+                      lifted_strides,
+                      &chunk_elements,
+                      &chunk_stride,
+                      &chunks_per_epoch,
+                      &epoch_elements);
 
   const size_t src_bytes = epoch_elements * bpe;
-  const size_t pool_bytes = tiles_per_epoch * tile_stride * bpe;
+  const size_t pool_bytes = chunks_per_epoch * chunk_stride * bpe;
   const size_t half = src_bytes / 2;
 
   struct staging_state stage = { 0 };
@@ -197,9 +222,9 @@ test_ingest_incremental(void)
   layout.lifted_rank = lifted_rank;
   memcpy(layout.lifted_shape, lifted_shape, lifted_rank * sizeof(uint64_t));
   memcpy(layout.lifted_strides, lifted_strides, lifted_rank * sizeof(int64_t));
-  layout.tile_elements = tile_elements;
-  layout.tile_stride = tile_stride;
-  layout.tiles_per_epoch = tiles_per_epoch;
+  layout.chunk_elements = chunk_elements;
+  layout.chunk_stride = chunk_stride;
+  layout.chunks_per_epoch = chunks_per_epoch;
   layout.epoch_elements = epoch_elements;
   CHECK(Fail,
         upload_layout(&layout, lifted_rank, lifted_shape, lifted_strides) == 0);
@@ -215,16 +240,28 @@ test_ingest_incremental(void)
     memcpy(stage.slot[stage.current].h_in, h_src, half);
     stage.bytes_written = half;
     CHECK(Fail,
-          ingest_dispatch_scatter(&stage, &layout, (void*)d_pool, pool_ready,
-                                  &cursor, bpe, h2d, compute) == 0);
+          ingest_dispatch_scatter(&stage,
+                                  &layout,
+                                  (void*)d_pool,
+                                  pool_ready,
+                                  &cursor,
+                                  bpe,
+                                  h2d,
+                                  compute) == 0);
     CHECK(Fail, cursor == epoch_elements / 2);
 
     CU(Fail, cuEventSynchronize(stage.slot[stage.current].t_h2d_end));
     memcpy(stage.slot[stage.current].h_in, (uint8_t*)h_src + half, half);
     stage.bytes_written = half;
     CHECK(Fail,
-          ingest_dispatch_scatter(&stage, &layout, (void*)d_pool, pool_ready,
-                                  &cursor, bpe, h2d, compute) == 0);
+          ingest_dispatch_scatter(&stage,
+                                  &layout,
+                                  (void*)d_pool,
+                                  pool_ready,
+                                  &cursor,
+                                  bpe,
+                                  h2d,
+                                  compute) == 0);
     CHECK(Fail, cursor == epoch_elements);
   }
 
@@ -244,7 +281,10 @@ test_ingest_incremental(void)
       if (dst_val != src_val) {
         if (errors < 5)
           log_error("  elem %lu: expected pool[%lu]=%u, got %u",
-                    (unsigned long)i, (unsigned long)off, src_val, dst_val);
+                    (unsigned long)i,
+                    (unsigned long)off,
+                    src_val,
+                    dst_val);
         errors++;
       }
     }
@@ -305,8 +345,8 @@ test_ingest_multiscale(void)
   {
     uint64_t cursor = 0;
     CHECK(Fail,
-          ingest_dispatch_multiscale(&stage, d_linear, epoch_elements, &cursor,
-                                     bpe, h2d, compute) == 0);
+          ingest_dispatch_multiscale(
+            &stage, d_linear, epoch_elements, &cursor, bpe, h2d, compute) == 0);
     CHECK(Fail, cursor == epoch_elements);
   }
 
@@ -333,8 +373,6 @@ Fail:
   return ok ? 0 : 1;
 }
 
-RUN_GPU_TESTS(
-  { "ingest_single_epoch", test_ingest_single_epoch },
-  { "ingest_incremental", test_ingest_incremental },
-  { "ingest_multiscale", test_ingest_multiscale },
-)
+RUN_GPU_TESTS({ "ingest_single_epoch", test_ingest_single_epoch },
+              { "ingest_incremental", test_ingest_incremental },
+              { "ingest_multiscale", test_ingest_multiscale }, )

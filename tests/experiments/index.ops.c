@@ -153,7 +153,7 @@ vadd2(int rank,
 static int
 vadd_agrees_with_add(void)
 {
-  // Setup a tiling of a 640x480x3 array into tiles of size 10x10x1
+  // Setup a tiling of a 640x480x3 array into chunks of size 10x10x1
   const int rank = 6;
   const int shape[] = { 48, 10, 64, 10, 3, 1 };
   int transposed_strides[6] = { 0 };
@@ -263,7 +263,7 @@ vadd_agrees_with_add(void)
 static int
 vadd2_agrees_with_add(void)
 {
-  // Setup a tiling of a 640x480x3 array into tiles of size 10x10x1
+  // Setup a tiling of a 640x480x3 array into chunks of size 10x10x1
   const int rank = 6;
   const int shape[] = { 48, 10, 64, 10, 3, 1 };
   int transposed_strides[6] = { 0 };
@@ -353,7 +353,11 @@ vadd2_agrees_with_add(void)
           const size_t count = (n - beg + step - 1) / step;
           {
             char buf[64] = { 0 };
-            snprintf(buf, sizeof(buf), "beg=%llu, step=%llu", (unsigned long long)beg, (unsigned long long)step);
+            snprintf(buf,
+                     sizeof(buf),
+                     "beg=%llu, step=%llu",
+                     (unsigned long long)beg,
+                     (unsigned long long)step);
             int err = expect_arrays_equal(expected, actual, count, buf);
             if (err) {
               int show = count < 10 ? (int)count : 10;

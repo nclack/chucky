@@ -187,18 +187,18 @@ log_bench_header(const struct tile_stream_gpu* s,
                total_elements,
                num_epochs);
   print_report(
-    "  tile:        %lu elements = %lu KiB  (stride=%lu)",
-    (unsigned long)layout->tile_elements,
-    (unsigned long)(layout->tile_stride * lod_dtype_bpe(st.dtype) / 1024),
-    (unsigned long)layout->tile_stride);
+    "  chunk:       %lu elements = %lu KiB  (stride=%lu)",
+    (unsigned long)layout->chunk_elements,
+    (unsigned long)(layout->chunk_stride * lod_dtype_bpe(st.dtype) / 1024),
+    (unsigned long)layout->chunk_stride);
   print_report("  epoch:       %lu slots, %lu MiB pool",
-               (unsigned long)layout->tiles_per_epoch,
-               (unsigned long)(layout->tile_pool_bytes / (1024 * 1024)));
+               (unsigned long)layout->chunks_per_epoch,
+               (unsigned long)(layout->chunk_pool_bytes / (1024 * 1024)));
   if (st.codec != CODEC_NONE)
-    print_report(
-      "  compress:    max_output=%zu comp_pool=%zu MiB",
-      st.max_compressed_size,
-      (st.codec_batch_size * st.max_compressed_size) / (1024 * 1024));
+    print_report("  compress:    max_output=%zu comp_pool=%zu MiB",
+                 st.max_compressed_size,
+                 (st.codec_batch_size * st.max_compressed_size) /
+                   (1024 * 1024));
 }
 
 void
@@ -214,11 +214,11 @@ print_bench_report(const struct tile_stream_gpu* s,
   struct stream_metrics m = tile_stream_gpu_get_metrics(s);
   const struct stream_layout* layout = tile_stream_gpu_layout(s);
   const struct tile_stream_status st = tile_stream_gpu_status(s);
-  const size_t tile_bytes = layout->tile_stride * lod_dtype_bpe(st.dtype);
+  const size_t chunk_bytes = layout->chunk_stride * lod_dtype_bpe(st.dtype);
   const size_t num_epochs =
     (total_elements + layout->epoch_elements - 1) / layout->epoch_elements;
-  const size_t total_tiles = num_epochs * layout->tiles_per_epoch;
-  const size_t total_decompressed = total_tiles * tile_bytes;
+  const size_t total_chunks = num_epochs * layout->chunks_per_epoch;
+  const size_t total_decompressed = total_chunks * chunk_bytes;
   const double comp_ratio =
     total_decompressed > 0
       ? (double)ss->total_bytes / (double)total_decompressed
@@ -232,9 +232,9 @@ print_bench_report(const struct tile_stream_gpu* s,
   print_report("  Compressed:   %.2f GiB (ratio: %.3f)",
                (double)ss->total_bytes / (1024.0 * 1024.0 * 1024.0),
                comp_ratio);
-  print_report("  Tiles:        %zu (%zu/epoch x %zu epochs)",
-               total_tiles,
-               (size_t)layout->tiles_per_epoch,
+  print_report("  Chunks:       %zu (%zu/epoch x %zu epochs)",
+               total_chunks,
+               (size_t)layout->chunks_per_epoch,
                num_epochs);
 
   print_report("");
@@ -251,7 +251,7 @@ print_bench_report(const struct tile_stream_gpu* s,
   print_metric_row(&m.lod_gather);
   print_metric_row(&m.lod_reduce);
   print_metric_row(&m.lod_dim0_fold);
-  print_metric_row(&m.lod_morton_tile);
+  print_metric_row(&m.lod_morton_chunk);
   print_metric_row(&m.compress);
   print_metric_row(&m.aggregate);
   print_metric_row(&m.d2h);
@@ -355,7 +355,7 @@ run_bench(const struct bench_config* cfg)
     .shard_sink = sink,
     .reduce_method = cfg->reduce_method,
     .dim0_reduce_method = cfg->dim0_reduce_method,
-    .target_batch_tiles = 2048,
+    .target_batch_chunks = 2048,
     .shard_alignment = output_path ? platform_page_size() : 0,
   };
 
@@ -365,9 +365,9 @@ run_bench(const struct bench_config* cfg)
       print_report("  GPU memory:  %.2f GiB device, %.2f GiB pinned",
                    (double)mem.device_bytes / (1024.0 * 1024.0 * 1024.0),
                    (double)mem.host_pinned_bytes / (1024.0 * 1024.0 * 1024.0));
-      print_report("    staging:   %.2f MiB   tile_pool: %.2f GiB",
+      print_report("    staging:   %.2f MiB   chunk_pool: %.2f GiB",
                    (double)mem.staging_bytes / (1024.0 * 1024.0),
-                   (double)mem.tile_pool_bytes / (1024.0 * 1024.0 * 1024.0));
+                   (double)mem.chunk_pool_bytes / (1024.0 * 1024.0 * 1024.0));
       print_report("    comp_pool: %.2f GiB   aggregate: %.2f GiB",
                    (double)mem.compressed_pool_bytes /
                      (1024.0 * 1024.0 * 1024.0),
@@ -376,9 +376,9 @@ run_bench(const struct bench_config* cfg)
                    (double)mem.lod_bytes / (1024.0 * 1024.0),
                    (double)mem.codec_bytes / (1024.0 * 1024.0));
       print_report(
-        "    tiles:     %llu/epoch, %llu total (%d LOD levels, batch=%u)",
-        (unsigned long long)mem.tiles_per_epoch,
-        (unsigned long long)mem.total_tiles,
+        "    chunks:    %llu/epoch, %llu total (%d LOD levels, batch=%u)",
+        (unsigned long long)mem.chunks_per_epoch,
+        (unsigned long long)mem.total_chunks,
         mem.nlod,
         mem.epochs_per_batch);
     }
@@ -416,7 +416,8 @@ run_bench(const struct bench_config* cfg)
     log_error("  cursor drift: expected %zu, got %zu (diff=%td)",
               total_elements,
               (size_t)tile_stream_gpu_cursor(s),
-              (ptrdiff_t)((int64_t)tile_stream_gpu_cursor(s) - (int64_t)total_elements));
+              (ptrdiff_t)((int64_t)tile_stream_gpu_cursor(s) -
+                          (int64_t)total_elements));
     goto Fail;
   }
 

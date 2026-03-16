@@ -35,14 +35,14 @@ make_compress_input(struct flush_context* ctx, int fc, uint32_t n_epochs)
 
 // --- Epoch accumulation ---
 
-// Return pointer to the current epoch's tile region within the super-pool.
+// Return pointer to the current epoch's chunk region within the super-pool.
 static inline void*
 pool_epoch_ptr(struct flush_context* ctx, uint32_t epoch_in_batch)
 {
   const size_t bpe = lod_dtype_bpe(ctx->config->dtype);
   return (char*)ctx->pools->buf[ctx->pools->current] +
-         (uint64_t)epoch_in_batch * ctx->levels->total_tiles *
-           ctx->layout->tile_stride * bpe;
+         (uint64_t)epoch_in_batch * ctx->levels->total_chunks *
+           ctx->layout->chunk_stride * bpe;
 }
 
 // Run LOD pipeline for the current epoch, or handle non-multiscale case.
@@ -98,8 +98,9 @@ drain_kick_and_swap(struct flush_context* ctx)
 
   // Swap to fresh pool and zero it for next batch
   ctx->pools->current ^= 1;
-  size_t pool_bytes = (uint64_t)K * ctx->levels->total_tiles *
-                      ctx->layout->tile_stride * lod_dtype_bpe(ctx->config->dtype);
+  size_t pool_bytes = (uint64_t)K * ctx->levels->total_chunks *
+                      ctx->layout->chunk_stride *
+                      lod_dtype_bpe(ctx->config->dtype);
   CU(Error,
      cuMemsetD8Async(ctx->pools->buf[ctx->pools->current],
                      0,
@@ -200,10 +201,10 @@ kick_and_deliver_one_epoch(struct flush_context* ctx,
   in.epoch_events[0] = ctx->batch->pool_events[epoch_in_batch];
 
   // Point pool_buf at the specific epoch
-  const size_t tile_bytes =
-    ctx->layout->tile_stride * lod_dtype_bpe(ctx->config->dtype);
+  const size_t chunk_bytes =
+    ctx->layout->chunk_stride * lod_dtype_bpe(ctx->config->dtype);
   in.pool_buf = ctx->pools->buf[fc] + (uint64_t)epoch_in_batch *
-                                        ctx->levels->total_tiles * tile_bytes;
+                                        ctx->levels->total_chunks * chunk_bytes;
 
   struct flush_handoff handoff = { 0 };
   CHECK(Error,
@@ -330,7 +331,7 @@ flush_partial_dim0(struct flush_context* ctx)
   fs->active_levels_mask = active_levels_mask;
   fs->batch_epoch_count = 1; // partial dim0 flush is always 1 epoch
 
-  // Zero LOD level regions of pool, emit partial accums, scatter to tiles
+  // Zero LOD level regions of pool, emit partial accums, scatter to chunks
   for (int lv = 1; lv < p->nlod; ++lv) {
     if (!(active_levels_mask & (1u << lv)))
       continue;
@@ -360,23 +361,23 @@ flush_partial_dim0(struct flush_context* ctx)
 
     ctx->lod->dim0.counts[lv] = 0;
 
-    // Zero and scatter to tile pool (epoch 0 in current pool)
+    // Zero and scatter to chunk pool (epoch 0 in current pool)
     CUdeviceptr dst =
       ctx->pools->buf[ctx->pools->current] +
-      ctx->levels->tile_offset[lv] * ctx->layout->tile_stride * bpe;
+      ctx->levels->chunk_offset[lv] * ctx->layout->chunk_stride * bpe;
     size_t lv_pool_bytes =
-      ctx->levels->tile_count[lv] * ctx->layout->tile_stride * bpe;
+      ctx->levels->chunk_count[lv] * ctx->layout->chunk_stride * bpe;
     CU(Error, cuMemsetD8Async(dst, 0, lv_pool_bytes, ctx->streams.compute));
 
     CHECK(Error,
-          lod_morton_to_tiles_lut(dst,
-                                  morton_lv,
-                                  ctx->lod->d_morton_tile_lut[lv],
-                                  ctx->lod->d_morton_batch_tile_offsets[lv],
-                                  dtype,
-                                  p->lod_counts[lv],
-                                  p->batch_count,
-                                  ctx->streams.compute) == 0);
+          lod_morton_to_chunks_lut(dst,
+                                   morton_lv,
+                                   ctx->lod->d_morton_chunk_lut[lv],
+                                   ctx->lod->d_morton_batch_chunk_offsets[lv],
+                                   dtype,
+                                   p->lod_counts[lv],
+                                   p->batch_count,
+                                   ctx->streams.compute) == 0);
   }
 
   CU(Error, cuEventRecord(ctx->pools->ready[fc], ctx->streams.compute));

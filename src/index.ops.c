@@ -78,19 +78,19 @@ max_shape(int ndim, const uint64_t* shape)
 
 void
 compute_lifted_strides(int rank,
-                       const uint64_t* tile_sizes,
-                       const uint64_t* tile_count,
+                       const uint64_t* chunk_sizes,
+                       const uint64_t* chunk_count,
                        const uint8_t* storage_order,
-                       int64_t tile_stride,
+                       int64_t chunk_stride,
                        int64_t* lifted_strides)
 {
   int64_t n_stride = 1;
-  int64_t t_stride = tile_stride;
+  int64_t t_stride = chunk_stride;
   for (int j = rank - 1; j >= 0; --j) {
     int i = storage_order ? storage_order[j] : j;
     lifted_strides[2 * i + 1] = n_stride;
-    n_stride *= (int64_t)tile_sizes[i];
+    n_stride *= (int64_t)chunk_sizes[i];
     lifted_strides[2 * i] = t_stride;
-    t_stride *= (int64_t)tile_count[i];
+    t_stride *= (int64_t)chunk_count[i];
   }
 }

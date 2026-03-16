@@ -17,15 +17,15 @@ tile_stream_gpu_flush(struct writer* self);
 
 // --- Helpers ---
 
-// Return pointer to the current epoch's tile region within the super-pool.
+// Return pointer to the current epoch's chunk region within the super-pool.
 // epoch_in_batch: 0..K-1
 static inline void*
 current_pool_epoch(struct tile_stream_gpu* s, uint32_t epoch_in_batch)
 {
   const size_t bpe = lod_dtype_bpe(s->config.dtype);
   return (char*)s->pools.buf[s->pools.current] + (uint64_t)epoch_in_batch *
-                                                   s->levels.total_tiles *
-                                                   s->layout.tile_stride * bpe;
+                                                   s->levels.total_chunks *
+                                                   s->layout.chunk_stride * bpe;
 }
 
 static struct flush_context
@@ -90,7 +90,7 @@ tile_stream_gpu_append(struct writer* self, struct slice input)
 
   const uint64_t dim0_size = s->config.dimensions[0].size;
   const uint64_t max_cursor =
-    (dim0_size > 0) ? ceildiv(dim0_size, s->config.dimensions[0].tile_size) *
+    (dim0_size > 0) ? ceildiv(dim0_size, s->config.dimensions[0].chunk_size) *
                         s->layout.epoch_elements
                     : 0; // 0 = unbounded (never checked)
 
@@ -218,28 +218,29 @@ tile_stream_gpu_flush(struct writer* self)
   if (r.error)
     return r;
 
-  // Capture actual dim0 tile counts before partial shard emission,
+  // Capture actual dim0 chunk counts before partial shard emission,
   // since emit_shards resets epoch_in_shard and increments shard_epoch.
-  uint64_t dim0_tiles[LOD_MAX_LEVELS];
+  uint64_t dim0_chunks[LOD_MAX_LEVELS];
   for (int lv = 0; lv < s->levels.nlod; ++lv) {
     struct shard_state* ss = &s->compress_agg.levels[lv].shard;
-    dim0_tiles[lv] =
-      ss->shard_epoch * ss->tiles_per_shard_0 + ss->epoch_in_shard;
+    dim0_chunks[lv] =
+      ss->shard_epoch * ss->chunks_per_shard_0 + ss->epoch_in_shard;
   }
 
   // Emit partial shards for all levels
   for (int lv = 0; lv < s->levels.nlod; ++lv) {
     if (s->compress_agg.levels[lv].shard.epoch_in_shard > 0) {
-      if (emit_shards(&s->compress_agg.levels[lv].shard, s->config.shard_alignment))
+      if (emit_shards(&s->compress_agg.levels[lv].shard,
+                      s->config.shard_alignment))
         return writer_error();
     }
   }
 
-  // Final metadata update using pre-emit tile counts.
+  // Final metadata update using pre-emit chunk counts.
   if (s->config.shard_sink->update_dim0) {
     const struct dimension* dims = s->config.dimensions;
     for (int lv = 0; lv < s->levels.nlod; ++lv) {
-      uint64_t dim0_extent = dim0_tiles[lv] * dims[0].tile_size;
+      uint64_t dim0_extent = dim0_chunks[lv] * dims[0].chunk_size;
       s->config.shard_sink->update_dim0(
         s->config.shard_sink, (uint8_t)lv, dim0_extent);
     }

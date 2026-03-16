@@ -191,8 +191,8 @@ struct zarr_sink
 
   // Geometry
   uint8_t rank;
-  uint64_t tile_count[MAX_ZARR_RANK];
-  uint64_t tiles_per_shard[MAX_ZARR_RANK];
+  uint64_t chunk_count[MAX_ZARR_RANK];
+  uint64_t chunks_per_shard[MAX_ZARR_RANK];
   uint64_t shard_count[MAX_ZARR_RANK];
   uint64_t shard_inner_count; // prod(shard_count[d] for d > 0)
 
@@ -384,7 +384,7 @@ write_array_metadata(const char* array_dir,
                      const struct dimension* dimensions,
                      enum zarr_dtype data_type,
                      double fill_value,
-                     const uint64_t* tiles_per_shard,
+                     const uint64_t* chunks_per_shard,
                      enum compression_codec codec)
 {
   char path[4096];
@@ -411,7 +411,8 @@ write_array_metadata(const char* array_dir,
   jw_key(&jw, "data_type");
   jw_string(&jw, zarr_dtype_string(data_type));
 
-  // chunk_grid (zarr spec): each "chunk" here is a shard = tile_size * tiles_per_shard
+  // chunk_grid (zarr spec): each zarr outer "chunk" is a shard = chunk_size *
+  // chunks_per_shard
   jw_key(&jw, "chunk_grid");
   jw_object_begin(&jw);
   jw_key(&jw, "name");
@@ -421,7 +422,7 @@ write_array_metadata(const char* array_dir,
   jw_key(&jw, "chunk_shape");
   jw_array_begin(&jw);
   for (int d = 0; d < rank; ++d)
-    jw_uint(&jw, dimensions[d].tile_size * tiles_per_shard[d]);
+    jw_uint(&jw, dimensions[d].chunk_size * chunks_per_shard[d]);
   jw_array_end(&jw);
   jw_object_end(&jw);
   jw_object_end(&jw);
@@ -446,11 +447,11 @@ write_array_metadata(const char* array_dir,
   jw_key(&jw, "configuration");
   jw_object_begin(&jw);
 
-  // chunk_shape (zarr spec): inner chunk = tile shape
+  // chunk_shape (zarr spec): inner chunk = chunk shape
   jw_key(&jw, "chunk_shape");
   jw_array_begin(&jw);
   for (int d = 0; d < rank; ++d)
-    jw_uint(&jw, dimensions[d].tile_size);
+    jw_uint(&jw, dimensions[d].chunk_size);
   jw_array_end(&jw);
 
   jw_key(&jw, "codecs");
@@ -551,7 +552,7 @@ zarr_sink_update_dim0(struct shard_sink* self,
                            zs->dimensions,
                            zs->data_type,
                            zs->fill_value,
-                           zs->tiles_per_shard,
+                           zs->chunks_per_shard,
                            zs->codec))
     log_error("zarr_sink_update_dim0: failed to rewrite zarr.json for %s",
               zs->array_dir);
@@ -590,13 +591,13 @@ zarr_sink_create(const struct zarr_config* cfg)
   // Compute geometry
   zs->shard_inner_count = 1;
   for (int d = 0; d < cfg->rank; ++d) {
-    zs->tile_count[d] =
+    zs->chunk_count[d] =
       (cfg->dimensions[d].size == 0)
         ? 1
-        : ceildiv(cfg->dimensions[d].size, cfg->dimensions[d].tile_size);
-    uint64_t tps = cfg->dimensions[d].tiles_per_shard;
-    zs->tiles_per_shard[d] = (tps == 0) ? zs->tile_count[d] : tps;
-    zs->shard_count[d] = ceildiv(zs->tile_count[d], zs->tiles_per_shard[d]);
+        : ceildiv(cfg->dimensions[d].size, cfg->dimensions[d].chunk_size);
+    uint64_t cps = cfg->dimensions[d].chunks_per_shard;
+    zs->chunks_per_shard[d] = (cps == 0) ? zs->chunk_count[d] : cps;
+    zs->shard_count[d] = ceildiv(zs->chunk_count[d], zs->chunks_per_shard[d]);
     if (d > 0)
       zs->shard_inner_count *= zs->shard_count[d];
   }
@@ -612,7 +613,8 @@ zarr_sink_create(const struct zarr_config* cfg)
   // When dim0 is unbounded (size=0), only pre-create inner dirs for
   // shard_epoch=0; further dirs are created on-demand in zarr_sink_open.
   {
-    uint64_t total_shards = zs->shard_inner_count; // just inner dims for epoch 0
+    uint64_t total_shards =
+      zs->shard_inner_count; // just inner dims for epoch 0
     if (cfg->dimensions[0].size > 0)
       total_shards *= zs->shard_count[0]; // bounded: create all
 
@@ -646,7 +648,7 @@ zarr_sink_create(const struct zarr_config* cfg)
                              zs->dimensions,
                              zs->data_type,
                              zs->fill_value,
-                             zs->tiles_per_shard,
+                             zs->chunks_per_shard,
                              zs->codec) == 0);
 
   // Allocate writer pool
@@ -935,15 +937,15 @@ zarr_multiscale_sink_create(const struct zarr_multiscale_config* cfg)
     snprintf(group_path, sizeof(group_path), "%s", cfg->store_path);
 
   // Compute LOD plan for shapes.
-  // When dim0 is unbounded (size=0), use tile_size as a placeholder
+  // When dim0 is unbounded (size=0), use chunk_size as a placeholder
   // to get valid inner shapes. Dim0 shape will be updated dynamically.
   struct lod_plan plan = { 0 };
   uint64_t shape[MAX_ZARR_RANK];
-  uint64_t tile_shape[MAX_ZARR_RANK];
+  uint64_t chunk_shape[MAX_ZARR_RANK];
   for (int d = 0; d < cfg->rank; ++d) {
-    shape[d] = (cfg->dimensions[d].size == 0) ? cfg->dimensions[d].tile_size
+    shape[d] = (cfg->dimensions[d].size == 0) ? cfg->dimensions[d].chunk_size
                                               : cfg->dimensions[d].size;
-    tile_shape[d] = cfg->dimensions[d].tile_size;
+    chunk_shape[d] = cfg->dimensions[d].chunk_size;
   }
 
   uint32_t lod_mask = 0;
@@ -955,12 +957,8 @@ zarr_multiscale_sink_create(const struct zarr_multiscale_config* cfg)
 
   int max_lev = cfg->nlod > 0 ? cfg->nlod : LOD_MAX_LEVELS;
   CHECK(Fail,
-        lod_plan_init_shapes(&plan,
-                             cfg->rank,
-                             shape,
-                             tile_shape,
-                             lod_mask,
-                             max_lev) == 0);
+        lod_plan_init_shapes(
+          &plan, cfg->rank, shape, chunk_shape, lod_mask, max_lev) == 0);
 
   struct zarr_multiscale_sink* ms =
     (struct zarr_multiscale_sink*)calloc(1, sizeof(*ms));

@@ -271,7 +271,7 @@ vadd2_avx2(int rank,
 static int
 vadd_avx2_agrees_with_add(void)
 {
-  // Setup a tiling of a 640x480x3 array into tiles of size 10x10x1
+  // Setup a tiling of a 640x480x3 array into chunks of size 10x10x1
   const int rank = 6;
   const int shape[] = { 48, 10, 64, 10, 3, 1 };
   int transposed_strides[6] = { 0 };
@@ -377,7 +377,7 @@ vadd_avx2_agrees_with_add(void)
 static int
 vadd2_avx2_agrees_with_add(void)
 {
-  // Setup a tiling of a 640x480x3 array into tiles of size 10x10x1
+  // Setup a tiling of a 640x480x3 array into chunks of size 10x10x1
   const int rank = 6;
   const int shape[] = { 48, 10, 64, 10, 3, 1 };
   int transposed_strides[6] = { 0 };

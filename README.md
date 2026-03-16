@@ -8,20 +8,20 @@ large multidimensional arrays (tensors) using CUDA.
 Chucky implements a GPU-accelerated streaming pipeline for writing compressed,
 sharded [Zarr v3](https://zarr-specs.readthedocs.io/en/latest/v3/core/v3.0.html)
 stores from high-throughput data sources (2–5 GB/s). Zarr v3 shards pack
-multiple compressed tiles into a single file, reducing file count by orders of
-magnitude compared to one-file-per-tile layouts.
+multiple compressed chunks into a single file, reducing file count by orders of
+magnitude compared to one-file-per-chunk layouts.
 
 The pipeline stages are:
 
-1. **Tiling** — partition the input tensor into fixed-size tiles
-2. **Transpose** — scatter data so each tile is contiguous in memory
-3. **Compression** — batch-compress tiles on the GPU (zstd or lz4 via nvcomp)
-4. **Aggregation** — pack compressed tiles into shards with an index
+1. **Tiling** — partition the input tensor into fixed-size chunks
+2. **Transpose** — scatter data so each chunk is contiguous in memory
+3. **Compression** — batch-compress chunks on the GPU (zstd or lz4 via nvcomp)
+4. **Aggregation** — pack compressed chunks into shards with an index
 5. **Delivery** — D2H transfer and write shards to a Zarr v3 store
 
 Output is [OME-NGFF v0.5](https://ngff.openmicroscopy.org/0.5/) with multiscale
-LOD pyramids built on the fly: after the base level (L0) is tiled, the pipeline
-scatters, reduces, and tiles each coarser level before compressing and delivering
+LOD pyramids built on the fly: after the base level (L0) is chunked, the pipeline
+scatters, reduces, and chunks each coarser level before compressing and delivering
 it alongside L0.
 
 **Supported element types:** `uint16` and `float32`.
@@ -155,7 +155,7 @@ struct stream_metrics m = tile_stream_gpu_get_metrics(stream);
 tile_stream_gpu_destroy(stream);
 ```
 
-Configure the pipeline via `struct tile_stream_configuration` (codec, tile
+Configure the pipeline via `struct tile_stream_configuration` (codec, chunk
 dimensions, shard layout, LOD reduction method, etc.). See
 [`src/stream.h`](src/stream.h) for the full configuration struct.
 

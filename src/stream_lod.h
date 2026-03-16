@@ -32,7 +32,7 @@ void
 lod_state_destroy(struct lod_state* lod);
 
 // Run LOD pipeline for one epoch: gather -> reduce -> dim0 fold ->
-// morton-to-tiles. pool_epoch: pointer to this epoch's tile pool region (all
+// morton-to-chunks. pool_epoch: pointer to this epoch's chunk pool region (all
 // levels). *out_active_mask: set to bitmask of active LOD levels for this
 // epoch. Returns 0 on success, non-zero on error.
 int

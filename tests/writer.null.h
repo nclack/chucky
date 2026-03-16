@@ -6,9 +6,9 @@
 struct null_writer
 {
   struct writer base;
-  struct tile_writer tile_base;
+  struct tile_writer chunk_base;
   size_t bytes_discarded;
-  size_t tiles_discarded;
+  size_t chunks_discarded;
   size_t compressed_bytes;
 };
 

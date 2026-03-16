@@ -27,7 +27,7 @@ permute_sizes_k(const size_t* __restrict__ d_comp_sizes,
   if (i >= M)
     return;
 
-  // Unravel tile index i against lifted_shape, dot with lifted_strides
+  // Unravel chunk index i against lifted_shape, dot with lifted_strides
   uint64_t out = 0;
   uint64_t rest = i;
   for (int d = lifted_rank - 1; d >= 0; --d) {
@@ -55,7 +55,7 @@ write_total_k(size_t* __restrict__ d_offsets,
 // ---------------------------------------------------------------------------
 // Kernel 3: gather_k
 //   Block i copies d_comp_sizes[i] bytes from
-//     d_compressed + i * max_comp_tile_bytes
+//     d_compressed + i * max_comp_chunk_bytes
 //   to
 //     d_aggregated + d_offsets[d_perm[i]]
 // ---------------------------------------------------------------------------
@@ -65,14 +65,14 @@ gather_k(const void* __restrict__ d_compressed,
          const size_t* __restrict__ d_comp_sizes,
          const size_t* __restrict__ d_offsets,
          const uint32_t* __restrict__ d_perm,
-         size_t max_comp_tile_bytes)
+         size_t max_comp_chunk_bytes)
 {
   const uint64_t i = blockIdx.x;
   const size_t nbytes = d_comp_sizes[i];
   if (nbytes == 0)
     return;
 
-  const uint8_t* src = (const uint8_t*)d_compressed + i * max_comp_tile_bytes;
+  const uint8_t* src = (const uint8_t*)d_compressed + i * max_comp_chunk_bytes;
   uint8_t* dst = (uint8_t*)d_aggregated + d_offsets[d_perm[i]];
 
   for (size_t off = threadIdx.x; off < nbytes; off += blockDim.x)
@@ -81,13 +81,13 @@ gather_k(const void* __restrict__ d_compressed,
 
 // ---------------------------------------------------------------------------
 // Kernel: pad_shard_sizes_k
-//   Each thread handles one shard: sums its tile sizes, computes padding to
-//   reach the next page boundary, and adds it to the last tile's size.
+//   Each thread handles one shard: sums its chunk sizes, computes padding to
+//   reach the next page boundary, and adds it to the last chunk's size.
 //   This ensures shard-boundary offsets are page-aligned after prefix sum.
 // ---------------------------------------------------------------------------
 __global__ void
 pad_shard_sizes_k(size_t* __restrict__ d_permuted_sizes,
-                  uint64_t tps_inner,
+                  uint64_t cps_inner,
                   uint64_t num_shards,
                   size_t page_size)
 {
@@ -95,15 +95,15 @@ pad_shard_sizes_k(size_t* __restrict__ d_permuted_sizes,
   if (s >= num_shards)
     return;
 
-  uint64_t base = s * tps_inner;
+  uint64_t base = s * cps_inner;
   size_t total = 0;
-  for (uint64_t i = 0; i < tps_inner; i++)
+  for (uint64_t i = 0; i < cps_inner; i++)
     total += d_permuted_sizes[base + i];
 
   size_t aligned = ((total + page_size - 1) / page_size) * page_size;
   size_t padding = aligned - total;
   if (padding > 0)
-    d_permuted_sizes[base + tps_inner - 1] += padding;
+    d_permuted_sizes[base + cps_inner - 1] += padding;
 }
 
 // ---------------------------------------------------------------------------
@@ -113,58 +113,58 @@ pad_shard_sizes_k(size_t* __restrict__ d_permuted_sizes,
 extern "C" int
 aggregate_layout_compute(struct aggregate_layout* layout,
                          uint8_t rank,
-                         const uint64_t* tile_count,
-                         const uint64_t* tiles_per_shard,
-                         uint64_t tiles_per_epoch,
-                         size_t max_comp_tile_bytes,
+                         const uint64_t* chunk_count,
+                         const uint64_t* chunks_per_shard,
+                         uint64_t chunks_per_epoch,
+                         size_t max_comp_chunk_bytes,
                          size_t page_size)
 {
   uint64_t shard_count[HALF_MAX_RANK];
-  uint64_t eff_tps[HALF_MAX_RANK];
-  uint64_t tps_inner = 1;
+  uint64_t eff_cps[HALF_MAX_RANK];
+  uint64_t cps_inner = 1;
   uint8_t D;
 
   CHECK(Error, layout);
   CHECK(Error, rank >= 1);
   CHECK(Error, rank <= HALF_MAX_RANK);
-  CHECK(Error, tile_count);
-  CHECK(Error, tiles_per_shard);
+  CHECK(Error, chunk_count);
+  CHECK(Error, chunks_per_shard);
   for (int d = 1; d < rank; ++d)
-    CHECK(Error, tiles_per_shard[d] >= 1);
+    CHECK(Error, chunks_per_shard[d] >= 1);
 
   memset(layout, 0, sizeof(*layout));
-  layout->tiles_per_epoch = tiles_per_epoch;
-  layout->max_comp_tile_bytes = max_comp_tile_bytes;
+  layout->chunks_per_epoch = chunks_per_epoch;
+  layout->max_comp_chunk_bytes = max_comp_chunk_bytes;
 
   D = rank;
   layout->lifted_rank = 2 * (D - 1);
 
   // Build lifted shape and strides for dims 1..D-1
   // lifted_shape[2*k]   = shard_count[d]
-  // lifted_shape[2*k+1] = eff_tps[d]
+  // lifted_shape[2*k+1] = eff_cps[d]
   layout->covering_count = 1;
   for (int d = 1; d < D; ++d) {
-    eff_tps[d] = tiles_per_shard[d];
-    shard_count[d] = ceildiv(tile_count[d], eff_tps[d]);
+    eff_cps[d] = chunks_per_shard[d];
+    shard_count[d] = ceildiv(chunk_count[d], eff_cps[d]);
     int k = d - 1;
     layout->lifted_shape[2 * k] = shard_count[d];
-    layout->lifted_shape[2 * k + 1] = eff_tps[d];
-    layout->covering_count *= shard_count[d] * eff_tps[d];
+    layout->lifted_shape[2 * k + 1] = eff_cps[d];
+    layout->covering_count *= shard_count[d] * eff_cps[d];
   }
 
-  // tps_inner = prod(eff_tps[d] for d=1..D-1)
+  // cps_inner = prod(eff_cps[d] for d=1..D-1)
   for (int d = 1; d < D; ++d)
-    tps_inner *= eff_tps[d];
+    cps_inner *= eff_cps[d];
 
-  layout->tps_inner = tps_inner;
+  layout->cps_inner = cps_inner;
   layout->page_size = page_size;
 
-  // Shard strides: stride(sc[d]) = prod(sc[j] for j>d) * tps_inner
+  // Shard strides: stride(sc[d]) = prod(sc[j] for j>d) * cps_inner
   {
     uint64_t sc_accum = 1;
     for (int d = D - 1; d >= 1; --d) {
       int k = d - 1;
-      layout->lifted_strides[2 * k] = (int64_t)(sc_accum * tps_inner);
+      layout->lifted_strides[2 * k] = (int64_t)(sc_accum * cps_inner);
       sc_accum *= shard_count[d];
     }
   }
@@ -175,7 +175,7 @@ aggregate_layout_compute(struct aggregate_layout* layout,
     for (int d = D - 1; d >= 1; --d) {
       int k = d - 1;
       layout->lifted_strides[2 * k + 1] = (int64_t)tps_accum;
-      tps_accum *= eff_tps[d];
+      tps_accum *= eff_cps[d];
     }
   }
 
@@ -195,12 +195,10 @@ aggregate_layout_upload(struct aggregate_layout* layout)
   const size_t shape_bytes = layout->lifted_rank * sizeof(uint64_t);
   const size_t strides_bytes = layout->lifted_rank * sizeof(int64_t);
   CU(Error, cuMemAlloc((CUdeviceptr*)&layout->d_lifted_shape, shape_bytes));
+  CU(Error, cuMemAlloc((CUdeviceptr*)&layout->d_lifted_strides, strides_bytes));
   CU(Error,
-     cuMemAlloc((CUdeviceptr*)&layout->d_lifted_strides, strides_bytes));
-  CU(Error,
-     cuMemcpyHtoD((CUdeviceptr)layout->d_lifted_shape,
-                  layout->lifted_shape,
-                  shape_bytes));
+     cuMemcpyHtoD(
+       (CUdeviceptr)layout->d_lifted_shape, layout->lifted_shape, shape_bytes));
   CU(Error,
      cuMemcpyHtoD((CUdeviceptr)layout->d_lifted_strides,
                   layout->lifted_strides,
@@ -214,15 +212,19 @@ Error:
 extern "C" int
 aggregate_layout_init(struct aggregate_layout* layout,
                       uint8_t rank,
-                      const uint64_t* tile_count,
-                      const uint64_t* tiles_per_shard,
-                      uint64_t tiles_per_epoch,
-                      size_t max_comp_tile_bytes,
+                      const uint64_t* chunk_count,
+                      const uint64_t* chunks_per_shard,
+                      uint64_t chunks_per_epoch,
+                      size_t max_comp_chunk_bytes,
                       size_t page_size)
 {
-  if (aggregate_layout_compute(
-        layout, rank, tile_count, tiles_per_shard, tiles_per_epoch,
-        max_comp_tile_bytes, page_size))
+  if (aggregate_layout_compute(layout,
+                               rank,
+                               chunk_count,
+                               chunks_per_shard,
+                               chunks_per_epoch,
+                               max_comp_chunk_bytes,
+                               page_size))
     return 1;
   if (aggregate_layout_upload(layout)) {
     aggregate_layout_destroy(layout);
@@ -266,7 +268,7 @@ aggregate_by_shard_async(const struct aggregate_layout* layout,
                          struct aggregate_slot* slot,
                          CUstream stream)
 {
-  const uint64_t M = layout->tiles_per_epoch;
+  const uint64_t M = layout->chunks_per_epoch;
   const uint64_t C = layout->covering_count;
   cudaStream_t cuda_stream = (cudaStream_t)stream;
 
@@ -299,11 +301,11 @@ aggregate_by_shard_async(const struct aggregate_layout* layout,
 
   // Pass 1.5: pad shard sizes for page alignment
   if (layout->page_size > 0) {
-    uint64_t num_shards = C / layout->tps_inner;
+    uint64_t num_shards = C / layout->cps_inner;
     const int block = 256;
     const int grid = (int)((num_shards + block - 1) / block);
     pad_shard_sizes_k<<<grid, block, 0, cuda_stream>>>(
-      slot->d_permuted_sizes, layout->tps_inner, num_shards, layout->page_size);
+      slot->d_permuted_sizes, layout->cps_inner, num_shards, layout->page_size);
   }
 
   // Pass 2: exclusive prefix sum on C elements
@@ -330,7 +332,7 @@ aggregate_by_shard_async(const struct aggregate_layout* layout,
                                               d_comp_sizes,
                                               slot->d_offsets,
                                               slot->d_perm,
-                                              layout->max_comp_tile_bytes);
+                                              layout->max_comp_chunk_bytes);
   }
 
   return 0;
@@ -360,7 +362,7 @@ permute_sizes_batch_k(const size_t* __restrict__ d_comp_sizes,
 }
 
 // gather_batch_k:
-//   Block i copies compressed tile gather[i] to output position perm[i].
+//   Block i copies compressed chunk gather[i] to output position perm[i].
 __global__ void
 gather_batch_k(const void* __restrict__ d_compressed,
                void* __restrict__ d_aggregated,
@@ -368,7 +370,7 @@ gather_batch_k(const void* __restrict__ d_compressed,
                const size_t* __restrict__ d_offsets,
                const uint32_t* __restrict__ d_gather,
                const uint32_t* __restrict__ d_perm,
-               size_t max_comp_tile_bytes)
+               size_t max_comp_chunk_bytes)
 {
   const uint64_t i = blockIdx.x;
   const uint32_t src_idx = d_gather[i];
@@ -377,7 +379,7 @@ gather_batch_k(const void* __restrict__ d_compressed,
     return;
 
   const uint8_t* src =
-    (const uint8_t*)d_compressed + (uint64_t)src_idx * max_comp_tile_bytes;
+    (const uint8_t*)d_compressed + (uint64_t)src_idx * max_comp_chunk_bytes;
   uint8_t* dst = (uint8_t*)d_aggregated + d_offsets[d_perm[i]];
 
   for (size_t off = threadIdx.x; off < nbytes; off += blockDim.x)
@@ -390,12 +392,12 @@ gather_batch_k(const void* __restrict__ d_compressed,
 
 extern "C" int
 aggregate_batch_slot_init(struct aggregate_slot* slot,
-                          uint64_t batch_tile_count,
+                          uint64_t batch_chunk_count,
                           uint64_t batch_covering_count,
                           size_t comp_pool_bytes)
 {
   uint64_t C = batch_covering_count;
-  uint64_t M = batch_tile_count;
+  uint64_t M = batch_chunk_count;
 
   CHECK(Error, slot);
   memset(slot, 0, sizeof(*slot));
@@ -442,14 +444,14 @@ aggregate_batch_by_shard_async(void* d_compressed,
                                size_t* d_comp_sizes,
                                const uint32_t* d_batch_gather,
                                const uint32_t* d_batch_perm,
-                               uint64_t batch_tile_count,
+                               uint64_t batch_chunk_count,
                                uint64_t batch_covering_count,
-                               size_t max_comp_tile_bytes,
+                               size_t max_comp_chunk_bytes,
                                const struct aggregate_layout* layout,
                                struct aggregate_slot* slot,
                                CUstream stream)
 {
-  const uint64_t N = batch_tile_count;
+  const uint64_t N = batch_chunk_count;
   const uint64_t C = batch_covering_count;
   cudaStream_t cuda_stream = (cudaStream_t)stream;
 
@@ -476,11 +478,11 @@ aggregate_batch_by_shard_async(void* d_compressed,
                        stream));
 
   // Pass 1.5: pad shard sizes for page alignment.
-  // Pad at shard-group boundaries (tps_inner * batch_count entries per group)
+  // Pad at shard-group boundaries (cps_inner * batch_count entries per group)
   // so all epochs for one shard are contiguous and can be written in one call.
-  if (layout->page_size > 0 && layout->tps_inner > 0) {
-    uint64_t num_shards = layout->covering_count / layout->tps_inner;
-    uint64_t tps_group = C / num_shards; // tps_inner * batch_count
+  if (layout->page_size > 0 && layout->cps_inner > 0) {
+    uint64_t num_shards = layout->covering_count / layout->cps_inner;
+    uint64_t tps_group = C / num_shards; // cps_inner * batch_count
     const int block = 256;
     const int grid = (int)((num_shards + block - 1) / block);
     pad_shard_sizes_k<<<grid, block, 0, cuda_stream>>>(
@@ -511,7 +513,7 @@ aggregate_batch_by_shard_async(void* d_compressed,
                                                     slot->d_offsets,
                                                     d_batch_gather,
                                                     d_batch_perm,
-                                                    max_comp_tile_bytes);
+                                                    max_comp_chunk_bytes);
   }
 
   return 0;

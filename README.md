@@ -8,8 +8,8 @@ large multidimensional arrays (tensors) using CUDA.
 Chucky implements a GPU-accelerated streaming pipeline for writing compressed,
 sharded [Zarr v3](https://zarr-specs.readthedocs.io/en/latest/v3/core/v3.0.html)
 stores from high-throughput data sources (2–5 GB/s). Zarr v3 shards pack
-multiple compressed chunks into a single file, reducing file count by orders of
-magnitude compared to one-file-per-chunk layouts.
+multiple compressed tiles into a single file, reducing file count by orders of
+magnitude compared to one-file-per-tile layouts.
 
 The pipeline stages are:
 
@@ -163,5 +163,5 @@ dimensions, shard layout, LOD reduction method, etc.). See
 
 Pre-release. Functional streaming pipeline with multiscale LOD support and Zarr
 v3 sharded output. The API may change without notice. Under active development.
-Plan to use this as a future backbone for 
+I plan to use this as a future backbone for 
 [acquire-zarr](https://github.com/acquire-project/acquire-zarr).

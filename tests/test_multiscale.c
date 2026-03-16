@@ -211,16 +211,16 @@ Fail1:
   return 1;
 }
 
-// --- Dim0 LOD correctness: L0 must match spatial-only multiscale ---
+// --- Dim0 LOD correctness: L0 must match inner-only multiscale ---
 
 static int
 test_dim0_l0_correctness(void)
 {
   log_info("=== test_dim0_l0_correctness ===");
 
-  // 5D: t, z, y, x, c. Spatial LOD on z, y, x.
+  // 5D: t, z, y, x, c. Inner LOD on z, y, x.
   // 8 epochs along t so dim0 levels 1+ accumulate and emit.
-  const struct dimension dims_spatial[] = {
+  const struct dimension dims_inner[] = {
     { .size = 8,
       .tile_size = 2,
       .tiles_per_shard = 2,
@@ -282,19 +282,19 @@ test_dim0_l0_correctness(void)
       .storage_position = 4 },
   };
   const uint8_t rank = 5;
-  const size_t total_elements = dim_total_elements(dims_spatial, rank);
+  const size_t total_elements = dim_total_elements(dims_inner, rank);
 
   // Compute number of L0 shards
   int num_shards = 1;
   for (int d = 0; d < rank; ++d) {
-    int tile_count = (int)(dims_spatial[d].size / dims_spatial[d].tile_size);
-    int shard_count = (int)(tile_count / dims_spatial[d].tiles_per_shard);
+    int tile_count = (int)(dims_inner[d].size / dims_inner[d].tile_size);
+    int shard_count = (int)(tile_count / dims_inner[d].tiles_per_shard);
     num_shards *= shard_count;
   }
   const size_t shard_cap = total_elements * sizeof(uint16_t) + 4096;
   log_info("  total: %zu elements, %d L0 shards", total_elements, num_shards);
 
-  // --- Run 1: spatial-only multiscale (baseline) ---
+  // --- Run 1: inner-only multiscale (baseline) ---
   struct test_shard_sink baseline_sink;
   test_sink_init(&baseline_sink, num_shards, shard_cap);
 
@@ -304,13 +304,13 @@ test_dim0_l0_correctness(void)
       .buffer_capacity_bytes = 4 << 20,
       .dtype = lod_dtype_u16,
       .rank = rank,
-      .dimensions = dims_spatial,
+      .dimensions = dims_inner,
       .codec = CODEC_ZSTD,
       .shard_sink = &baseline_sink.base,
       .reduce_method = lod_reduce_mean,
     };
     CHECK(Fail1, (s = tile_stream_gpu_create(&config)) != NULL);
-    xor_pattern_init(dims_spatial, rank, 2);
+    xor_pattern_init(dims_inner, rank, 2);
     CHECK(Fail1b, pump_data(tile_stream_gpu_writer(s), total_elements, fill_xor) == 0);
     CHECK(Fail1b, tile_stream_gpu_cursor(s) == total_elements);
     tile_stream_gpu_destroy(s);
@@ -323,7 +323,7 @@ test_dim0_l0_correctness(void)
   }
 
 Run2d:
-  // --- Run 2: spatial + dim0 multiscale ---
+  // --- Run 2: inner + dim0 multiscale ---
   ;
   struct test_shard_sink dim0_sink;
   test_sink_init(&dim0_sink, num_shards, shard_cap);
@@ -425,9 +425,9 @@ test_dim0_multi_epoch_levels(void)
 {
   log_info("=== test_dim0_multi_epoch_levels ===");
 
-  // 5D: t, z, y, x, c. Dim0 + spatial downsample.
+  // 5D: t, z, y, x, c. Dim0 + inner downsample.
   // 16 epochs along t to trigger multiple dim0 emissions.
-  // Spatial dims 32 with tile 8 → 4 tiles → level 1 has 16 (≥ tile 8) → nlod≥2
+  // Inner dims 32 with tile 8 → 4 tiles → level 1 has 16 (≥ tile 8) → nlod≥2
   const struct dimension dims[] = {
     { .size = 32,
       .tile_size = 2,

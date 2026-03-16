@@ -411,7 +411,7 @@ write_array_metadata(const char* array_dir,
   jw_key(&jw, "data_type");
   jw_string(&jw, zarr_dtype_string(data_type));
 
-  // chunk_grid: shard shape = tile_size * tiles_per_shard
+  // chunk_grid (zarr spec): each "chunk" here is a shard = tile_size * tiles_per_shard
   jw_key(&jw, "chunk_grid");
   jw_object_begin(&jw);
   jw_key(&jw, "name");
@@ -446,6 +446,7 @@ write_array_metadata(const char* array_dir,
   jw_key(&jw, "configuration");
   jw_object_begin(&jw);
 
+  // chunk_shape (zarr spec): inner chunk = tile shape
   jw_key(&jw, "chunk_shape");
   jw_array_begin(&jw);
   for (int d = 0; d < rank; ++d)
@@ -608,10 +609,10 @@ zarr_sink_create(const struct zarr_config* cfg)
            cfg->array_name);
 
   // Create directory tree: ensure shard directories exist.
-  // When dim0 is unbounded (size=0), only pre-create spatial dirs for
+  // When dim0 is unbounded (size=0), only pre-create inner dirs for
   // shard_epoch=0; further dirs are created on-demand in zarr_sink_open.
   {
-    uint64_t total_shards = zs->shard_inner_count; // just spatial for epoch 0
+    uint64_t total_shards = zs->shard_inner_count; // just inner dims for epoch 0
     if (cfg->dimensions[0].size > 0)
       total_shards *= zs->shard_count[0]; // bounded: create all
 
@@ -935,7 +936,7 @@ zarr_multiscale_sink_create(const struct zarr_multiscale_config* cfg)
 
   // Compute LOD plan for shapes.
   // When dim0 is unbounded (size=0), use tile_size as a placeholder
-  // to get valid spatial shapes. Dim0 shape will be updated dynamically.
+  // to get valid inner shapes. Dim0 shape will be updated dynamically.
   struct lod_plan plan = { 0 };
   uint64_t shape[MAX_ZARR_RANK];
   uint64_t tile_shape[MAX_ZARR_RANK];

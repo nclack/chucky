@@ -495,11 +495,11 @@ lod_state_destroy(struct lod_state* lod)
 
 // --- LOD runtime ---
 
-// Temporal fold + emit for dim0 downsampling.
+// Dim0 fold + emit for dim0 downsampling.
 //
-// Each LOD level l>0 accumulates 2^l spatial epochs before emitting.
+// Each LOD level l>0 accumulates 2^l inner-reduced epochs before emitting.
 // A running accumulator (wider type for mean, native for min/max) is
-// maintained per level. On each epoch: (1) fold new spatial data into
+// maintained per level. On each epoch: (1) fold new inner-reduced data into
 // the accumulator via lod_accum_fold_fused, (2) for any level whose
 // count reaches its period, emit the finalized result back into the
 // morton buffer and reset the counter.

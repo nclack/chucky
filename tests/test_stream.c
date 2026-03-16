@@ -205,13 +205,13 @@ Fail0:
   return 1;
 }
 
-// Test: feed data in small chunks (e.g., 7 elements at a time)
+// Test: feed data in small pieces (e.g., 7 elements at a time)
 // to exercise buffer-fill + dispatch + epoch-crossing logic.
 // Uses CODEC_NONE shard path.
 static int
-test_stream_chunked_append(void)
+test_stream_incremental_append(void)
 {
-  log_info("=== test_stream_chunked_append ===");
+  log_info("=== test_stream_incremental_append ===");
 
   struct dimension dims[3];
   make_test_dims_3d(dims);
@@ -239,11 +239,11 @@ test_stream_chunked_append(void)
   for (int i = 0; i < total; ++i)
     src[i] = (uint16_t)i;
 
-  // Feed in chunks of 7 elements
-  const int chunk_elements = 7;
+  // Feed in pieces of 7 elements
+  const int step_size = 7;
 
-  for (int off = 0; off < total; off += chunk_elements) {
-    int n = chunk_elements;
+  for (int off = 0; off < total; off += step_size) {
+    int n = step_size;
     if (off + n > total)
       n = total - off;
 
@@ -1012,7 +1012,7 @@ Done:
 
 RUN_GPU_TESTS(
   { "single_append", test_stream_single_append },
-  { "chunked_append", test_stream_chunked_append },
+  { "incremental_append", test_stream_incremental_append },
   { "compressed_roundtrip", test_stream_compressed_roundtrip },
   { "lz4_roundtrip", test_stream_lz4_roundtrip },
   { "zero_length_append", test_stream_zero_length_append },

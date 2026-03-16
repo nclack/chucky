@@ -250,8 +250,7 @@ compress_agg_kick(struct compress_agg_stage* stage,
   // Compress all epochs as one batch
   {
     uint64_t batch_tiles = (uint64_t)n_epochs * levels->total_tiles;
-    // tile_bytes needs bpe — derive from codec chunk_size / tile_stride
-    size_t real_tile_bytes = stage->codec.chunk_size;
+    size_t real_tile_bytes = stage->codec.tile_bytes;
     CHECK(Error,
           kick_compress(
             stage, fc, (void*)in->pool_buf, batch_tiles, real_tile_bytes,

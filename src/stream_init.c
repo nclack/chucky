@@ -334,7 +334,7 @@ validate_config(const struct tile_stream_configuration* config)
     }
     if (dim0_ds && (lod_mask & ~1u) == 0) {
       log_error(
-        "dim0 downsample requires at least one spatial dim downsampled");
+        "dim0 downsample requires at least one inner dim downsampled");
       goto Fail;
     }
   }
@@ -432,8 +432,8 @@ compute_stream_layouts(const struct tile_stream_configuration* config,
 
   // --- Codec-derived max_output_size ---
   {
-    const size_t chunk_bytes = out->l0.tile_stride * bpe;
-    out->max_output_size = codec_max_output_size(config->codec, chunk_bytes);
+    const size_t tile_bytes = out->l0.tile_stride * bpe;
+    out->max_output_size = codec_max_output_size(config->codec, tile_bytes);
     if (config->codec != CODEC_NONE && out->max_output_size == 0)
       goto Fail;
   }
@@ -700,10 +700,10 @@ tile_stream_gpu_memory_estimate(const struct tile_stream_configuration* config,
   const int nlod = cl.levels.nlod;
   const size_t max_output_size = cl.max_output_size;
 
-  const size_t chunk_bytes = tile_stride * bpe;
+  const size_t tile_bytes = tile_stride * bpe;
   const uint64_t codec_batch = (uint64_t)K * total_tiles;
   const size_t nvcomp_temp =
-    codec_temp_bytes(config->codec, chunk_bytes, codec_batch);
+    codec_temp_bytes(config->codec, tile_bytes, codec_batch);
 
   const size_t staging_bytes = 2 * buffer_capacity_bytes;
   const size_t staging_host = 2 * buffer_capacity_bytes;

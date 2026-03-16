@@ -152,11 +152,11 @@ Fail:
   return ok ? 0 : 1;
 }
 
-// Chunked ingest: feed one epoch in two halves, verify pool.
+// Incremental ingest: feed one epoch in two halves, verify pool.
 static int
-test_ingest_chunked(void)
+test_ingest_incremental(void)
 {
-  log_info("=== test_ingest_chunked ===");
+  log_info("=== test_ingest_incremental ===");
 
   const int rank = 3;
   const uint64_t dim_sizes[] = { 4, 4, 6 };
@@ -335,6 +335,6 @@ Fail:
 
 RUN_GPU_TESTS(
   { "ingest_single_epoch", test_ingest_single_epoch },
-  { "ingest_chunked", test_ingest_chunked },
+  { "ingest_incremental", test_ingest_incremental },
   { "ingest_multiscale", test_ingest_multiscale },
 )

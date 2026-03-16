@@ -116,11 +116,11 @@ fill_xor(uint16_t* buf, size_t count, size_t offset, size_t total)
   (void)total;
   for (size_t done = 0; done < count;) {
     size_t src_off = (offset + done) % xor_pattern_len;
-    size_t chunk = xor_pattern_len - src_off;
-    if (chunk > count - done)
-      chunk = count - done;
-    memcpy(buf + done, xor_pattern_buf + src_off, chunk * sizeof(uint16_t));
-    done += chunk;
+    size_t piece = xor_pattern_len - src_off;
+    if (piece > count - done)
+      piece = count - done;
+    memcpy(buf + done, xor_pattern_buf + src_off, piece * sizeof(uint16_t));
+    done += piece;
   }
 }
 

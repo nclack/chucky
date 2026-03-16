@@ -178,7 +178,7 @@ the aggregation step.
 
 After compression, tiles sit in the pool in the order they were scattered
 into — epoch-major, then tile-major within each epoch. But shards group tiles
-by spatial locality, which is a different order. A GPU **aggregation** kernel
+by tile locality, which is a different order. A GPU **aggregation** kernel
 reorders compressed tiles into shard-major order using a three-pass algorithm:
 
 1. **Permute sizes.** Compute the shard-major destination for each tile and
@@ -237,21 +237,21 @@ Computing this pyramid during streaming raises several challenges:
   hierarchical $2\times$ reduction naturally assumes they are. The algorithm
   must handle arbitrary shapes without introducing artifacts at boundaries.
 
-- **The append dimension spans epochs.** The spatial dimensions within an epoch
-  are fully available and can be reduced immediately. But the append dimension
-  extends across epochs: a $2\times$ reduction at level $l$ requires data from
-  $2^l$ consecutive epochs. Buffering all of these is infeasible — for a
-  256-extent dimension, the pyramid has 8 levels, requiring 256 epochs of
-  buffering.
+- **The append dimension spans epochs.** The inner dimensions — all dimensions
+  except the append dimension — are fully available within an epoch and can be
+  reduced immediately. But the append dimension extends across epochs: a
+  $2\times$ reduction at level $l$ requires data from $2^l$ consecutive epochs.
+  Buffering all of these is infeasible — for a 256-extent dimension, the
+  pyramid has 8 levels, requiring 256 epochs of buffering.
 
 - **Separability.** Because of the epoch constraint, the reduction along the
-  append dimension must be computed independently from the spatial reduction.
+  append dimension must be computed independently from the inner reduction.
   This factoring is only exact for **separable** reduction methods — those
   where the result is the same whether applied jointly or in independent
   passes.
 
 The design addresses these with two mechanisms: compacted morton order for
-efficient spatial reduction on the GPU, and a separable fold for the append
+efficient inner reduction on the GPU, and a separable fold for the append
 dimension.
 
 #### Compacted morton order
@@ -358,26 +358,26 @@ tile pool alongside L0.
 
 The pipeline splits the multiscale reduction into two independent phases:
 
-1. **Spatial reduction** (within an epoch): the morton-order reduce handles all
-   downsampled dimensions except the append dimension. This runs every epoch
-   and produces spatially reduced data at each level.
+1. **Inner reduction** (within an epoch): the morton-order reduce handles all
+   downsampled inner dimensions. This runs every epoch and produces reduced
+   data at each level.
 
-2. **Temporal fold** (across epochs along the append dimension): a per-level
-   accumulator collects the spatially reduced output. When $2^l$ epochs have
+2. **Outer fold** (across epochs, along the append dimension): a per-level
+   accumulator collects the inner-reduced output. When $2^l$ epochs have
    been accumulated for level $l$, the level emits its reduced tiles and
    resets. This keeps the memory cost proportional to a single epoch regardless
    of pyramid depth.
 
 This factoring constrains the choice of reduction method. Mean, min, and max
 are separable — the factored result equals the joint result. Median is not: the
-median of spatial medians is not in general the joint median. When median is
+median of inner medians is not in general the joint median. When median is
 configured, the pipeline computes it correctly within each phase, but the
 composition across phases is an approximation — it can differ from the joint
 median by up to the inter-quartile range of the reduction block.
 
-The two phases can use different reduction operators (e.g., mean spatially and
-max temporally), which is useful when the semantics of the append dimension
-differ from the spatial dimensions.
+The two phases can use different reduction operators (e.g., mean for the inner
+reduction and max for the outer fold), which is useful when the semantics of
+the append dimension differ from the inner dimensions.
 
 ## Implementation
 
@@ -443,7 +443,7 @@ synchronization overlap every stage.
 ### Pipeline stages
 
 **Ingest (H2D stream).** Host data is copied into one of two pinned staging
-buffers. When a buffer is full (or the data chunk ends), it is transferred to
+buffers. When a buffer is full (or the data segment ends), it is transferred to
 the GPU asynchronously. The H2D stream waits on the prior scatter to finish
 before overwriting the staging area on the device.
 
@@ -456,7 +456,7 @@ linearly for the LOD pipeline, and L0 scatter happens as part of the LOD stage.
 1. *Gather* — reorder elements into compacted morton order
 2. *Reduce* — apply the reduction operator across $2 \times \ldots \times 2$
    blocks for each level
-3. *Dim0 fold* — accumulate into temporal reduction buffers
+3. *Dim0 fold* — accumulate into dim0 reduction buffers
 4. *Morton-to-tiles* — unravel morton indices and ravel with per-level
    tile-major strides to scatter reduced data into tile regions
 
@@ -552,8 +552,8 @@ A stream is configured by filling a `tile_stream_configuration`:
 | `epochs_per_batch` | 0 or power of 2 | Epochs per batch ($K$); 0 = auto |
 | `target_batch_tiles` | > 0 | Target tile count for auto-$K$ (default 1024) |
 | `shard_sink` | `struct shard_sink*` | Downstream storage factory |
-| `reduce_method` | mean / median / min / max | Spatial LOD reduction |
-| `dim0_reduce_method` | (same) | Temporal LOD reduction |
+| `reduce_method` | mean / median / min / max | Inner LOD reduction |
+| `dim0_reduce_method` | (same) | Dim0 LOD reduction |
 | `shard_alignment` | 0 or page size | Inter-shard padding for direct I/O |
 | `metadata_update_interval_s` | ≥ 0 | Seconds between metadata refreshes |
 
@@ -708,6 +708,9 @@ $2^{D'}$-element reduction blocks into contiguous runs.
 
 **Epoch.** The set of tiles sharing the same append-dimension tile index $t_0$.
 One epoch's worth of data fills $M$ tile slots in the pool.
+
+**Inner dimensions.** All dimensions except the append dimension — the
+faster-varying dimensions whose full extent is available within a single epoch.
 
 **Lifted shape.** The rank-$2D$ shape $(t_0, n_0, \ldots, t_{D-1}, n_{D-1})$
 that separates tile identity from intra-tile position.

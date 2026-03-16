@@ -12,7 +12,7 @@
 - [ ] ci/cd
 - [ ] make a report to characterize performance/memory by chunk size
 - [ ] metadata
-- [ ] fix "temporal" vs "spatial" naming.
+- [x] fix "temporal" vs "spatial" naming.
 - [ ] fix uses of the work chunk, then fix uses of the word tile.
 - [x] boundary conditions for dim0 downsampling - it's a ceil like it should be
 - [x] lod for dim0
@@ -36,6 +36,11 @@
 
 ## 2026-03-16
 
+Looking at api examples and cleaning up a little bit.
+
+Resolving spatial/temporal naming. Now "outer"/"dim0"/"append" and "inner."
+
+Fixing uses of the word chunk that are a bit off target.
 
 ## 2026-03-15
 

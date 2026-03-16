@@ -84,7 +84,7 @@ struct lod_state
   CUevent t_dim0_end;
   CUevent t_end;
 
-  // Dim0 (temporal) LOD accumulation state.
+  // Dim0 LOD accumulation state.
   // Single buffer covering all LOD levels 1+, same packed layout as d_morton.
   struct
   {
@@ -107,8 +107,8 @@ struct gpu_streams
 struct level_geometry
 {
   int nlod;                             // number of LOD levels
-  int enable_multiscale;                // has spatial LOD
-  int dim0_downsample;                  // has temporal LOD
+  int enable_multiscale;                // has inner LOD
+  int dim0_downsample;                  // has dim0 LOD
   uint64_t total_tiles;                 // sum across all levels per epoch
   uint64_t tile_offset[LOD_MAX_LEVELS]; // first tile index per level
   uint64_t tile_count[LOD_MAX_LEVELS];  // tiles_per_epoch per level

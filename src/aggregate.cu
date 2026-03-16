@@ -55,7 +55,7 @@ write_total_k(size_t* __restrict__ d_offsets,
 // ---------------------------------------------------------------------------
 // Kernel 3: gather_k
 //   Block i copies d_comp_sizes[i] bytes from
-//     d_compressed + i * max_comp_chunk_bytes
+//     d_compressed + i * max_comp_tile_bytes
 //   to
 //     d_aggregated + d_offsets[d_perm[i]]
 // ---------------------------------------------------------------------------
@@ -65,14 +65,14 @@ gather_k(const void* __restrict__ d_compressed,
          const size_t* __restrict__ d_comp_sizes,
          const size_t* __restrict__ d_offsets,
          const uint32_t* __restrict__ d_perm,
-         size_t max_comp_chunk_bytes)
+         size_t max_comp_tile_bytes)
 {
   const uint64_t i = blockIdx.x;
   const size_t nbytes = d_comp_sizes[i];
   if (nbytes == 0)
     return;
 
-  const uint8_t* src = (const uint8_t*)d_compressed + i * max_comp_chunk_bytes;
+  const uint8_t* src = (const uint8_t*)d_compressed + i * max_comp_tile_bytes;
   uint8_t* dst = (uint8_t*)d_aggregated + d_offsets[d_perm[i]];
 
   for (size_t off = threadIdx.x; off < nbytes; off += blockDim.x)
@@ -116,7 +116,7 @@ aggregate_layout_compute(struct aggregate_layout* layout,
                          const uint64_t* tile_count,
                          const uint64_t* tiles_per_shard,
                          uint64_t tiles_per_epoch,
-                         size_t max_chunk_bytes,
+                         size_t max_comp_tile_bytes,
                          size_t page_size)
 {
   uint64_t shard_count[HALF_MAX_RANK];
@@ -134,7 +134,7 @@ aggregate_layout_compute(struct aggregate_layout* layout,
 
   memset(layout, 0, sizeof(*layout));
   layout->tiles_per_epoch = tiles_per_epoch;
-  layout->max_chunk_bytes = max_chunk_bytes;
+  layout->max_comp_tile_bytes = max_comp_tile_bytes;
 
   D = rank;
   layout->lifted_rank = 2 * (D - 1);
@@ -217,12 +217,12 @@ aggregate_layout_init(struct aggregate_layout* layout,
                       const uint64_t* tile_count,
                       const uint64_t* tiles_per_shard,
                       uint64_t tiles_per_epoch,
-                      size_t max_chunk_bytes,
+                      size_t max_comp_tile_bytes,
                       size_t page_size)
 {
   if (aggregate_layout_compute(
         layout, rank, tile_count, tiles_per_shard, tiles_per_epoch,
-        max_chunk_bytes, page_size))
+        max_comp_tile_bytes, page_size))
     return 1;
   if (aggregate_layout_upload(layout)) {
     aggregate_layout_destroy(layout);
@@ -321,7 +321,7 @@ aggregate_by_shard_async(const struct aggregate_layout* layout,
       slot->d_offsets, slot->d_permuted_sizes, C);
   }
 
-  // Pass 3: gather compressed chunks in shard order
+  // Pass 3: gather compressed tiles in shard order
   {
     const int block = 256;
     const int grid = (int)M;
@@ -330,7 +330,7 @@ aggregate_by_shard_async(const struct aggregate_layout* layout,
                                               d_comp_sizes,
                                               slot->d_offsets,
                                               slot->d_perm,
-                                              layout->max_chunk_bytes);
+                                              layout->max_comp_tile_bytes);
   }
 
   return 0;
@@ -368,7 +368,7 @@ gather_batch_k(const void* __restrict__ d_compressed,
                const size_t* __restrict__ d_offsets,
                const uint32_t* __restrict__ d_gather,
                const uint32_t* __restrict__ d_perm,
-               size_t max_comp_chunk_bytes)
+               size_t max_comp_tile_bytes)
 {
   const uint64_t i = blockIdx.x;
   const uint32_t src_idx = d_gather[i];
@@ -377,7 +377,7 @@ gather_batch_k(const void* __restrict__ d_compressed,
     return;
 
   const uint8_t* src =
-    (const uint8_t*)d_compressed + (uint64_t)src_idx * max_comp_chunk_bytes;
+    (const uint8_t*)d_compressed + (uint64_t)src_idx * max_comp_tile_bytes;
   uint8_t* dst = (uint8_t*)d_aggregated + d_offsets[d_perm[i]];
 
   for (size_t off = threadIdx.x; off < nbytes; off += blockDim.x)
@@ -444,7 +444,7 @@ aggregate_batch_by_shard_async(void* d_compressed,
                                const uint32_t* d_batch_perm,
                                uint64_t batch_tile_count,
                                uint64_t batch_covering_count,
-                               size_t max_chunk_bytes,
+                               size_t max_comp_tile_bytes,
                                const struct aggregate_layout* layout,
                                struct aggregate_slot* slot,
                                CUstream stream)
@@ -501,7 +501,7 @@ aggregate_batch_by_shard_async(void* d_compressed,
       slot->d_offsets, slot->d_permuted_sizes, C);
   }
 
-  // Pass 3: gather compressed chunks using LUTs
+  // Pass 3: gather compressed tiles using LUTs
   {
     const int block = 256;
     const int grid = (int)N;
@@ -511,7 +511,7 @@ aggregate_batch_by_shard_async(void* d_compressed,
                                                     slot->d_offsets,
                                                     d_batch_gather,
                                                     d_batch_perm,
-                                                    max_chunk_bytes);
+                                                    max_comp_tile_bytes);
   }
 
   return 0;

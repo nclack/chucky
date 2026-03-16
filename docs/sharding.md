@@ -14,7 +14,7 @@ The pipeline after this change:
 input → H2D → scatter → compress → aggregate-by-shard → D2H → shard index bookkeeping → emit
 ```
 
-The aggregate-by-shard step is a GPU kernel. It reorders compressed chunks into
+The aggregate-by-shard step is a GPU kernel. It reorders compressed tiles into
 shard-major order using the same lifted-stride technique that the scatter kernel
 uses for elements, but applied to tile indices instead. The host receives
 pre-grouped data and maintains shard indices.
@@ -126,13 +126,13 @@ strides are derived from the shard-major shape.
 
 ## GPU Aggregation Kernel
 
-After compression, the GPU has $M$ compressed chunks. Chunk $i$ has:
-- Data at `d_compressed + i * max_comp_chunk_bytes`
+After compression, the GPU has $M$ compressed tiles. Tile $i$ has:
+- Data at `d_compressed + i * max_comp_tile_bytes`
 - Actual size `d_comp_sizes[i]`
 
 The aggregation kernel produces:
 - `d_aggregated`: compacted bytes in shard-major tile order
-- `d_offsets[0..M]`: byte offset of each chunk in `d_aggregated`
+- `d_offsets[0..M]`: byte offset of each tile in `d_aggregated`
 
 ### Algorithm
 
@@ -143,11 +143,11 @@ The aggregation kernel produces:
 `d_offsets[0..M]` where `d_offsets[M]` is the total compressed bytes.
 
 **Pass 3: Gather.** For each tile $i$, copy `d_comp_sizes[i]` bytes from
-`d_compressed + i * max_comp_chunk_bytes` to
+`d_compressed + i * max_comp_tile_bytes` to
 `d_aggregated + d_offsets[P[i]]`.
 
-This is a segmented compaction: chunks are reordered and packed densely,
-eliminating the padding between chunks that `max_comp_chunk_bytes` spacing
+This is a segmented compaction: tiles are reordered and packed densely,
+eliminating the padding between tiles that `max_comp_tile_bytes` spacing
 introduces.
 
 ### Complexity
@@ -217,7 +217,7 @@ After `tiles_per_shard[0]` tile-epochs:
 
 When the array does not evenly divide into shards, edge shards receive fewer
 tiles. Unfilled index slots remain at `(0xFFFFFFFFFFFFFFFF, 0xFFFFFFFFFFFFFFFF)`,
-which the zarr spec defines as "empty chunk" (filled with the fill value on
+which the zarr spec defines as "empty tile" (filled with the fill value on
 read). No special logic is needed — this is the default initialization.
 
 The last shard epoch along $d=0$ may also contain fewer than `tps[0]` tile-epochs.
@@ -226,7 +226,7 @@ The `flush()` path emits these partial shards.
 ### Memory
 
 Active memory = $S_{\text{inner}}$ shard states, each with:
-- Data buffer: grows dynamically (worst case ≈ `tiles_per_shard_total * max_comp_chunk_bytes`)
+- Data buffer: grows dynamically (worst case ≈ `tiles_per_shard_total * max_comp_tile_bytes`)
 - Index: `tiles_per_shard_total * 16` bytes (fixed)
 - One shared scratch buffer for index serialization
 
@@ -240,10 +240,10 @@ A zarr shard on disk is:
 
 ```
 ┌─────────────────────────────────────┐
-│ chunk 0 data (variable length)      │
-│ chunk 1 data (variable length)      │
+│ tile 0 data (variable length)       │
+│ tile 1 data (variable length)       │
 │ ...                                 │
-│ chunk N-1 data (variable length)    │
+│ tile N-1 data (variable length)     │
 ├─────────────────────────────────────┤
 │ index:                              │
 │   (offset_0, nbytes_0) uint64 LE   │
@@ -255,7 +255,7 @@ A zarr shard on disk is:
 ```
 
 Where $N = \text{tiles\_per\_shard\_total}$, offsets are relative to the start
-of the shard, and empty chunks have `offset = nbytes = 0xFFFFFFFFFFFFFFFF`.
+of the shard, and empty tiles have `offset = nbytes = 0xFFFFFFFFFFFFFFFF`.
 
 The `shard_sink` callback receives the data and index portions separately so the
 downstream writer can position them appropriately (the index goes at the end by

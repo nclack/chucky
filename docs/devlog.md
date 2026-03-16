@@ -33,6 +33,7 @@
 - [x] unbuffered io
 - [x] cleanup tests vs experiments
 - [x] evaluate gather vs scatter for non-lod stream
+- [ ] bench 2 streams, 1 gpu
 
 ## 2026-03-16
 

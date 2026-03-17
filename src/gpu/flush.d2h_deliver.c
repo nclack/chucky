@@ -264,9 +264,14 @@ sync_and_deliver(const struct d2h_deliver_stage* stage,
         continue;
 
       size_t level_bytes = 0;
+      struct aggregate_result ar = {
+        .data = lvl->agg[fc].h_aggregated,
+        .offsets = lvl->agg[fc].h_offsets,
+        .chunk_sizes = lvl->agg[fc].h_permuted_sizes,
+      };
       if (deliver_to_shards_batch((uint8_t)lv,
                                   &lvl->shard,
-                                  &lvl->agg[fc],
+                                  &ar,
                                   active_count,
                                   config->shard_sink,
                                   config->shard_alignment,

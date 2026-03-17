@@ -40,7 +40,7 @@ add_src_lib(stream_config SOURCES stream.config.c stream.config.h
 add_subdirectory(gpu)
 
 add_src_lib(shard_delivery SOURCES shard_delivery.c shard_delivery.h
-    LINKS crc32c writer aggregate platform chucky_log)
+    LINKS crc32c writer platform chucky_log)
 
 add_src_lib(zarr_sink SOURCES zarr_sink.c zarr_sink.h
     LINKS writer json_writer io_queue platform_io lod_plan dimension chucky_log)

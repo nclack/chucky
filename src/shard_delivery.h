@@ -1,6 +1,6 @@
 #pragma once
 
-#include "aggregate.h"
+#include "types.aggregate.h"
 #include "writer.h"
 #include <stddef.h>
 #include <stdint.h>
@@ -32,7 +32,7 @@ emit_shards(struct shard_state* ss, size_t shard_alignment);
 int
 deliver_to_shards_batch(uint8_t level,
                         struct shard_state* ss,
-                        struct aggregate_slot* agg_slot,
+                        struct aggregate_result* result,
                         uint32_t n_active,
                         struct shard_sink* sink,
                         size_t shard_alignment,

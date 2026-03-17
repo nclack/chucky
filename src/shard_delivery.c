@@ -70,7 +70,7 @@ Error:
 int
 deliver_to_shards_batch(uint8_t level,
                         struct shard_state* ss,
-                        struct aggregate_slot* agg_slot,
+                        struct aggregate_result* result,
                         uint32_t n_active,
                         struct shard_sink* sink,
                         size_t shard_alignment,
@@ -106,10 +106,10 @@ deliver_to_shards_batch(uint8_t level,
       uint64_t j_run_end = j_run_start + (uint64_t)run_len * cps_inner;
 
       size_t run_bytes =
-        agg_slot->h_offsets[j_run_end] - agg_slot->h_offsets[j_run_start];
+        result->offsets[j_run_end] - result->offsets[j_run_start];
       if (run_bytes > 0) {
-        const void* src = (const char*)agg_slot->h_aggregated +
-                          agg_slot->h_offsets[j_run_start];
+        const void* src = (const char*)result->data +
+                          result->offsets[j_run_start];
         // Unbuffered IO: round write size up to alignment. The padding
         // region in h_aggregated is safe to read (buffer is oversized).
         size_t write_bytes = sa > 0 ? align_up(run_bytes, sa) : run_bytes;
@@ -136,13 +136,13 @@ deliver_to_shards_batch(uint8_t level,
         uint64_t eis = ss->epoch_in_shard + r;
         uint64_t j_start = j_run_start + (uint64_t)r * cps_inner;
         for (uint64_t j = j_start; j < j_start + cps_inner; ++j) {
-          size_t chunk_size = agg_slot->h_permuted_sizes[j];
+          size_t chunk_size = result->chunk_sizes[j];
           if (chunk_size > 0) {
             uint64_t within_inner = j - j_start;
             uint64_t slot_idx = eis * cps_inner + within_inner;
             size_t chunk_off =
               sh->data_cursor +
-              (agg_slot->h_offsets[j] - agg_slot->h_offsets[j_run_start]);
+              (result->offsets[j] - result->offsets[j_run_start]);
             sh->index[2 * slot_idx] = chunk_off;
             sh->index[2 * slot_idx + 1] = chunk_size;
           }

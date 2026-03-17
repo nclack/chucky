@@ -19,7 +19,7 @@ add_src_lib(stream
         flush.handoff.h flush.helpers.h
         ../dimension.c ../dimension.h
     LINKS
-        transpose compress aggregate lod lod_plan index_ops
+        transpose compress aggregate lod stream_config lod_plan index_ops
         crc32c shard_delivery writer platform chucky_log
         CUDA::cuda_driver)
 

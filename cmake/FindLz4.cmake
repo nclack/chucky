@@ -7,8 +7,8 @@ include(FindPackageHandleStandardArgs)
 find_path(LZ4_INCLUDE_DIR NAMES lz4.h
     PATH_SUFFIXES include)
 
-find_library(LZ4_LIBRARY NAMES lz4 liblz4
-    PATH_SUFFIXES lib)
+find_library(LZ4_LIBRARY NAMES lz4 liblz4 liblz4_static
+    PATH_SUFFIXES lib static)
 
 find_package_handle_standard_args(Lz4
     REQUIRED_VARS LZ4_LIBRARY LZ4_INCLUDE_DIR)

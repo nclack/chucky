@@ -50,6 +50,9 @@ add_test_exe(test_transpose_cpu test_transpose_cpu.c transpose_cpu index_ops_uti
 # CPU compress test (no CUDA)
 add_test_exe(test_compress_cpu test_compress_cpu.c compress_cpu Lz4::Lz4 Zstd::Zstd chucky_log)
 
+# CPU aggregate test (no CUDA)
+add_test_exe(test_aggregate_cpu test_aggregate_cpu.c aggregate_cpu stream_config chucky_log)
+
 # Test platform utilities
 add_test_lib(test_platform test_platform.h)
 add_platform_sources(test_platform)

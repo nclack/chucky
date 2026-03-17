@@ -7,3 +7,8 @@ add_src_lib(compress_cpu SOURCES compress.c compress.h
     LINKS Lz4::Lz4 Zstd::Zstd chucky_log)
 target_include_directories(compress_cpu PUBLIC ${CMAKE_SOURCE_DIR}/src)
 enable_openmp(compress_cpu)
+
+add_src_lib(aggregate_cpu SOURCES aggregate.c aggregate.h
+    LINKS index_ops chucky_log)
+target_include_directories(aggregate_cpu PUBLIC ${CMAKE_SOURCE_DIR}/src)
+enable_openmp(aggregate_cpu)

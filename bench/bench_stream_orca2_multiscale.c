@@ -13,6 +13,6 @@ main(int ac, char* av[])
   uint8_t ratios[] = { 1, 0, 2, 2 };
   uint64_t shard_counts[] = { 2, 1, 2, 2 };
 
-  return bench_stream_main(ac, av, "multiscale", dims, rank, ratios, 1 << 17,
-                           shard_counts);
+  return bench_stream_main(
+    ac, av, "multiscale", dims, rank, ratios, 1 << 18, shard_counts);
 }

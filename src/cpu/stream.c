@@ -292,39 +292,27 @@ tile_stream_cpu_cursor(const struct tile_stream_cpu* s)
 
 // ---- Memory estimate ----
 
-int
-tile_stream_cpu_memory_estimate(
-  const struct tile_stream_configuration* config,
-  struct tile_stream_cpu_memory_info* info)
+// Compute memory sizing from pre-computed layouts.
+// Used by both memory_estimate (reporting) and create (allocation).
+static void
+compute_memory_info(const struct computed_stream_layouts* cl,
+                    size_t bpe,
+                    struct tile_stream_cpu_memory_info* info)
 {
-  if (!info)
-    return 1;
-
-  memset(info, 0, sizeof(*info));
-
-  struct computed_stream_layouts cl;
-  if (compute_stream_layouts(
-        config, 1, compress_cpu_max_output_size, &cl))
-    return 1;
-
-  // Force K=1 on CPU.
-  cl.epochs_per_batch = 1;
-
-  const size_t bpe = lod_dtype_bpe(config->dtype);
-  const uint64_t total_chunks = cl.levels.total_chunks;
-  const size_t chunk_stride_bytes = cl.l0.chunk_stride * bpe;
-  const size_t max_out = cl.max_output_size;
+  const uint64_t total_chunks = cl->levels.total_chunks;
+  const size_t chunk_stride_bytes = cl->l0.chunk_stride * bpe;
+  const size_t max_out = cl->max_output_size;
 
   info->chunk_pool_bytes = total_chunks * chunk_stride_bytes;
   info->compressed_pool_bytes = total_chunks * max_out;
   info->comp_sizes_bytes = total_chunks * sizeof(size_t);
 
-  // Aggregate: double-buffered slots + per-level perm + shared scratch.
+  // Aggregate: per-level perm + slots + shared scratch.
   {
     size_t agg = 0;
     uint64_t max_C = 0;
-    for (int lv = 0; lv < cl.levels.nlod; ++lv) {
-      const struct aggregate_layout* al = &cl.per_level[lv].agg_layout;
+    for (int lv = 0; lv < cl->levels.nlod; ++lv) {
+      const struct aggregate_layout* al = &cl->per_level[lv].agg_layout;
       if (al->covering_count > max_C)
         max_C = al->covering_count;
       uint64_t C_lv = al->covering_count;
@@ -333,45 +321,38 @@ tile_stream_cpu_memory_estimate(
                                        C_lv,
                                        al->cps_inner, al->page_size);
 
-      // Per-level perm (1x).
-      agg += al->chunks_per_epoch * sizeof(uint32_t);
-
-      // Per-level: data + offsets + chunk_sizes (1x).
+      agg += al->chunks_per_epoch * sizeof(uint32_t);  // perm
       agg += data_lv +
-             (C_lv + 1) * sizeof(size_t) +
-             C_lv * sizeof(size_t);
+             (C_lv + 1) * sizeof(size_t) +              // offsets
+             C_lv * sizeof(size_t);                      // chunk_sizes
     }
-    // Shared permuted_sizes scratch (1x max_C).
     if (max_C > 0)
-      agg += max_C * sizeof(size_t);
+      agg += max_C * sizeof(size_t);  // shared permuted_sizes scratch
     info->aggregate_bytes = agg;
   }
 
   // LOD buffers (multiscale only).
   {
     size_t lod = 0;
-    if (cl.levels.enable_multiscale) {
-      lod += cl.l0.epoch_elements * bpe; // linear
+    if (cl->levels.enable_multiscale) {
+      lod += cl->l0.epoch_elements * bpe;                        // linear
       uint64_t total_lod_elements =
-        cl.plan.levels.ends[cl.plan.nlod - 1];
-      lod += total_lod_elements * bpe; // lod_values
+        cl->plan.levels.ends[cl->plan.nlod - 1];
+      lod += total_lod_elements * bpe;                           // lod_values
 
-      // Dim0 accumulator.
-      if (cl.levels.dim0_downsample) {
+      if (cl->levels.dim0_downsample) {
         uint64_t dim0_total = 0;
-        for (int lv = 1; lv < cl.plan.nlod; ++lv)
-          dim0_total += cl.plan.batch_count * cl.plan.lod_counts[lv];
-        lod += dim0_total * bpe;
+        for (int lv = 1; lv < cl->plan.nlod; ++lv)
+          dim0_total += cl->plan.batch_count * cl->plan.lod_counts[lv];
+        lod += dim0_total * bpe;                                 // dim0_accum
       }
 
-      // Scatter LUT + batch offsets for L0 gather.
-      lod += cl.plan.lod_counts[0] * sizeof(uint32_t);        // scatter_lut
-      lod += cl.plan.batch_count * sizeof(uint64_t);           // scatter_batch_offsets
+      lod += cl->plan.lod_counts[0] * sizeof(uint32_t);         // scatter_lut
+      lod += cl->plan.batch_count * sizeof(uint64_t);            // scatter_batch_offsets
 
-      // Morton-to-chunk LUTs + batch offsets per level.
-      for (int lv = 0; lv < cl.levels.nlod; ++lv) {
-        lod += cl.plan.lod_counts[lv] * sizeof(uint32_t);     // morton_lut
-        lod += cl.plan.batch_count * sizeof(uint64_t);         // batch_offsets
+      for (int lv = 0; lv < cl->levels.nlod; ++lv) {
+        lod += cl->plan.lod_counts[lv] * sizeof(uint32_t);      // morton_lut
+        lod += cl->plan.batch_count * sizeof(uint64_t);          // batch_offsets
       }
     }
     info->lod_bytes = lod;
@@ -380,8 +361,8 @@ tile_stream_cpu_memory_estimate(
   // Shard state: active_shard arrays + index buffers.
   {
     size_t shards = 0;
-    for (int lv = 0; lv < cl.levels.nlod; ++lv) {
-      const struct level_layout_info* li = &cl.per_level[lv];
+    for (int lv = 0; lv < cl->levels.nlod; ++lv) {
+      const struct level_layout_info* li = &cl->per_level[lv];
       shards += li->shard_inner_count * sizeof(struct active_shard);
       shards += li->shard_inner_count * li->chunks_per_shard_total *
                 2 * sizeof(uint64_t);
@@ -397,11 +378,29 @@ tile_stream_cpu_memory_estimate(
                      info->lod_bytes +
                      info->shard_bytes;
 
-  info->chunks_per_epoch = cl.l0.chunks_per_epoch;
+  info->chunks_per_epoch = cl->l0.chunks_per_epoch;
   info->total_chunks = total_chunks;
   info->max_output_size = max_out;
-  info->nlod = cl.levels.nlod;
+  info->nlod = cl->levels.nlod;
+}
 
+int
+tile_stream_cpu_memory_estimate(
+  const struct tile_stream_configuration* config,
+  struct tile_stream_cpu_memory_info* info)
+{
+  if (!info)
+    return 1;
+
+  memset(info, 0, sizeof(*info));
+
+  struct computed_stream_layouts cl;
+  if (compute_stream_layouts(
+        config, 1, compress_cpu_max_output_size, &cl))
+    return 1;
+
+  cl.epochs_per_batch = 1;
+  compute_memory_info(&cl, lod_dtype_bpe(config->dtype), info);
   computed_stream_layouts_free(&cl);
   return 0;
 }

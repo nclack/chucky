@@ -68,27 +68,36 @@ struct shard_sink
 static inline struct writer_result
 writer_ok(void)
 {
-  return (struct writer_result){ 0 };
+  struct writer_result r = { 0 };
+  return r;
 }
 
 static inline struct writer_result
 writer_error(void)
 {
-  return (struct writer_result){ .error = 1 };
+  struct writer_result r = { 0 };
+  r.error = 1;
+  return r;
 }
 
 static inline struct writer_result
 writer_error_at(const void* beg, const void* end)
 {
-  return (struct writer_result){ .error = writer_error_fail,
-                                 .rest = { beg, end } };
+  struct writer_result r = { 0 };
+  r.error = writer_error_fail;
+  r.rest.beg = beg;
+  r.rest.end = end;
+  return r;
 }
 
 static inline struct writer_result
 writer_finished_at(const void* beg, const void* end)
 {
-  return (struct writer_result){ .error = writer_error_finished,
-                                 .rest = { beg, end } };
+  struct writer_result r = { 0 };
+  r.error = writer_error_finished;
+  r.rest.beg = beg;
+  r.rest.end = end;
+  return r;
 }
 
 // Dispatch to the writer's append method.

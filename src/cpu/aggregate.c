@@ -70,14 +70,17 @@ aggregate_cpu(const void* compressed,
   }
 
   // Pass 3: gather compressed chunks in shard order.
+  {
+    int i;
 #pragma omp parallel for schedule(static)
-  for (uint64_t i = 0; i < M; ++i) {
-    size_t nbytes = comp_sizes[i];
-    if (nbytes == 0)
-      continue;
-    const char* src = (const char*)compressed + i * max_comp;
-    char* dst = (char*)data + offsets[perm[i]];
-    memcpy(dst, src, nbytes);
+    for (i = 0; i < (int)M; ++i) {
+      size_t nbytes = comp_sizes[i];
+      if (nbytes == 0)
+        continue;
+      const char* src = (const char*)compressed + i * max_comp;
+      char* dst = (char*)data + offsets[perm[i]];
+      memcpy(dst, src, nbytes);
+    }
   }
 
   free(permuted_sizes);
@@ -201,14 +204,17 @@ aggregate_cpu_into(const void* compressed,
     ws->offsets[i + 1] = ws->offsets[i] + ws->permuted_sizes[i];
 
   // Pass 3: gather compressed chunks in shard order.
+  {
+    int i;
 #pragma omp parallel for schedule(static)
-  for (uint64_t i = 0; i < M; ++i) {
-    size_t nbytes = comp_sizes[i];
-    if (nbytes == 0)
-      continue;
-    const char* src = (const char*)compressed + i * max_comp;
-    char* dst = (char*)ws->data + ws->offsets[ws->perm[i]];
-    memcpy(dst, src, nbytes);
+    for (i = 0; i < (int)M; ++i) {
+      size_t nbytes = comp_sizes[i];
+      if (nbytes == 0)
+        continue;
+      const char* src = (const char*)compressed + i * max_comp;
+      char* dst = (char*)ws->data + ws->offsets[ws->perm[i]];
+      memcpy(dst, src, nbytes);
+    }
   }
 
   result->data = ws->data;

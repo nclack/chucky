@@ -25,6 +25,16 @@ platform_aligned_free(void* ptr)
   _aligned_free(ptr);
 }
 
+size_t
+platform_available_memory(void)
+{
+  MEMORYSTATUSEX memstat;
+  memstat.dwLength = sizeof(memstat);
+  if (GlobalMemoryStatusEx(&memstat) && memstat.ullAvailPhys > 0)
+    return (size_t)memstat.ullAvailPhys;
+  return 0;
+}
+
 void
 platform_sleep_ns(int64_t ns)
 {

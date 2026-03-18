@@ -31,10 +31,11 @@ compress_cpu(enum compression_codec codec,
              size_t chunk_bytes,
              size_t batch_size)
 {
+  int i;
   switch (codec) {
     case CODEC_NONE:
 #pragma omp parallel for schedule(static)
-      for (size_t i = 0; i < batch_size; ++i) {
+      for (i = 0; i < (int)batch_size; ++i) {
         memcpy((char*)dst + i * max_output_size,
                (const char*)src + i * input_stride,
                chunk_bytes);
@@ -45,7 +46,7 @@ compress_cpu(enum compression_codec codec,
     case CODEC_LZ4: {
       int err = 0;
 #pragma omp parallel for schedule(dynamic)
-      for (size_t i = 0; i < batch_size; ++i) {
+      for (i = 0; i < (int)batch_size; ++i) {
         if (err)
           continue;
         const char* in = (const char*)src + i * input_stride;
@@ -63,7 +64,7 @@ compress_cpu(enum compression_codec codec,
     case CODEC_ZSTD: {
       int err = 0;
 #pragma omp parallel for schedule(dynamic)
-      for (size_t i = 0; i < batch_size; ++i) {
+      for (i = 0; i < (int)batch_size; ++i) {
         if (err)
           continue;
         const void* in = (const char*)src + i * input_stride;

@@ -18,6 +18,10 @@ platform_aligned_alloc(size_t alignment, size_t size);
 void
 platform_aligned_free(void* ptr);
 
+// Return the available physical memory in bytes, or 0 on failure.
+size_t
+platform_available_memory(void);
+
 // Monotonic clock for timing. Returns elapsed seconds since last call.
 struct platform_clock
 {

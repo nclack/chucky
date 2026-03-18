@@ -10,7 +10,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
 
 // --- Throughput helpers ---
 
@@ -422,13 +421,11 @@ run_bench(const struct bench_config* cfg)
                        (double)free_mem / (1024.0 * 1024.0 * 1024.0));
         }
       } else {
-        long pages = sysconf(_SC_AVPHYS_PAGES);
-        long page_sz = sysconf(_SC_PAGESIZE);
-        if (pages > 0 && page_sz > 0) {
-          budget = (size_t)((double)pages * (double)page_sz * 0.8);
+        size_t avail = platform_available_memory();
+        if (avail > 0) {
+          budget = (size_t)((double)avail * 0.8);
           print_report("  auto-detect: %.2f GiB available RAM (using 80%%)",
-                       (double)((size_t)pages * (size_t)page_sz) /
-                         (1024.0 * 1024.0 * 1024.0));
+                       (double)avail / (1024.0 * 1024.0 * 1024.0));
         }
       }
     }
@@ -476,6 +473,8 @@ run_bench(const struct bench_config* cfg)
     if (cfg->shard_counts)
       dims_set_shard_counts(dims, rank, cfg->shard_counts);
   }
+
+  dims_print(dims, rank);
 
   const size_t total_elements = dim_total_elements(dims, rank);
   const size_t total_bytes = total_elements * sizeof(uint16_t);
@@ -851,7 +850,6 @@ bench_stream_main(int ac,
     .memory_budget = memory_budget,
     .shard_counts = shard_counts,
   };
-  dims_print(dims, rank);
   ecode = run_bench(&cfg);
 
   if (need_xor)

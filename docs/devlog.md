@@ -55,6 +55,15 @@ when people are doing particularly high frame rate imaging with small fields.
 Ok, the scatter was slowing it down. Now that I fixed that getting pretty
 decent speeds on auk (2-3 GB/s for non-lod).
 
+Made sizing the chunk a little easier for the benchmarks. Looks at available
+memory and shrinks the requested chunk size as necessary.
+
+The cpu implementation is quite fast, especially for non-lod.
+
+Next step is s3 streaming and  to figure out how to do a panel of benchmarks.
+Now that I think the implementations might not change much, it'd be good to
+characterize performance by chunk size, compression, cpu/gpu, etc.
+
 ## 2026-03-16
 
 Looking at api examples and cleaning up a little bit.

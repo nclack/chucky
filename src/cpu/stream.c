@@ -142,6 +142,8 @@ tile_stream_cpu_create(const struct tile_stream_configuration* config)
     CHECK(Fail, s->lod_values);
 
     // Dim0 accumulator: total elements in levels 1+ (packed).
+    // Uses the source dtype (not a wider accumulator) for integer mean —
+    // overflow_safe_add_shift prevents overflow at the cost of rounding per fold.
     if (s->levels.dim0_downsample) {
       uint64_t dim0_total = 0;
       for (int lv = 1; lv < s->cl.plan.nlod; ++lv)
@@ -214,6 +216,14 @@ tile_stream_cpu_create(const struct tile_stream_configuration* config)
     s->metrics.lod_morton_chunk = mk_stream_metric("lod_morton");
   }
 
+  // Precompute max_cursor so cpu_append doesn't recompute each call.
+  {
+    const struct dimension* dims = config->dimensions;
+    s->max_cursor = (dims[0].size > 0)
+      ? ceildiv(dims[0].size, dims[0].chunk_size) * s->layout.epoch_elements
+      : 0;
+  }
+
   s->writer.append = cpu_append;
   s->writer.flush = cpu_flush;
 
@@ -242,9 +252,7 @@ tile_stream_cpu_destroy(struct tile_stream_cpu* s)
     free(s->agg_perm[lv]);
     free(s->morton_lut[lv]);
     free(s->lod_batch_offsets[lv]);
-  }
 
-  for (int lv = 0; lv < s->levels.nlod; ++lv) {
     struct cpu_agg_slot* as = &s->agg_slots[lv];
     free(as->data);
     free(as->offsets);
@@ -293,7 +301,7 @@ tile_stream_cpu_cursor(const struct tile_stream_cpu* s)
 // ---- Memory estimate ----
 
 // Compute memory sizing from pre-computed layouts.
-// Used by both memory_estimate (reporting) and create (allocation).
+// Used by memory_estimate for reporting.
 static void
 compute_memory_info(const struct computed_stream_layouts* cl,
                     size_t bpe,
@@ -425,7 +433,7 @@ flush_epoch(struct tile_stream_cpu* s, uint32_t active_levels_mask)
                      s->compressed,
                      max_out,
                      s->comp_sizes,
-                     s->layout.chunk_stride * bpe,
+                     s->layout.chunk_elements * bpe,
                      s->levels.total_chunks)) {
       return 1;
     }
@@ -433,7 +441,7 @@ flush_epoch(struct tile_stream_cpu* s, uint32_t active_levels_mask)
     float ms = (float)(platform_toc(&clk) * 1000.0);
     accumulate_metric_ms(
       &s->metrics.compress, ms,
-      s->levels.total_chunks * s->layout.chunk_stride * bpe);
+      s->levels.total_chunks * s->layout.chunk_elements * bpe);
   }
 
   // Aggregate per active level.
@@ -617,14 +625,10 @@ cpu_append(struct writer* self, struct slice input)
   const uint8_t* src = (const uint8_t*)input.beg;
   const uint8_t* end = (const uint8_t*)input.end;
 
-  const uint64_t dim0_size = s->config.dimensions[0].size;
-  const uint64_t max_cursor =
-    (dim0_size > 0) ? ceildiv(dim0_size, s->config.dimensions[0].chunk_size) *
-                        s->layout.epoch_elements
-                    : 0;
+  const uint64_t max_cursor = s->max_cursor;
 
   while (src < end) {
-    if (dim0_size > 0 && s->cursor >= max_cursor) {
+    if (max_cursor > 0 && s->cursor >= max_cursor) {
       struct writer_result fr = cpu_flush(&s->writer);
       if (fr.error)
         return writer_error_at(src, end);
@@ -637,7 +641,7 @@ cpu_append(struct writer* self, struct slice input)
     uint64_t elements =
       epoch_remaining < input_remaining ? epoch_remaining : input_remaining;
 
-    if (dim0_size > 0) {
+    if (max_cursor > 0) {
       uint64_t cap = max_cursor - s->cursor;
       if (elements > cap)
         elements = cap;

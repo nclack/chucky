@@ -156,7 +156,7 @@ scatter_typed(const lod_plan* p, const T* src, T* dst)
   const uint64_t* full_shape = p->shapes[0];
   uint64_t n = lod_span_len(lod_spans_at(&p->levels, 0));
 
-#pragma omp parallel for schedule(static)
+#pragma omp parallel for schedule(static) if(n > 1024)
   for (uint64_t i = 0; i < n; ++i) {
     uint64_t full_coords[LOD_MAX_NDIM];
     uint64_t lod_coords[LOD_MAX_NDIM];
@@ -193,7 +193,7 @@ build_scatter_lut(const lod_plan* p, uint32_t* lut)
   for (int k = 0; k < lod_ndim; ++k)
     lod_src_strides[k] = full_strides[p->lod_map[k]];
 
-#pragma omp parallel for schedule(static)
+#pragma omp parallel for schedule(static) if(lod_count > 1024)
   for (uint64_t gid = 0; gid < lod_count; ++gid) {
     uint64_t coords[LOD_MAX_NDIM];
     uint64_t rest = gid;
@@ -243,7 +243,7 @@ gather_typed(const lod_plan* p,
 
   // Batch-outer: sequential writes per batch, random reads via LUT.
   // The nowait allows threads to start the next batch immediately.
-#pragma omp parallel
+#pragma omp parallel if(lod_count > 1024)
   {
     for (uint64_t b = 0; b < batch_count; ++b) {
       const T* batch_src = src + batch_offsets[b];
@@ -269,7 +269,7 @@ reduce_typed(const lod_plan* p, T* values, lod_reduce_method method)
 
     // Batches and destination elements within a level are independent.
     uint64_t total_work = p->batch_count * dst_ds;
-#pragma omp parallel for schedule(static)
+#pragma omp parallel for schedule(static) if(total_work > 1024)
     for (uint64_t wi = 0; wi < total_work; ++wi) {
       uint64_t b = wi / dst_ds;
       uint64_t i = wi % dst_ds;
@@ -292,7 +292,7 @@ morton_to_chunks_typed(const T* values,
                        uint64_t lod_count,
                        uint64_t batch_count)
 {
-#pragma omp parallel
+#pragma omp parallel if(lod_count > 1024)
   {
     for (uint64_t b = 0; b < batch_count; ++b) {
       const T* batch_values = values + b * lod_count;
@@ -318,7 +318,7 @@ build_chunk_lut(const lod_plan* p,
   const uint64_t lod_count = p->lod_counts[lv];
   const int lod_ndim = p->lod_ndim;
 
-#pragma omp parallel for schedule(static)
+#pragma omp parallel for schedule(static) if(lod_count > 1024)
   for (uint64_t gid = 0; gid < lod_count; ++gid) {
     uint64_t coords[LOD_MAX_NDIM];
     int64_t offset = 0;
@@ -368,25 +368,25 @@ dim0_fold_typed(T* accum,
                 lod_reduce_method method)
 {
   if (count == 0) {
-#pragma omp parallel for schedule(static)
+#pragma omp parallel for schedule(static) if(n > 1024)
     for (uint64_t i = 0; i < n; ++i)
       accum[i] = new_data[i];
     return;
   }
   switch (method) {
     case lod_reduce_mean:
-#pragma omp parallel for schedule(static)
+#pragma omp parallel for schedule(static) if(n > 1024)
       for (uint64_t i = 0; i < n; ++i)
         accum[i] = overflow_safe_add_shift(accum[i], new_data[i], level);
       break;
     case lod_reduce_min:
-#pragma omp parallel for schedule(static)
+#pragma omp parallel for schedule(static) if(n > 1024)
       for (uint64_t i = 0; i < n; ++i)
         if (new_data[i] < accum[i])
           accum[i] = new_data[i];
       break;
     case lod_reduce_max:
-#pragma omp parallel for schedule(static)
+#pragma omp parallel for schedule(static) if(n > 1024)
       for (uint64_t i = 0; i < n; ++i)
         if (new_data[i] > accum[i])
           accum[i] = new_data[i];
@@ -407,14 +407,14 @@ dim0_emit_typed(T* dst,
   if constexpr (std::is_floating_point<T>::value) {
     if (method == lod_reduce_mean) {
       T divisor = (T)count;
-#pragma omp parallel for schedule(static)
+#pragma omp parallel for schedule(static) if(n > 1024)
       for (uint64_t i = 0; i < n; ++i)
         dst[i] = accum[i] / divisor;
       return;
     }
   }
   // int mean (pre-divided), min, max: just copy
-#pragma omp parallel for schedule(static)
+#pragma omp parallel for schedule(static) if(n > 1024)
   for (uint64_t i = 0; i < n; ++i)
     dst[i] = accum[i];
 }
@@ -465,9 +465,6 @@ lod_cpu_scatter(const lod_plan* p,
                 void* dst,
                 lod_dtype dtype)
 {
-#define DO(T) scatter_typed((const T*)src, (T*)dst)
-  // Need p in scope for scatter_typed
-#undef DO
 #define DO(T) scatter_typed(p, (const T*)src, (T*)dst)
   DISPATCH(dtype, DO);
 #undef DO

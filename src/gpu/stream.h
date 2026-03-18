@@ -38,6 +38,7 @@ tile_stream_gpu_memory_estimate(const struct tile_stream_configuration* config,
 
 // Allocate and initialize a tile_stream_gpu. Returns pointer on success,
 // NULL on failure. Caller must free with tile_stream_gpu_destroy.
+// The config->dimensions pointer must remain valid for the lifetime of the stream.
 struct tile_stream_gpu*
 tile_stream_gpu_create(const struct tile_stream_configuration* config);
 

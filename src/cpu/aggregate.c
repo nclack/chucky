@@ -6,6 +6,22 @@
 #include <stdlib.h>
 #include <string.h>
 
+static void
+pad_shard_sizes(size_t* sizes, uint64_t C, uint64_t cps_inner, size_t page_size)
+{
+  uint64_t num_shards = C / cps_inner;
+  for (uint64_t s = 0; s < num_shards; ++s) {
+    uint64_t base = s * cps_inner;
+    size_t total = 0;
+    for (uint64_t j = 0; j < cps_inner; ++j)
+      total += sizes[base + j];
+    size_t aligned = align_up(total, page_size);
+    size_t padding = aligned - total;
+    if (padding > 0)
+      sizes[base + cps_inner - 1] += padding;
+  }
+}
+
 int
 aggregate_cpu(const void* compressed,
               const size_t* comp_sizes,
@@ -39,19 +55,8 @@ aggregate_cpu(const void* compressed,
   memcpy(chunk_sizes, permuted_sizes, C * sizeof(size_t));
 
   // Pass 1.5: pad shard sizes for page alignment.
-  if (layout->page_size > 0 && layout->cps_inner > 0) {
-    uint64_t num_shards = C / layout->cps_inner;
-    for (uint64_t s = 0; s < num_shards; ++s) {
-      uint64_t base = s * layout->cps_inner;
-      size_t total = 0;
-      for (uint64_t j = 0; j < layout->cps_inner; ++j)
-        total += permuted_sizes[base + j];
-      size_t aligned = align_up(total, layout->page_size);
-      size_t padding = aligned - total;
-      if (padding > 0)
-        permuted_sizes[base + layout->cps_inner - 1] += padding;
-    }
-  }
+  if (layout->page_size > 0 && layout->cps_inner > 0)
+    pad_shard_sizes(permuted_sizes, C, layout->cps_inner, layout->page_size);
 
   // Pass 2: exclusive prefix sum.
   offsets[0] = 0;
@@ -72,7 +77,7 @@ aggregate_cpu(const void* compressed,
   // Pass 3: gather compressed chunks in shard order.
   {
     int i;
-#pragma omp parallel for schedule(static)
+#pragma omp parallel for schedule(static) if(M > 1024)
     for (i = 0; i < (int)M; ++i) {
       size_t nbytes = comp_sizes[i];
       if (nbytes == 0)
@@ -184,19 +189,8 @@ aggregate_cpu_into(const void* compressed,
   memcpy(ws->chunk_sizes, ws->permuted_sizes, C * sizeof(size_t));
 
   // Pass 1.5: pad shard sizes for page alignment.
-  if (layout->page_size > 0 && layout->cps_inner > 0) {
-    uint64_t num_shards = C / layout->cps_inner;
-    for (uint64_t s = 0; s < num_shards; ++s) {
-      uint64_t base = s * layout->cps_inner;
-      size_t total = 0;
-      for (uint64_t j = 0; j < layout->cps_inner; ++j)
-        total += ws->permuted_sizes[base + j];
-      size_t aligned = align_up(total, layout->page_size);
-      size_t padding = aligned - total;
-      if (padding > 0)
-        ws->permuted_sizes[base + layout->cps_inner - 1] += padding;
-    }
-  }
+  if (layout->page_size > 0 && layout->cps_inner > 0)
+    pad_shard_sizes(ws->permuted_sizes, C, layout->cps_inner, layout->page_size);
 
   // Pass 2: exclusive prefix sum.
   ws->offsets[0] = 0;
@@ -206,7 +200,7 @@ aggregate_cpu_into(const void* compressed,
   // Pass 3: gather compressed chunks in shard order.
   {
     int i;
-#pragma omp parallel for schedule(static)
+#pragma omp parallel for schedule(static) if(M > 1024)
     for (i = 0; i < (int)M; ++i) {
       size_t nbytes = comp_sizes[i];
       if (nbytes == 0)

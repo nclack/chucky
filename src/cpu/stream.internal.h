@@ -56,6 +56,7 @@ struct tile_stream_cpu
   uint32_t dim0_counts[LOD_MAX_LEVELS]; // per-level fold count
 
   uint64_t cursor;
+  uint64_t max_cursor;   // precomputed: total elements across all dim0 chunks
   int pool_fully_covered; // 1 if scatter overwrites every pool position
   struct stream_metrics metrics;
   struct platform_clock metadata_update_clock;

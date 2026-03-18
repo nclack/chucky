@@ -6,6 +6,7 @@
 struct tile_stream_cpu;
 
 // Create a CPU streaming pipeline. Returns NULL on failure or f16 dtype.
+// The config->dimensions pointer must remain valid for the lifetime of the stream.
 struct tile_stream_cpu*
 tile_stream_cpu_create(const struct tile_stream_configuration* config);
 

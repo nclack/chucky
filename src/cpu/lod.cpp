@@ -328,8 +328,8 @@ build_chunk_lut(const lod_plan* p,
       rest /= lod_shape[d];
       coords[d] = coord;
 
-      // LOD dim d maps to layout dim (d+1) since layout dim 0 is epoch.
-      int ld = d + 1;
+      // LOD dim d maps to full dim p->lod_map[d] in the layout.
+      int ld = p->lod_map[d];
       uint64_t chunk_size_d = layout->lifted_shape[2 * ld + 1];
       uint64_t chunk_idx = coord / chunk_size_d;
       uint64_t within = coord % chunk_size_d;

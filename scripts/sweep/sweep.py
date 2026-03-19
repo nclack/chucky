@@ -130,7 +130,8 @@ def lod_runs() -> list[RunSpec]:
     for sc in scenarios:
         for cl in chunk_labels:
             for codec in ["none", "zstd"]:
-                runs.append(RunSpec(sc, codec, "xor", "gpu", "u16", cl))
+                for backend in ["gpu", "cpu"]:
+                    runs.append(RunSpec(sc, codec, "xor", backend, "u16", cl))
 
     return runs
 
@@ -261,8 +262,14 @@ def main():
 
     commit = git_commit()
     if args.output is None:
-        date_str = time.strftime("%Y%m%d")
-        args.output = Path(f"bench/results/{commit}-{date_str}.json")
+        results_dir = Path("bench/results")
+        # Reuse existing file for this commit if one exists
+        existing_files = sorted(results_dir.glob(f"{commit}-*.json"))
+        if existing_files:
+            args.output = existing_files[-1]
+        else:
+            date_str = time.strftime("%Y%m%d")
+            args.output = results_dir / f"{commit}-{date_str}.json"
 
     tiers = args.tier or ["compress"]
 

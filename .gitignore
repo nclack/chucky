@@ -9,3 +9,4 @@ result
 .vs
 CMakeUserPresets.json
 typos.toml
+__pycache__/

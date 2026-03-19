@@ -17,20 +17,20 @@ extern "C"
   int lod_cpu_scatter(const struct lod_plan* p,
                       const void* src,
                       void* dst,
-                      enum lod_dtype dtype);
+                      enum dtype dtype);
 
   // Reduce across LOD levels in-place.
   // values buffer holds all levels: total = levels.ends[nlod-1] elements.
   int lod_cpu_reduce(const struct lod_plan* p,
                      void* values,
-                     enum lod_dtype dtype,
+                     enum dtype dtype,
                      enum lod_reduce_method method);
 
   // Scatter + reduce (allocates output). Returns 0 on success.
   int lod_cpu_compute(const struct lod_plan* p,
                       const void* src,
                       void** out_values,
-                      enum lod_dtype dtype,
+                      enum dtype dtype,
                       enum lod_reduce_method method);
 
   // Build morton-to-chunk-pool LUT for level lv.
@@ -52,7 +52,7 @@ extern "C"
                                const struct tile_stream_layout* layout,
                                const uint32_t* chunk_lut,
                                const uint64_t* batch_chunk_offsets,
-                               enum lod_dtype dtype);
+                               enum dtype dtype);
 
   // Dim0 fold: accumulate inner-reduced data (levels 1+) from the morton
   // buffer into the accumulator. On first call (counts[lv]==0) copies;
@@ -63,7 +63,7 @@ extern "C"
                         const void* morton_values,
                         void* accum,
                         const uint32_t* counts,
-                        enum lod_dtype dtype,
+                        enum dtype dtype,
                         enum lod_reduce_method method);
 
   // Dim0 emit: finalize accumulator for level lv back to morton buffer.
@@ -73,7 +73,7 @@ extern "C"
                         const void* accum,
                         int lv,
                         uint32_t count,
-                        enum lod_dtype dtype,
+                        enum dtype dtype,
                         enum lod_reduce_method method);
 
   // Build scatter LUT for L0: maps morton position to source linear offset
@@ -94,7 +94,7 @@ extern "C"
                      void* dst,
                      const uint32_t* scatter_lut,
                      const uint64_t* batch_offsets,
-                     enum lod_dtype dtype);
+                     enum dtype dtype);
 
 #ifdef __cplusplus
 }

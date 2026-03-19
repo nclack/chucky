@@ -191,7 +191,7 @@ lod_compute_gpu(const struct lod_plan* p,
                  d_src,
                  d_gather_lut,
                  d_batch_offsets,
-                 lod_dtype_f32,
+                 dtype_f32,
                  p->lod_counts[0],
                  p->batch_count,
                  stream);
@@ -234,7 +234,7 @@ lod_compute_gpu(const struct lod_plan* p,
 
     lod_reduce(d_values,
                d_ends,
-               lod_dtype_f32,
+               dtype_f32,
                method,
                src_level.beg,
                dst_level.beg,
@@ -395,7 +395,7 @@ lod_compute_gpu_u16(const struct lod_plan* p,
                  d_src,
                  d_gather_lut,
                  d_batch_offsets,
-                 lod_dtype_u16,
+                 dtype_u16,
                  p->lod_counts[0],
                  p->batch_count,
                  stream);
@@ -438,7 +438,7 @@ lod_compute_gpu_u16(const struct lod_plan* p,
 
     lod_reduce(d_values,
                d_ends,
-               lod_dtype_u16,
+               dtype_u16,
                method,
                src_level.beg,
                dst_level.beg,
@@ -577,7 +577,7 @@ test_accum_fold_u16(const char* label,
   uint16_t* h_expected = NULL;
   uint8_t* h_level_ids = NULL;
 
-  size_t accum_bpe = lod_accum_bpe(lod_dtype_u16, method);
+  size_t accum_bpe = dtype_accum_bpe(dtype_u16, method);
 
   h_data = (uint16_t*)malloc(n_epochs * n_elements * sizeof(uint16_t));
   h_result = (uint16_t*)malloc(n_elements * sizeof(uint16_t));
@@ -636,7 +636,7 @@ test_accum_fold_u16(const char* label,
                            d_data,
                            d_level_ids,
                            d_counts,
-                           lod_dtype_u16,
+                           dtype_u16,
                            method,
                            n_elements,
                            stream);
@@ -646,7 +646,7 @@ test_accum_fold_u16(const char* label,
 
   lod_accum_emit(d_out,
                  d_accum,
-                 lod_dtype_u16,
+                 dtype_u16,
                  method,
                  n_elements,
                  (uint32_t)n_epochs,
@@ -748,7 +748,7 @@ test_accum_fold_f32(const char* label,
                            d_data,
                            d_level_ids,
                            d_counts,
-                           lod_dtype_f32,
+                           dtype_f32,
                            method,
                            n_elements,
                            stream);
@@ -759,7 +759,7 @@ test_accum_fold_f32(const char* label,
   CU(Fail, cuMemAlloc(&d_result, n_elements * sizeof(float)));
   lod_accum_emit(d_result,
                  d_accum,
-                 lod_dtype_f32,
+                 dtype_f32,
                  method,
                  n_elements,
                  (uint32_t)n_epochs,
@@ -812,7 +812,7 @@ test_accum_fold_fused_u16(const char* label, enum lod_reduce_method method)
   uint16_t* h_data = NULL;
   uint16_t* h_result = NULL;
 
-  size_t accum_bpe = lod_accum_bpe(lod_dtype_u16, method);
+  size_t accum_bpe = dtype_accum_bpe(dtype_u16, method);
   uint8_t* h_level_ids = NULL;
 
   h_data = (uint16_t*)malloc(n_epochs * total * sizeof(uint16_t));
@@ -848,7 +848,7 @@ test_accum_fold_fused_u16(const char* label, enum lod_reduce_method method)
                          d_data,
                          d_level_ids,
                          d_counts,
-                         lod_dtype_u16,
+                         dtype_u16,
                          method,
                          total,
                          stream);
@@ -863,7 +863,7 @@ test_accum_fold_fused_u16(const char* label, enum lod_reduce_method method)
     CUdeviceptr d_out = 0;
     CU(Fail, cuMemAlloc(&d_out, n_lv1 * sizeof(uint16_t)));
     lod_accum_emit(
-      d_out, d_accum, lod_dtype_u16, method, n_lv1, counts[1], stream);
+      d_out, d_accum, dtype_u16, method, n_lv1, counts[1], stream);
     CU(Fail, cuStreamSynchronize(stream));
     CU(Fail, cuMemcpyDtoH(h_result, d_out, n_lv1 * sizeof(uint16_t)));
     cuMemFree(d_out);
@@ -908,7 +908,7 @@ test_accum_fold_fused_u16(const char* label, enum lod_reduce_method method)
     CUdeviceptr accum_lv2 = d_accum + n_lv1 * accum_bpe;
     CU(Fail, cuMemAlloc(&d_out, n_lv2 * sizeof(uint16_t)));
     lod_accum_emit(
-      d_out, accum_lv2, lod_dtype_u16, method, n_lv2, counts[2], stream);
+      d_out, accum_lv2, dtype_u16, method, n_lv2, counts[2], stream);
     CU(Fail, cuStreamSynchronize(stream));
     CU(Fail, cuMemcpyDtoH(h_result, d_out, n_lv2 * sizeof(uint16_t)));
     cuMemFree(d_out);

@@ -1,6 +1,7 @@
 #include "zarr_fs_sink.h"
 #include "io_queue.h"
 #include "json_writer.h"
+#include "zarr_metadata.h"
 #include "defs.limits.h"
 #include "lod_plan.h"
 #include "platform.h"
@@ -204,48 +205,10 @@ struct zarr_fs_sink
 
   // For metadata updates (stored copy of config)
   struct dimension dimensions[MAX_ZARR_RANK];
-  enum zarr_dtype data_type;
+  enum dtype data_type;
   double fill_value;
   enum compression_codec codec;
 };
-
-// --- Path computation ---
-
-static int
-shard_path(char* buf,
-           size_t cap,
-           const char* array_dir,
-           uint8_t rank,
-           const uint64_t* shard_count,
-           uint64_t flat)
-{
-  int pos = snprintf(buf, cap, "%s/c", array_dir);
-  if (pos < 0 || (size_t)pos >= cap)
-    return -1;
-
-  // Unravel flat index into coordinates (row-major).
-  // Dim 0 coordinate is just the remainder after extracting inner dims,
-  // which works for both bounded and unbounded (shard_count[0] unknown).
-  uint64_t coords[MAX_ZARR_RANK];
-  uint64_t rem = flat;
-  for (int d = rank - 1; d >= 0; --d) {
-    if (d == 0) {
-      coords[d] = rem;
-    } else {
-      coords[d] = rem % shard_count[d];
-      rem /= shard_count[d];
-    }
-  }
-
-  for (int d = 0; d < rank; ++d) {
-    int n = snprintf(
-      buf + pos, cap - (size_t)pos, "/%llu", (unsigned long long)coords[d]);
-    if (n < 0 || (size_t)(pos + n) >= cap)
-      return -1;
-    pos += n;
-  }
-  return 0;
-}
 
 // --- shard_sink fence ---
 
@@ -279,17 +242,15 @@ zarr_fs_sink_open(struct shard_sink* self, uint8_t level, uint64_t shard_index)
   struct zarr_shard_writer* w = &zs->writers[inner];
 
   // Build path
-  char path[4096];
-  if (shard_path(path,
-                 sizeof(path),
-                 zs->array_dir,
-                 zs->rank,
-                 zs->shard_count,
-                 shard_index) != 0) {
-    log_error("zarr_fs_sink_open: path too long for shard %llu",
+  char key[256];
+  if (zarr_shard_key(
+        key, sizeof(key), zs->rank, zs->shard_count, shard_index) != 0) {
+    log_error("zarr_fs_sink_open: shard key too long for shard %llu",
               (unsigned long long)shard_index);
     return NULL;
   }
+  char path[4096];
+  snprintf(path, sizeof(path), "%s/%s", zs->array_dir, key);
 
   int flags = zs->unbuffered ? PLATFORM_OPEN_UNBUFFERED : 0;
   w->fd = platform_open_write(path, flags);
@@ -326,212 +287,37 @@ write_file(const char* path, const char* data, size_t len)
 }
 
 static int
-write_root_metadata(const char* store_path)
+write_root_metadata_file(const char* store_path)
 {
   char path[4096];
   snprintf(path, sizeof(path), "%s/zarr.json", store_path);
 
   char buf[256];
-  struct json_writer jw;
-  jw_init(&jw, buf, sizeof(buf));
-
-  jw_object_begin(&jw);
-  jw_key(&jw, "zarr_format");
-  jw_int(&jw, 3);
-  jw_key(&jw, "node_type");
-  jw_string(&jw, "group");
-  jw_object_end(&jw);
-
-  if (jw_error(&jw))
+  int len = zarr_root_json(buf, sizeof(buf));
+  if (len < 0)
     return -1;
-  return write_file(path, buf, jw_length(&jw));
-}
-
-static const char*
-zarr_dtype_string(enum zarr_dtype dt)
-{
-  switch (dt) {
-    case zarr_dtype_uint8:
-      return "uint8";
-    case zarr_dtype_uint16:
-      return "uint16";
-    case zarr_dtype_uint32:
-      return "uint32";
-    case zarr_dtype_uint64:
-      return "uint64";
-    case zarr_dtype_int8:
-      return "int8";
-    case zarr_dtype_int16:
-      return "int16";
-    case zarr_dtype_int32:
-      return "int32";
-    case zarr_dtype_int64:
-      return "int64";
-    case zarr_dtype_float16:
-      return "float16";
-    case zarr_dtype_float32:
-      return "float32";
-    case zarr_dtype_float64:
-      return "float64";
-  }
-  return "unknown";
+  return write_file(path, buf, (size_t)len);
 }
 
 static int
-write_array_metadata(const char* array_dir,
-                     uint8_t rank,
-                     const struct dimension* dimensions,
-                     enum zarr_dtype data_type,
-                     double fill_value,
-                     const uint64_t* chunks_per_shard,
-                     enum compression_codec codec)
+write_array_metadata_file(const char* array_dir,
+                          uint8_t rank,
+                          const struct dimension* dimensions,
+                          enum dtype data_type,
+                          double fill_value,
+                          const uint64_t* chunks_per_shard,
+                          enum compression_codec codec)
 {
   char path[4096];
   snprintf(path, sizeof(path), "%s/zarr.json", array_dir);
 
   char buf[4096];
-  struct json_writer jw;
-  jw_init(&jw, buf, sizeof(buf));
-
-  jw_object_begin(&jw);
-
-  jw_key(&jw, "zarr_format");
-  jw_int(&jw, 3);
-
-  jw_key(&jw, "node_type");
-  jw_string(&jw, "array");
-
-  jw_key(&jw, "shape");
-  jw_array_begin(&jw);
-  for (int d = 0; d < rank; ++d)
-    jw_uint(&jw, dimensions[d].size);
-  jw_array_end(&jw);
-
-  jw_key(&jw, "data_type");
-  jw_string(&jw, zarr_dtype_string(data_type));
-
-  // chunk_grid (zarr spec): each zarr outer "chunk" is a shard = chunk_size *
-  // chunks_per_shard
-  jw_key(&jw, "chunk_grid");
-  jw_object_begin(&jw);
-  jw_key(&jw, "name");
-  jw_string(&jw, "regular");
-  jw_key(&jw, "configuration");
-  jw_object_begin(&jw);
-  jw_key(&jw, "chunk_shape");
-  jw_array_begin(&jw);
-  for (int d = 0; d < rank; ++d)
-    jw_uint(&jw, dimensions[d].chunk_size * chunks_per_shard[d]);
-  jw_array_end(&jw);
-  jw_object_end(&jw);
-  jw_object_end(&jw);
-
-  jw_key(&jw, "chunk_key_encoding");
-  jw_object_begin(&jw);
-  jw_key(&jw, "name");
-  jw_string(&jw, "default");
-  jw_key(&jw, "configuration");
-  jw_object_begin(&jw);
-  jw_key(&jw, "separator");
-  jw_string(&jw, "/");
-  jw_object_end(&jw);
-  jw_object_end(&jw);
-
-  // codecs: sharding_indexed
-  jw_key(&jw, "codecs");
-  jw_array_begin(&jw);
-  jw_object_begin(&jw);
-  jw_key(&jw, "name");
-  jw_string(&jw, "sharding_indexed");
-  jw_key(&jw, "configuration");
-  jw_object_begin(&jw);
-
-  // chunk_shape (zarr spec): inner chunk = chunk shape
-  jw_key(&jw, "chunk_shape");
-  jw_array_begin(&jw);
-  for (int d = 0; d < rank; ++d)
-    jw_uint(&jw, dimensions[d].chunk_size);
-  jw_array_end(&jw);
-
-  jw_key(&jw, "codecs");
-  jw_array_begin(&jw);
-  jw_object_begin(&jw);
-  jw_key(&jw, "name");
-  jw_string(&jw, "bytes");
-  jw_key(&jw, "configuration");
-  jw_object_begin(&jw);
-  jw_key(&jw, "endian");
-  jw_string(&jw, "little");
-  jw_object_end(&jw);
-  jw_object_end(&jw);
-  if (codec != CODEC_NONE) {
-    jw_object_begin(&jw);
-    jw_key(&jw, "name");
-    jw_string(&jw, codec == CODEC_LZ4 ? "lz4" : "zstd");
-    jw_key(&jw, "configuration");
-    jw_object_begin(&jw);
-    jw_object_end(&jw);
-    jw_object_end(&jw);
-  }
-  jw_array_end(&jw);
-
-  jw_key(&jw, "index_codecs");
-  jw_array_begin(&jw);
-  jw_object_begin(&jw);
-  jw_key(&jw, "name");
-  jw_string(&jw, "bytes");
-  jw_key(&jw, "configuration");
-  jw_object_begin(&jw);
-  jw_key(&jw, "endian");
-  jw_string(&jw, "little");
-  jw_object_end(&jw);
-  jw_object_end(&jw);
-  jw_object_begin(&jw);
-  jw_key(&jw, "name");
-  jw_string(&jw, "crc32c");
-  jw_key(&jw, "configuration");
-  jw_object_begin(&jw);
-  jw_object_end(&jw);
-  jw_object_end(&jw);
-  jw_array_end(&jw);
-
-  jw_key(&jw, "index_location");
-  jw_string(&jw, "end");
-
-  jw_object_end(&jw); // configuration
-  jw_object_end(&jw); // sharding_indexed codec
-  jw_array_end(&jw);  // codecs
-
-  jw_key(&jw, "fill_value");
-  jw_float(&jw, fill_value);
-
-  // dimension_names (optional)
-  {
-    int has_names = 0;
-    for (int d = 0; d < rank; ++d) {
-      if (dimensions[d].name) {
-        has_names = 1;
-        break;
-      }
-    }
-    if (has_names) {
-      jw_key(&jw, "dimension_names");
-      jw_array_begin(&jw);
-      for (int d = 0; d < rank; ++d) {
-        if (dimensions[d].name)
-          jw_string(&jw, dimensions[d].name);
-        else
-          jw_null(&jw);
-      }
-      jw_array_end(&jw);
-    }
-  }
-
-  jw_object_end(&jw);
-
-  if (jw_error(&jw))
+  int len = zarr_array_json(
+    buf, sizeof(buf), rank, dimensions, data_type, fill_value,
+    chunks_per_shard, codec);
+  if (len < 0)
     return -1;
-  return write_file(path, buf, jw_length(&jw));
+  return write_file(path, buf, (size_t)len);
 }
 
 // --- Metadata update ---
@@ -546,13 +332,13 @@ zarr_fs_sink_update_dim0(struct shard_sink* self,
   if (zs->dimensions[0].size == dim0_size)
     return;
   zs->dimensions[0].size = dim0_size;
-  if (write_array_metadata(zs->array_dir,
-                           zs->rank,
-                           zs->dimensions,
-                           zs->data_type,
-                           zs->fill_value,
-                           zs->chunks_per_shard,
-                           zs->codec))
+  if (write_array_metadata_file(zs->array_dir,
+                                zs->rank,
+                                zs->dimensions,
+                                zs->data_type,
+                                zs->fill_value,
+                                zs->chunks_per_shard,
+                                zs->codec))
     log_error("zarr_fs_sink_update_dim0: failed to rewrite zarr.json for %s",
               zs->array_dir);
 }
@@ -588,18 +374,12 @@ zarr_fs_sink_create(const struct zarr_config* cfg)
     zs->dimensions[d] = cfg->dimensions[d];
 
   // Compute geometry
-  zs->shard_inner_count = 1;
-  for (int d = 0; d < cfg->rank; ++d) {
-    zs->chunk_count[d] =
-      (cfg->dimensions[d].size == 0)
-        ? 1
-        : ceildiv(cfg->dimensions[d].size, cfg->dimensions[d].chunk_size);
-    uint64_t cps = cfg->dimensions[d].chunks_per_shard;
-    zs->chunks_per_shard[d] = (cps == 0) ? zs->chunk_count[d] : cps;
-    zs->shard_count[d] = ceildiv(zs->chunk_count[d], zs->chunks_per_shard[d]);
-    if (d > 0)
-      zs->shard_inner_count *= zs->shard_count[d];
-  }
+  struct zarr_geometry g;
+  zarr_compute_geometry(&g, cfg->rank, cfg->dimensions);
+  memcpy(zs->chunk_count, g.chunk_count, sizeof(zs->chunk_count));
+  memcpy(zs->chunks_per_shard, g.chunks_per_shard, sizeof(zs->chunks_per_shard));
+  memcpy(zs->shard_count, g.shard_count, sizeof(zs->shard_count));
+  zs->shard_inner_count = g.shard_inner_count;
 
   // Build array directory path
   snprintf(zs->array_dir,
@@ -618,14 +398,13 @@ zarr_fs_sink_create(const struct zarr_config* cfg)
       total_shards *= zs->shard_count[0]; // bounded: create all
 
     for (uint64_t flat = 0; flat < total_shards; ++flat) {
-      char path[4096];
-      if (shard_path(path,
-                     sizeof(path),
-                     zs->array_dir,
-                     zs->rank,
-                     zs->shard_count,
-                     flat) != 0)
+      char key[256];
+      if (zarr_shard_key(
+            key, sizeof(key), zs->rank, zs->shard_count, flat) != 0)
         goto Fail_alloc;
+
+      char path[4096];
+      snprintf(path, sizeof(path), "%s/%s", zs->array_dir, key);
 
       // Get the directory portion (everything up to last '/')
       char* last_slash = strrchr(path, '/');
@@ -640,15 +419,15 @@ zarr_fs_sink_create(const struct zarr_config* cfg)
   }
 
   // Write metadata
-  CHECK(Fail_alloc, write_root_metadata(cfg->store_path) == 0);
+  CHECK(Fail_alloc, write_root_metadata_file(cfg->store_path) == 0);
   CHECK(Fail_alloc,
-        write_array_metadata(zs->array_dir,
-                             zs->rank,
-                             zs->dimensions,
-                             zs->data_type,
-                             zs->fill_value,
-                             zs->chunks_per_shard,
-                             zs->codec) == 0);
+        write_array_metadata_file(zs->array_dir,
+                                  zs->rank,
+                                  zs->dimensions,
+                                  zs->data_type,
+                                  zs->fill_value,
+                                  zs->chunks_per_shard,
+                                  zs->codec) == 0);
 
   // Allocate writer pool
   zs->num_writers = zs->shard_inner_count;
@@ -981,7 +760,7 @@ zarr_fs_multiscale_sink_create(const struct zarr_multiscale_config* cfg)
   if (cfg->array_name) {
     CHECK(Fail_ms, platform_mkdirp(cfg->store_path) == 0);
     CHECK(Fail_ms, platform_mkdirp(group_path) == 0);
-    CHECK(Fail_ms, write_root_metadata(cfg->store_path) == 0);
+    CHECK(Fail_ms, write_root_metadata_file(cfg->store_path) == 0);
   } else {
     CHECK(Fail_ms, platform_mkdirp(group_path) == 0);
   }

@@ -20,17 +20,17 @@ max(__half a, __half b)
 }
 
 #define FOR_EACH_DTYPE(X)                                                      \
-  X(lod_dtype_u8, uint8_t)                                                     \
-  X(lod_dtype_u16, uint16_t)                                                   \
-  X(lod_dtype_u32, uint32_t)                                                   \
-  X(lod_dtype_u64, uint64_t)                                                   \
-  X(lod_dtype_i8, int8_t)                                                      \
-  X(lod_dtype_i16, int16_t)                                                    \
-  X(lod_dtype_i32, int32_t)                                                    \
-  X(lod_dtype_i64, int64_t)                                                    \
-  X(lod_dtype_f16, __half)                                                     \
-  X(lod_dtype_f32, float)                                                      \
-  X(lod_dtype_f64, double)
+  X(dtype_u8, uint8_t)                                                     \
+  X(dtype_u16, uint16_t)                                                   \
+  X(dtype_u32, uint32_t)                                                   \
+  X(dtype_u64, uint64_t)                                                   \
+  X(dtype_i8, int8_t)                                                      \
+  X(dtype_i16, int16_t)                                                    \
+  X(dtype_i32, int32_t)                                                    \
+  X(dtype_i64, int64_t)                                                    \
+  X(dtype_f16, __half)                                                     \
+  X(dtype_f32, float)                                                      \
+  X(dtype_f64, double)
 
 // Widened accumulator for lod_reduce (register-only).
 template<typename T>
@@ -661,7 +661,7 @@ lod_morton_to_chunks_lut(CUdeviceptr d_chunks,
                          CUdeviceptr d_morton,
                          CUdeviceptr d_chunk_lut,
                          CUdeviceptr d_batch_chunk_offsets,
-                         enum lod_dtype dtype,
+                         enum dtype dtype,
                          uint64_t lod_count,
                          uint64_t batch_count,
                          CUstream stream)
@@ -718,7 +718,7 @@ lod_gather_lut(CUdeviceptr d_dst,
                CUdeviceptr d_src,
                CUdeviceptr d_src_lut,
                CUdeviceptr d_batch_offsets,
-               enum lod_dtype dtype,
+               enum dtype dtype,
                uint64_t lod_count,
                uint64_t batch_count,
                CUstream stream)
@@ -844,7 +844,7 @@ lod_accum_emit_k(T* __restrict__ dst,
 extern "C" int
 lod_accum_emit(CUdeviceptr d_dst,
                CUdeviceptr d_accum,
-               enum lod_dtype dtype,
+               enum dtype dtype,
                enum lod_reduce_method method,
                uint64_t n_elements,
                uint32_t count,
@@ -942,7 +942,7 @@ lod_accum_fold_fused(CUdeviceptr d_accum,
                      CUdeviceptr d_new_data,
                      CUdeviceptr d_level_ids,
                      CUdeviceptr d_counts,
-                     enum lod_dtype dtype,
+                     enum dtype dtype,
                      enum lod_reduce_method method,
                      uint64_t n_elements,
                      CUstream stream)
@@ -988,7 +988,7 @@ lod_accum_fold_fused(CUdeviceptr d_accum,
 extern "C" int
 lod_reduce(CUdeviceptr d_values,
            CUdeviceptr d_ends,
-           enum lod_dtype dtype,
+           enum dtype dtype,
            enum lod_reduce_method method,
            uint64_t src_offset,
            uint64_t dst_offset,

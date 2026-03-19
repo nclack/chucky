@@ -75,7 +75,7 @@ upload(CUdeviceptr* d, const void* h, size_t bytes)
 template<typename T>
 static int
 test_reduce(const char* label,
-            enum lod_dtype dtype,
+            enum dtype dtype,
             enum lod_reduce_method method)
 {
   using Acc = typename reduce_acc<T>::type;
@@ -162,7 +162,7 @@ Fail:
 template<typename T>
 static int
 test_fold(const char* label,
-          enum lod_dtype dtype,
+          enum dtype dtype,
           enum lod_reduce_method method,
           int n_epochs)
 {
@@ -170,7 +170,7 @@ test_fold(const char* label,
   int ok = 0;
   const uint64_t N = 64;
   const int nlod = 2;
-  size_t accum_bpe = lod_accum_bpe(dtype, method);
+  size_t accum_bpe = dtype_accum_bpe(dtype, method);
 
   CUstream stream = NULL;
   CUdeviceptr d_accum = 0, d_data = 0, d_out = 0;
@@ -336,7 +336,7 @@ test_reduce_f16(const char* label, enum lod_reduce_method method)
 
   CHECK(Fail,
         lod_reduce(
-          d_values, d_ends, lod_dtype_f16, method, 0, 8, 8, 2, 1, stream) == 0);
+          d_values, d_ends, dtype_f16, method, 0, 8, 8, 2, 1, stream) == 0);
   CU(Fail, cuStreamSynchronize(stream));
 
   {
@@ -369,7 +369,7 @@ test_fold_f16(const char* label, enum lod_reduce_method method, int n_epochs)
   int ok = 0;
   const uint64_t N = 64;
   const int nlod = 2;
-  size_t accum_bpe = lod_accum_bpe(lod_dtype_f16, method);
+  size_t accum_bpe = dtype_accum_bpe(dtype_f16, method);
 
   CUstream stream = NULL;
   CUdeviceptr d_accum = 0, d_data = 0, d_out = 0;
@@ -429,7 +429,7 @@ test_fold_f16(const char* label, enum lod_reduce_method method, int n_epochs)
                                  d_data,
                                  d_level_ids,
                                  d_counts,
-                                 lod_dtype_f16,
+                                 dtype_f16,
                                  method,
                                  N,
                                  stream) == 0);
@@ -440,7 +440,7 @@ test_fold_f16(const char* label, enum lod_reduce_method method, int n_epochs)
   CHECK(
     Fail,
     lod_accum_emit(
-      d_out, d_accum, lod_dtype_f16, method, N, (uint32_t)n_epochs, stream) ==
+      d_out, d_accum, dtype_f16, method, N, (uint32_t)n_epochs, stream) ==
       0);
   CU(Fail, cuStreamSynchronize(stream));
   CU(Fail, cuMemcpyDtoH(h_result, d_out, N * sizeof(__half)));
@@ -492,37 +492,37 @@ main(void)
 
 #define R(label, T, dtype, method) nfail += test_reduce<T>(label, dtype, method)
 
-  R("reduce_u8_mean", uint8_t, lod_dtype_u8, lod_reduce_mean);
-  R("reduce_u8_min", uint8_t, lod_dtype_u8, lod_reduce_min);
-  R("reduce_u8_max", uint8_t, lod_dtype_u8, lod_reduce_max);
+  R("reduce_u8_mean", uint8_t, dtype_u8, lod_reduce_mean);
+  R("reduce_u8_min", uint8_t, dtype_u8, lod_reduce_min);
+  R("reduce_u8_max", uint8_t, dtype_u8, lod_reduce_max);
 
-  R("reduce_i8_mean", int8_t, lod_dtype_i8, lod_reduce_mean);
-  R("reduce_i8_min", int8_t, lod_dtype_i8, lod_reduce_min);
-  R("reduce_i8_max", int8_t, lod_dtype_i8, lod_reduce_max);
+  R("reduce_i8_mean", int8_t, dtype_i8, lod_reduce_mean);
+  R("reduce_i8_min", int8_t, dtype_i8, lod_reduce_min);
+  R("reduce_i8_max", int8_t, dtype_i8, lod_reduce_max);
 
-  R("reduce_i16_mean", int16_t, lod_dtype_i16, lod_reduce_mean);
-  R("reduce_i16_min", int16_t, lod_dtype_i16, lod_reduce_min);
-  R("reduce_i16_max", int16_t, lod_dtype_i16, lod_reduce_max);
+  R("reduce_i16_mean", int16_t, dtype_i16, lod_reduce_mean);
+  R("reduce_i16_min", int16_t, dtype_i16, lod_reduce_min);
+  R("reduce_i16_max", int16_t, dtype_i16, lod_reduce_max);
 
-  R("reduce_u32_mean", uint32_t, lod_dtype_u32, lod_reduce_mean);
-  R("reduce_u32_min", uint32_t, lod_dtype_u32, lod_reduce_min);
-  R("reduce_u32_max", uint32_t, lod_dtype_u32, lod_reduce_max);
+  R("reduce_u32_mean", uint32_t, dtype_u32, lod_reduce_mean);
+  R("reduce_u32_min", uint32_t, dtype_u32, lod_reduce_min);
+  R("reduce_u32_max", uint32_t, dtype_u32, lod_reduce_max);
 
-  R("reduce_i32_mean", int32_t, lod_dtype_i32, lod_reduce_mean);
-  R("reduce_i32_min", int32_t, lod_dtype_i32, lod_reduce_min);
-  R("reduce_i32_max", int32_t, lod_dtype_i32, lod_reduce_max);
+  R("reduce_i32_mean", int32_t, dtype_i32, lod_reduce_mean);
+  R("reduce_i32_min", int32_t, dtype_i32, lod_reduce_min);
+  R("reduce_i32_max", int32_t, dtype_i32, lod_reduce_max);
 
-  R("reduce_u64_mean", uint64_t, lod_dtype_u64, lod_reduce_mean);
-  R("reduce_u64_min", uint64_t, lod_dtype_u64, lod_reduce_min);
-  R("reduce_u64_max", uint64_t, lod_dtype_u64, lod_reduce_max);
+  R("reduce_u64_mean", uint64_t, dtype_u64, lod_reduce_mean);
+  R("reduce_u64_min", uint64_t, dtype_u64, lod_reduce_min);
+  R("reduce_u64_max", uint64_t, dtype_u64, lod_reduce_max);
 
-  R("reduce_i64_mean", int64_t, lod_dtype_i64, lod_reduce_mean);
-  R("reduce_i64_min", int64_t, lod_dtype_i64, lod_reduce_min);
-  R("reduce_i64_max", int64_t, lod_dtype_i64, lod_reduce_max);
+  R("reduce_i64_mean", int64_t, dtype_i64, lod_reduce_mean);
+  R("reduce_i64_min", int64_t, dtype_i64, lod_reduce_min);
+  R("reduce_i64_max", int64_t, dtype_i64, lod_reduce_max);
 
-  R("reduce_f64_mean", double, lod_dtype_f64, lod_reduce_mean);
-  R("reduce_f64_min", double, lod_dtype_f64, lod_reduce_min);
-  R("reduce_f64_max", double, lod_dtype_f64, lod_reduce_max);
+  R("reduce_f64_mean", double, dtype_f64, lod_reduce_mean);
+  R("reduce_f64_min", double, dtype_f64, lod_reduce_min);
+  R("reduce_f64_max", double, dtype_f64, lod_reduce_max);
 #undef R
 
   nfail += test_reduce_f16("reduce_f16_mean", lod_reduce_mean);
@@ -534,30 +534,30 @@ main(void)
 #define F(label, T, dtype, method)                                             \
   nfail += test_fold<T>(label, dtype, method, 4)
 
-  F("fold_u8_mean", uint8_t, lod_dtype_u8, lod_reduce_mean);
-  F("fold_u8_min", uint8_t, lod_dtype_u8, lod_reduce_min);
-  F("fold_u8_max", uint8_t, lod_dtype_u8, lod_reduce_max);
+  F("fold_u8_mean", uint8_t, dtype_u8, lod_reduce_mean);
+  F("fold_u8_min", uint8_t, dtype_u8, lod_reduce_min);
+  F("fold_u8_max", uint8_t, dtype_u8, lod_reduce_max);
 
-  F("fold_i8_mean", int8_t, lod_dtype_i8, lod_reduce_mean);
-  F("fold_i8_min", int8_t, lod_dtype_i8, lod_reduce_min);
+  F("fold_i8_mean", int8_t, dtype_i8, lod_reduce_mean);
+  F("fold_i8_min", int8_t, dtype_i8, lod_reduce_min);
 
-  F("fold_i16_mean", int16_t, lod_dtype_i16, lod_reduce_mean);
-  F("fold_i16_max", int16_t, lod_dtype_i16, lod_reduce_max);
+  F("fold_i16_mean", int16_t, dtype_i16, lod_reduce_mean);
+  F("fold_i16_max", int16_t, dtype_i16, lod_reduce_max);
 
-  F("fold_u32_mean", uint32_t, lod_dtype_u32, lod_reduce_mean);
-  F("fold_u32_min", uint32_t, lod_dtype_u32, lod_reduce_min);
+  F("fold_u32_mean", uint32_t, dtype_u32, lod_reduce_mean);
+  F("fold_u32_min", uint32_t, dtype_u32, lod_reduce_min);
 
-  F("fold_i32_mean", int32_t, lod_dtype_i32, lod_reduce_mean);
-  F("fold_i32_max", int32_t, lod_dtype_i32, lod_reduce_max);
+  F("fold_i32_mean", int32_t, dtype_i32, lod_reduce_mean);
+  F("fold_i32_max", int32_t, dtype_i32, lod_reduce_max);
 
-  F("fold_u64_mean", uint64_t, lod_dtype_u64, lod_reduce_mean);
-  F("fold_u64_min", uint64_t, lod_dtype_u64, lod_reduce_min);
+  F("fold_u64_mean", uint64_t, dtype_u64, lod_reduce_mean);
+  F("fold_u64_min", uint64_t, dtype_u64, lod_reduce_min);
 
-  F("fold_i64_mean", int64_t, lod_dtype_i64, lod_reduce_mean);
+  F("fold_i64_mean", int64_t, dtype_i64, lod_reduce_mean);
 
-  F("fold_f64_mean", double, lod_dtype_f64, lod_reduce_mean);
-  F("fold_f64_min", double, lod_dtype_f64, lod_reduce_min);
-  F("fold_f64_max", double, lod_dtype_f64, lod_reduce_max);
+  F("fold_f64_mean", double, dtype_f64, lod_reduce_mean);
+  F("fold_f64_min", double, dtype_f64, lod_reduce_min);
+  F("fold_f64_max", double, dtype_f64, lod_reduce_max);
 #undef F
 
   nfail += test_fold_f16("fold_f16_mean", lod_reduce_mean, 4);

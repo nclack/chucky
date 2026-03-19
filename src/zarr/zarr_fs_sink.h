@@ -1,31 +1,17 @@
 #pragma once
 
 #include "dimension.h"
+#include "dtype.h"
 #include "types.codec.h"
 #include "writer.h"
 
 #include <stdint.h>
 
-enum zarr_dtype
-{
-  zarr_dtype_uint8,
-  zarr_dtype_uint16,
-  zarr_dtype_uint32,
-  zarr_dtype_uint64,
-  zarr_dtype_int8,
-  zarr_dtype_int16,
-  zarr_dtype_int32,
-  zarr_dtype_int64,
-  zarr_dtype_float16,
-  zarr_dtype_float32,
-  zarr_dtype_float64,
-};
-
 struct zarr_config
 {
   const char* store_path; // root directory
   const char* array_name; // e.g. "0"
-  enum zarr_dtype data_type;
+  enum dtype data_type;
   double fill_value;
   uint8_t rank;
   const struct dimension* dimensions;
@@ -62,7 +48,7 @@ struct zarr_multiscale_config
   const char* store_path; // root directory
   const char*
     array_name; // group name (e.g. "multiscale"); NULL → write at store_path
-  enum zarr_dtype data_type;
+  enum dtype data_type;
   double fill_value;
   uint8_t rank;
   const struct dimension* dimensions; // L0 dimensions

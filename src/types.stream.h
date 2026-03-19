@@ -30,7 +30,7 @@ struct stream_metrics
 struct tile_stream_configuration
 {
   size_t buffer_capacity_bytes;
-  enum lod_dtype dtype;
+  enum dtype dtype;
   uint8_t rank;
   const struct dimension* dimensions;
   struct shard_sink* shard_sink; // downstream shard writer factory, not owned
@@ -73,7 +73,7 @@ struct tile_stream_status
   int dim0_downsample;
   uint32_t epochs_per_batch;
   size_t max_compressed_size;
-  enum lod_dtype dtype;
+  enum dtype dtype;
   enum compression_codec codec;
   size_t codec_batch_size;
   uint32_t batch_accumulated;

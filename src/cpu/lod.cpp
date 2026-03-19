@@ -423,34 +423,34 @@ dim0_emit_typed(T* dst,
 
 #define DISPATCH(dtype, call)                                                  \
   switch (dtype) {                                                             \
-    case lod_dtype_u8:                                                         \
+    case dtype_u8:                                                         \
       call(uint8_t);                                                           \
       break;                                                                   \
-    case lod_dtype_u16:                                                        \
+    case dtype_u16:                                                        \
       call(uint16_t);                                                          \
       break;                                                                   \
-    case lod_dtype_u32:                                                        \
+    case dtype_u32:                                                        \
       call(uint32_t);                                                          \
       break;                                                                   \
-    case lod_dtype_u64:                                                        \
+    case dtype_u64:                                                        \
       call(uint64_t);                                                          \
       break;                                                                   \
-    case lod_dtype_i8:                                                         \
+    case dtype_i8:                                                         \
       call(int8_t);                                                            \
       break;                                                                   \
-    case lod_dtype_i16:                                                        \
+    case dtype_i16:                                                        \
       call(int16_t);                                                           \
       break;                                                                   \
-    case lod_dtype_i32:                                                        \
+    case dtype_i32:                                                        \
       call(int32_t);                                                           \
       break;                                                                   \
-    case lod_dtype_i64:                                                        \
+    case dtype_i64:                                                        \
       call(int64_t);                                                           \
       break;                                                                   \
-    case lod_dtype_f32:                                                        \
+    case dtype_f32:                                                        \
       call(float);                                                             \
       break;                                                                   \
-    case lod_dtype_f64:                                                        \
+    case dtype_f64:                                                        \
       call(double);                                                            \
       break;                                                                   \
     default:                                                                   \
@@ -463,7 +463,7 @@ extern "C" int
 lod_cpu_scatter(const lod_plan* p,
                 const void* src,
                 void* dst,
-                lod_dtype dtype)
+                enum dtype dtype)
 {
 #define DO(T) scatter_typed((const T*)src, (T*)dst)
   // Need p in scope for scatter_typed
@@ -477,7 +477,7 @@ lod_cpu_scatter(const lod_plan* p,
 extern "C" int
 lod_cpu_reduce(const lod_plan* p,
                void* values,
-               lod_dtype dtype,
+               enum dtype dtype,
                lod_reduce_method method)
 {
 #define DO(T) reduce_typed(p, (T*)values, method)
@@ -490,13 +490,13 @@ extern "C" int
 lod_cpu_compute(const lod_plan* p,
                 const void* src,
                 void** out_values,
-                lod_dtype dtype,
+                enum dtype dtype,
                 lod_reduce_method method)
 {
   *out_values = nullptr;
   void* values = nullptr;
 
-  size_t bpe = lod_dtype_bpe(dtype);
+  size_t bpe = dtype_bpe(dtype);
   if (bpe == 0)
     return 1;
 
@@ -534,11 +534,11 @@ lod_cpu_morton_to_chunks(const lod_plan* p,
                          const tile_stream_layout* layout,
                          const uint32_t* chunk_lut_in,
                          const uint64_t* batch_chunk_offsets,
-                         lod_dtype dtype)
+                         enum dtype dtype)
 {
   const uint64_t lod_count = p->lod_counts[lv];
   const lod_span lv_span = lod_spans_at(&p->levels, (uint64_t)lv);
-  const size_t bpe = lod_dtype_bpe(dtype);
+  const size_t bpe = dtype_bpe(dtype);
   const char* lv_values = (const char*)values + lv_span.beg * bpe;
 
   // Use provided LUT or build one (legacy/standalone path).
@@ -567,10 +567,10 @@ lod_cpu_dim0_fold(const lod_plan* p,
                   const void* morton_values,
                   void* accum,
                   const uint32_t* counts,
-                  lod_dtype dtype,
+                  enum dtype dtype,
                   lod_reduce_method method)
 {
-  const size_t bpe = lod_dtype_bpe(dtype);
+  const size_t bpe = dtype_bpe(dtype);
   uint64_t accum_offset = 0;
 
   for (int lv = 1; lv < p->nlod; ++lv) {
@@ -596,10 +596,10 @@ lod_cpu_dim0_emit(const lod_plan* p,
                   const void* accum,
                   int lv,
                   uint32_t count,
-                  lod_dtype dtype,
+                  enum dtype dtype,
                   lod_reduce_method method)
 {
-  const size_t bpe = lod_dtype_bpe(dtype);
+  const size_t bpe = dtype_bpe(dtype);
   lod_span lev = lod_spans_at(&p->levels, (uint64_t)lv);
   uint64_t n = p->batch_count * p->lod_counts[lv];
 
@@ -636,7 +636,7 @@ lod_cpu_gather(const lod_plan* p,
                void* dst,
                const uint32_t* scatter_lut,
                const uint64_t* batch_offsets,
-               lod_dtype dtype)
+               enum dtype dtype)
 {
 #define DO(T)                                                                  \
   gather_typed(p, (const T*)src, (T*)dst, scatter_lut, batch_offsets)

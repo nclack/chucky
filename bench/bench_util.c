@@ -231,7 +231,7 @@ print_metric_row(const struct stream_metric* m)
 
 void
 log_bench_header(const struct tile_stream_layout* layout,
-                 enum lod_dtype dtype,
+                 enum dtype dtype,
                  enum compression_codec codec,
                  size_t max_compressed_size,
                  size_t codec_batch_size,
@@ -248,7 +248,7 @@ log_bench_header(const struct tile_stream_layout* layout,
   print_report(
     "  chunk:       %lu elements = %lu KiB  (stride=%lu)",
     (unsigned long)layout->chunk_elements,
-    (unsigned long)(layout->chunk_stride * lod_dtype_bpe(dtype) / 1024),
+    (unsigned long)(layout->chunk_stride * dtype_bpe(dtype) / 1024),
     (unsigned long)layout->chunk_stride);
   print_report("  epoch:       %lu slots, %lu MiB pool",
                (unsigned long)layout->chunks_per_epoch,
@@ -262,7 +262,7 @@ log_bench_header(const struct tile_stream_layout* layout,
 void
 print_bench_report(const struct stream_metrics* metrics,
                    const struct tile_stream_layout* layout,
-                   enum lod_dtype dtype,
+                   enum dtype dtype,
                    const struct sink_stats* ss,
                    size_t total_bytes,
                    size_t total_elements,
@@ -271,7 +271,7 @@ print_bench_report(const struct stream_metrics* metrics,
                    float flush_s,
                    size_t flush_pending_bytes)
 {
-  const size_t chunk_bytes = layout->chunk_stride * lod_dtype_bpe(dtype);
+  const size_t chunk_bytes = layout->chunk_stride * dtype_bpe(dtype);
   const size_t num_epochs =
     (total_elements + layout->epoch_elements - 1) / layout->epoch_elements;
   const uint64_t chunks_per_epoch =
@@ -407,7 +407,7 @@ run_bench(const struct bench_config* cfg)
 
   // --- Chunk sizing ---
   if (cfg->chunk_ratios) {
-    size_t bpe = lod_dtype_bpe(lod_dtype_u16);
+    size_t bpe = dtype_bpe(dtype_u16);
     size_t target = cfg->target_chunk_bytes ? cfg->target_chunk_bytes : (1 << 20);
     size_t budget = cfg->memory_budget;
 
@@ -437,7 +437,7 @@ run_bench(const struct bench_config* cfg)
       discard_shard_sink_init(&fit_dss);
       struct tile_stream_configuration fit_config = {
         .buffer_capacity_bytes = 128 << 20,
-        .dtype = lod_dtype_u16,
+        .dtype = dtype_u16,
         .rank = rank,
         .dimensions = dims,
         .codec = cfg->codec,
@@ -494,7 +494,7 @@ run_bench(const struct bench_config* cfg)
       struct zarr_multiscale_config zcfg = {
         .store_path = output_path,
         .array_name = array_name,
-        .data_type = zarr_dtype_uint16,
+        .data_type = dtype_u16,
         .fill_value = 0,
         .rank = rank,
         .dimensions = dims,
@@ -508,7 +508,7 @@ run_bench(const struct bench_config* cfg)
       struct zarr_config zcfg = {
         .store_path = output_path,
         .array_name = array_name,
-        .data_type = zarr_dtype_uint16,
+        .data_type = dtype_u16,
         .fill_value = 0,
         .rank = rank,
         .dimensions = dims,
@@ -524,7 +524,7 @@ run_bench(const struct bench_config* cfg)
 
   const struct tile_stream_configuration config = {
     .buffer_capacity_bytes = 128 << 20,
-    .dtype = lod_dtype_u16,
+    .dtype = dtype_u16,
     .rank = rank,
     .dimensions = dims,
     .codec = cfg->codec,

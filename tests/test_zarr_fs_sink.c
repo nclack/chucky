@@ -65,7 +65,7 @@ test_metadata(const char* tmpdir)
   struct zarr_config cfg = {
     .store_path = tmpdir,
     .array_name = "0",
-    .data_type = zarr_dtype_uint32,
+    .data_type = dtype_u32,
     .fill_value = 0,
     .rank = 3,
     .dimensions = dims,
@@ -176,7 +176,7 @@ test_pipeline(const char* tmpdir)
   struct zarr_config zcfg = {
     .store_path = tmpdir,
     .array_name = "0",
-    .data_type = zarr_dtype_uint32,
+    .data_type = dtype_u32,
     .fill_value = 0,
     .rank = 3,
     .dimensions = dims,
@@ -188,7 +188,7 @@ test_pipeline(const char* tmpdir)
   // Configure stream
   const struct tile_stream_configuration config = {
     .buffer_capacity_bytes = (size_t)total_elements * sizeof(uint32_t),
-    .dtype = lod_dtype_u32,
+    .dtype = dtype_u32,
     .rank = 3,
     .dimensions = dims,
     .codec = CODEC_ZSTD,
@@ -368,7 +368,7 @@ test_multiscale_metadata(const char* tmpdir)
 
   struct zarr_multiscale_config cfg = {
     .store_path = tmpdir,
-    .data_type = zarr_dtype_uint16,
+    .data_type = dtype_u16,
     .fill_value = 0,
     .rank = 3,
     .dimensions = dims,
@@ -471,7 +471,7 @@ test_unbounded_metadata_update(const char* tmpdir)
   struct zarr_config cfg = {
     .store_path = tmpdir,
     .array_name = "0",
-    .data_type = zarr_dtype_uint16,
+    .data_type = dtype_u16,
     .fill_value = 0,
     .rank = 3,
     .dimensions = dims,
@@ -499,7 +499,7 @@ test_unbounded_metadata_update(const char* tmpdir)
   // Stream some data through the pipeline
   const struct tile_stream_configuration config = {
     .buffer_capacity_bytes = 4096,
-    .dtype = lod_dtype_u16,
+    .dtype = dtype_u16,
     .rank = 3,
     .dimensions = dims,
     .codec = CODEC_ZSTD,
@@ -598,7 +598,7 @@ test_multiscale_unbounded(const char* tmpdir)
 
   struct zarr_multiscale_config cfg = {
     .store_path = tmpdir,
-    .data_type = zarr_dtype_uint16,
+    .data_type = dtype_u16,
     .fill_value = 0,
     .rank = 3,
     .dimensions = dims,
@@ -698,7 +698,7 @@ test_midstream_metadata_update(const char* tmpdir)
   struct zarr_config cfg = {
     .store_path = tmpdir,
     .array_name = "0",
-    .data_type = zarr_dtype_uint16,
+    .data_type = dtype_u16,
     .fill_value = 0,
     .rank = 3,
     .dimensions = dims,
@@ -711,7 +711,7 @@ test_midstream_metadata_update(const char* tmpdir)
   // Force epochs_per_batch=1 so each epoch triggers a flush (and timer check).
   const struct tile_stream_configuration config = {
     .buffer_capacity_bytes = 4096,
-    .dtype = lod_dtype_u16,
+    .dtype = dtype_u16,
     .rank = 3,
     .dimensions = dims,
     .codec = CODEC_ZSTD,
@@ -845,7 +845,7 @@ test_unbuffered_pipeline(const char* tmpdir)
   struct zarr_config zcfg = {
     .store_path = tmpdir,
     .array_name = "0",
-    .data_type = zarr_dtype_uint32,
+    .data_type = dtype_u32,
     .fill_value = 0,
     .rank = 3,
     .dimensions = dims,
@@ -857,7 +857,7 @@ test_unbuffered_pipeline(const char* tmpdir)
 
   const struct tile_stream_configuration config = {
     .buffer_capacity_bytes = (size_t)total_elements * sizeof(uint32_t),
-    .dtype = lod_dtype_u32,
+    .dtype = dtype_u32,
     .rank = 3,
     .dimensions = dims,
     .codec = CODEC_ZSTD,
@@ -1052,7 +1052,7 @@ test_unbuffered_pipeline_multishard(const char* tmpdir)
   struct zarr_config zcfg = {
     .store_path = tmpdir,
     .array_name = "0",
-    .data_type = zarr_dtype_uint32,
+    .data_type = dtype_u32,
     .fill_value = 0,
     .rank = 3,
     .dimensions = dims,
@@ -1065,7 +1065,7 @@ test_unbuffered_pipeline_multishard(const char* tmpdir)
   // Configure stream with shard alignment for unbuffered IO
   const struct tile_stream_configuration config = {
     .buffer_capacity_bytes = (size_t)total_elements * sizeof(uint32_t),
-    .dtype = lod_dtype_u32,
+    .dtype = dtype_u32,
     .rank = 3,
     .dimensions = dims,
     .codec = CODEC_ZSTD,
@@ -1254,7 +1254,7 @@ test_storage_order_validation(const char* tmpdir)
     struct tile_stream_memory_info info;
     struct tile_stream_configuration config = {
       .buffer_capacity_bytes = 4096,
-      .dtype = lod_dtype_u16,
+      .dtype = dtype_u16,
       .rank = 3,
       .dimensions = bad_dims,
     };
@@ -1284,7 +1284,7 @@ test_storage_order_validation(const char* tmpdir)
     struct tile_stream_memory_info info;
     struct tile_stream_configuration config = {
       .buffer_capacity_bytes = 4096,
-      .dtype = lod_dtype_u16,
+      .dtype = dtype_u16,
       .rank = 3,
       .dimensions = bad_dims,
     };
@@ -1314,7 +1314,7 @@ test_storage_order_validation(const char* tmpdir)
     struct tile_stream_memory_info info;
     struct tile_stream_configuration config = {
       .buffer_capacity_bytes = 4096,
-      .dtype = lod_dtype_u16,
+      .dtype = dtype_u16,
       .rank = 3,
       .dimensions = bad_dims,
     };
@@ -1327,7 +1327,7 @@ test_storage_order_validation(const char* tmpdir)
     struct tile_stream_memory_info info;
     struct tile_stream_configuration config = {
       .buffer_capacity_bytes = 4096,
-      .dtype = lod_dtype_u16,
+      .dtype = dtype_u16,
       .rank = 3,
       .dimensions = dims,
     };
@@ -1357,7 +1357,7 @@ test_storage_order_validation(const char* tmpdir)
     struct tile_stream_memory_info info;
     struct tile_stream_configuration config = {
       .buffer_capacity_bytes = 4096,
-      .dtype = lod_dtype_u16,
+      .dtype = dtype_u16,
       .rank = 3,
       .dimensions = id_dims,
     };
@@ -1387,7 +1387,7 @@ test_storage_order_validation(const char* tmpdir)
     struct tile_stream_memory_info info;
     struct tile_stream_configuration config = {
       .buffer_capacity_bytes = 4096,
-      .dtype = lod_dtype_u16,
+      .dtype = dtype_u16,
       .rank = 3,
       .dimensions = perm_dims,
     };
@@ -1500,7 +1500,7 @@ test_pipeline_storage_order(const char* tmpdir)
   struct zarr_config zcfg = {
     .store_path = tmpdir,
     .array_name = "0",
-    .data_type = zarr_dtype_uint32,
+    .data_type = dtype_u32,
     .fill_value = 0,
     .rank = 3,
     .dimensions = sto_dims,
@@ -1512,7 +1512,7 @@ test_pipeline_storage_order(const char* tmpdir)
   // tile_stream uses acquisition-order dims (same array, with storage_position)
   const struct tile_stream_configuration config = {
     .buffer_capacity_bytes = (size_t)total_elements * sizeof(uint32_t),
-    .dtype = lod_dtype_u32,
+    .dtype = dtype_u32,
     .rank = 3,
     .dimensions = dims,
     .codec = CODEC_ZSTD,

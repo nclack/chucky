@@ -82,7 +82,7 @@ test_ctx_setup(struct test_ctx* c,
   c->d2h_inited = 1;
 
   size_t pool_bytes = (uint64_t)n_pool_epochs * c->cl.levels.total_chunks *
-                      c->cl.l0.chunk_stride * lod_dtype_bpe(config->dtype);
+                      c->cl.l0.chunk_stride * dtype_bpe(config->dtype);
   CU(Fail, cuMemAlloc(&c->d_pool, pool_bytes));
 
   c->batch = (struct batch_state){
@@ -181,7 +181,7 @@ test_d2h_single_epoch_none(void)
 
   const uint64_t total_chunks = c.cl.levels.total_chunks;
   const uint64_t chunk_stride = c.cl.l0.chunk_stride;
-  const size_t bpe = lod_dtype_bpe(config.dtype);
+  const size_t bpe = dtype_bpe(config.dtype);
   const size_t chunk_bytes = chunk_stride * bpe;
 
   log_info("  total_chunks=%lu chunk_stride=%lu chunk_bytes=%zu",
@@ -249,7 +249,7 @@ test_d2h_batch_none(void)
 
   const uint64_t total_chunks = c.cl.levels.total_chunks;
   const uint64_t chunk_stride = c.cl.l0.chunk_stride;
-  const size_t bpe = lod_dtype_bpe(config.dtype);
+  const size_t bpe = dtype_bpe(config.dtype);
   const size_t chunk_bytes = chunk_stride * bpe;
 
   // Fill pool: epoch 0 and epoch 1
@@ -390,7 +390,7 @@ test_d2h_zstd_single_epoch(void)
 
   const uint64_t total_chunks = c.cl.levels.total_chunks;
   const uint64_t chunk_stride = c.cl.l0.chunk_stride;
-  const size_t bpe = lod_dtype_bpe(config.dtype);
+  const size_t bpe = dtype_bpe(config.dtype);
   const size_t chunk_bytes = chunk_stride * bpe;
 
   CHECK(Fail,
@@ -488,7 +488,7 @@ test_d2h_double_buffer(void)
 
   const uint64_t total_chunks = c.cl.levels.total_chunks;
   const uint64_t chunk_stride = c.cl.l0.chunk_stride;
-  const size_t bpe = lod_dtype_bpe(config.dtype);
+  const size_t bpe = dtype_bpe(config.dtype);
   const size_t chunk_bytes = chunk_stride * bpe;
   size_t epoch_pool_bytes = total_chunks * chunk_stride * bpe;
 

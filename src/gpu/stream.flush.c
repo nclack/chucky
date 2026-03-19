@@ -39,7 +39,7 @@ make_compress_input(struct flush_context* ctx, int fc, uint32_t n_epochs)
 static inline void*
 pool_epoch_ptr(struct flush_context* ctx, uint32_t epoch_in_batch)
 {
-  const size_t bpe = lod_dtype_bpe(ctx->config->dtype);
+  const size_t bpe = dtype_bpe(ctx->config->dtype);
   return (char*)ctx->pools->buf[ctx->pools->current] +
          (uint64_t)epoch_in_batch * ctx->levels->total_chunks *
            ctx->layout->chunk_stride * bpe;
@@ -100,7 +100,7 @@ drain_kick_and_swap(struct flush_context* ctx)
   ctx->pools->current ^= 1;
   size_t pool_bytes = (uint64_t)K * ctx->levels->total_chunks *
                       ctx->layout->chunk_stride *
-                      lod_dtype_bpe(ctx->config->dtype);
+                      dtype_bpe(ctx->config->dtype);
   CU(Error,
      cuMemsetD8Async(ctx->pools->buf[ctx->pools->current],
                      0,
@@ -202,7 +202,7 @@ kick_and_deliver_one_epoch(struct flush_context* ctx,
 
   // Point pool_buf at the specific epoch
   const size_t chunk_bytes =
-    ctx->layout->chunk_stride * lod_dtype_bpe(ctx->config->dtype);
+    ctx->layout->chunk_stride * dtype_bpe(ctx->config->dtype);
   in.pool_buf = ctx->pools->buf[fc] + (uint64_t)epoch_in_batch *
                                         ctx->levels->total_chunks * chunk_bytes;
 
@@ -313,8 +313,8 @@ flush_partial_dim0(struct flush_context* ctx)
     return writer_ok();
 
   const struct lod_plan* p = &ctx->lod->plan;
-  const size_t bpe = lod_dtype_bpe(ctx->config->dtype);
-  const enum lod_dtype dtype = ctx->config->dtype;
+  const size_t bpe = dtype_bpe(ctx->config->dtype);
+  const enum dtype dtype = ctx->config->dtype;
 
   // Check if any level has pending data
   uint32_t active_levels_mask = 0;
@@ -343,7 +343,7 @@ flush_partial_dim0(struct flush_context* ctx)
     for (int k = 1; k < lv; ++k)
       accum_offset += p->batch_count * p->lod_counts[k];
 
-    size_t accum_bpe = lod_accum_bpe(dtype, ctx->config->dim0_reduce_method);
+    size_t accum_bpe = dtype_accum_bpe(dtype, ctx->config->dim0_reduce_method);
 
     struct lod_span lev = lod_spans_at(&p->levels, lv);
     CUdeviceptr morton_lv = ctx->lod->d_morton + lev.beg * bpe;

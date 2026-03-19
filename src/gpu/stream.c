@@ -22,7 +22,7 @@ tile_stream_gpu_flush(struct writer* self);
 static inline void*
 current_pool_epoch(struct tile_stream_gpu* s, uint32_t epoch_in_batch)
 {
-  const size_t bpe = lod_dtype_bpe(s->config.dtype);
+  const size_t bpe = dtype_bpe(s->config.dtype);
   return (char*)s->pools.buf[s->pools.current] + (uint64_t)epoch_in_batch *
                                                    s->levels.total_chunks *
                                                    s->layout.chunk_stride * bpe;
@@ -57,7 +57,7 @@ dispatch_ingest(struct tile_stream_gpu* s)
                                       s->lod.d_linear,
                                       s->layout.epoch_elements,
                                       &s->cursor,
-                                      lod_dtype_bpe(s->config.dtype),
+                                      dtype_bpe(s->config.dtype),
                                       s->streams.h2d,
                                       s->streams.compute);
   } else {
@@ -67,7 +67,7 @@ dispatch_ingest(struct tile_stream_gpu* s)
                                    current_pool_epoch(s, s->batch.accumulated),
                                    s->pools.ready[s->pools.current],
                                    &s->cursor,
-                                   lod_dtype_bpe(s->config.dtype),
+                                   dtype_bpe(s->config.dtype),
                                    s->streams.h2d,
                                    s->streams.compute);
   }
@@ -84,7 +84,7 @@ tile_stream_gpu_append(struct writer* self, struct slice input)
 {
   struct tile_stream_gpu* s =
     container_of(self, struct tile_stream_gpu, writer);
-  const size_t bpe = lod_dtype_bpe(s->config.dtype);
+  const size_t bpe = dtype_bpe(s->config.dtype);
   const size_t buffer_capacity = s->config.buffer_capacity_bytes;
   const uint8_t* src = (const uint8_t*)input.beg;
   const uint8_t* end = (const uint8_t*)input.end;

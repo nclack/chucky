@@ -25,7 +25,7 @@ tile_stream_cpu_create(const struct tile_stream_configuration* config)
 {
   if (!config || !config->shard_sink)
     return NULL;
-  if (config->dtype == lod_dtype_f16)
+  if (config->dtype == dtype_f16)
     return NULL;
 
   struct tile_stream_cpu* s =
@@ -46,7 +46,7 @@ tile_stream_cpu_create(const struct tile_stream_configuration* config)
   // Force K=1 on CPU.
   s->cl.epochs_per_batch = 1;
 
-  const size_t bpe = lod_dtype_bpe(config->dtype);
+  const size_t bpe = dtype_bpe(config->dtype);
   const uint64_t total_chunks = s->levels.total_chunks;
   const size_t chunk_stride_bytes = s->layout.chunk_stride * bpe;
   const size_t max_out = s->cl.max_output_size;
@@ -400,7 +400,7 @@ tile_stream_cpu_memory_estimate(
     return 1;
 
   cl.epochs_per_batch = 1;
-  compute_memory_info(&cl, lod_dtype_bpe(config->dtype), info);
+  compute_memory_info(&cl, dtype_bpe(config->dtype), info);
   computed_stream_layouts_free(&cl);
   return 0;
 }
@@ -411,7 +411,7 @@ tile_stream_cpu_memory_estimate(
 static int
 flush_epoch(struct tile_stream_cpu* s, uint32_t active_levels_mask)
 {
-  const size_t bpe = lod_dtype_bpe(s->config.dtype);
+  const size_t bpe = dtype_bpe(s->config.dtype);
   const size_t max_out = s->cl.max_output_size;
 
   // Compress all chunks in one batch (all levels contiguous in pool).
@@ -508,7 +508,7 @@ flush_epoch(struct tile_stream_cpu* s, uint32_t active_levels_mask)
 static int
 scatter_epoch(struct tile_stream_cpu* s, uint32_t* out_mask)
 {
-  const size_t bpe = lod_dtype_bpe(s->config.dtype);
+  const size_t bpe = dtype_bpe(s->config.dtype);
 
   if (!s->levels.enable_multiscale) {
     // Simple path: transpose was already done during append.
@@ -613,7 +613,7 @@ cpu_append(struct writer* self, struct slice input)
 {
   struct tile_stream_cpu* s =
     container_of(self, struct tile_stream_cpu, writer);
-  const size_t bpe = lod_dtype_bpe(s->config.dtype);
+  const size_t bpe = dtype_bpe(s->config.dtype);
   const uint8_t* src = (const uint8_t*)input.beg;
   const uint8_t* end = (const uint8_t*)input.end;
 
@@ -737,7 +737,7 @@ cpu_flush(struct writer* self)
 
   // Drain any partial dim0 accumulators (levels that haven't emitted yet).
   if (s->levels.dim0_downsample && s->dim0_accum) {
-    const size_t bpe = lod_dtype_bpe(s->config.dtype);
+    const size_t bpe = dtype_bpe(s->config.dtype);
     struct platform_clock dim0_clk = { 0 };
     platform_toc(&dim0_clk);
 

@@ -73,7 +73,7 @@ void
 print_metric_row(const struct stream_metric* m);
 void
 log_bench_header(const struct tile_stream_layout* layout,
-                 enum lod_dtype dtype,
+                 enum dtype dtype,
                  enum compression_codec codec,
                  size_t max_compressed_size,
                  size_t codec_batch_size,
@@ -82,7 +82,7 @@ log_bench_header(const struct tile_stream_layout* layout,
 void
 print_bench_report(const struct stream_metrics* metrics,
                    const struct tile_stream_layout* layout,
-                   enum lod_dtype dtype,
+                   enum dtype dtype,
                    const struct sink_stats* ss,
                    size_t total_bytes,
                    size_t total_elements,

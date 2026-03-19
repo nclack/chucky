@@ -124,7 +124,7 @@ static int
 validate_config(const struct tile_stream_configuration* config)
 {
   CHECK(Fail, config);
-  CHECK(Fail, lod_dtype_bpe(config->dtype) > 0);
+  CHECK(Fail, dtype_bpe(config->dtype) > 0);
   CHECK(Fail, config->buffer_capacity_bytes > 0);
   CHECK(Fail, config->rank > 0);
   CHECK(Fail, config->rank <= HALF_MAX_RANK);
@@ -201,7 +201,7 @@ compute_stream_layouts(
   struct computed_stream_layouts* out)
 {
   const uint8_t rank = config->rank;
-  const size_t bpe = lod_dtype_bpe(config->dtype);
+  const size_t bpe = dtype_bpe(config->dtype);
   const struct dimension* dims = config->dimensions;
 
   CHECK(Fail, validate_config(config) == 0);

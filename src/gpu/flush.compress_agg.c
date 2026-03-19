@@ -65,7 +65,7 @@ compress_agg_init(struct compress_agg_stage* stage,
 {
   memset(stage, 0, sizeof(*stage));
 
-  const size_t bpe = lod_dtype_bpe(config->dtype);
+  const size_t bpe = dtype_bpe(config->dtype);
   const uint32_t K = cl->epochs_per_batch;
   const uint64_t total_chunks = cl->levels.total_chunks;
   const uint64_t chunk_stride = cl->l0.chunk_stride;

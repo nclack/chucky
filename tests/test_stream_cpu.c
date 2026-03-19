@@ -100,7 +100,7 @@ test_basic_pipeline(void)
 
   struct tile_stream_configuration config = {
     .buffer_capacity_bytes = 4096,
-    .dtype = lod_dtype_u16,
+    .dtype = dtype_u16,
     .rank = 3,
     .dimensions = dims,
     .shard_sink = &sink.base,
@@ -177,7 +177,7 @@ test_f16_rejected(void)
   };
   struct tile_stream_configuration config = {
     .buffer_capacity_bytes = 4096,
-    .dtype = lod_dtype_f16,
+    .dtype = dtype_f16,
     .rank = 2,
     .dimensions = dims,
     .shard_sink = &sink.base,

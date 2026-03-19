@@ -21,7 +21,7 @@ extern "C"
   // returns 0 on success, non-zero on failure
   int lod_reduce(CUdeviceptr d_values,
                  CUdeviceptr d_ends,
-                 enum lod_dtype dtype,
+                 enum dtype dtype,
                  enum lod_reduce_method method,
                  uint64_t src_offset,
                  uint64_t dst_offset,
@@ -43,7 +43,7 @@ extern "C"
                                CUdeviceptr d_morton,
                                CUdeviceptr d_chunk_lut,
                                CUdeviceptr d_batch_chunk_offsets,
-                               enum lod_dtype dtype,
+                               enum dtype dtype,
                                uint64_t lod_count,
                                uint64_t batch_count,
                                CUstream stream);
@@ -60,14 +60,14 @@ extern "C"
                      CUdeviceptr d_src,
                      CUdeviceptr d_src_lut,
                      CUdeviceptr d_batch_offsets,
-                     enum lod_dtype dtype,
+                     enum dtype dtype,
                      uint64_t lod_count,
                      uint64_t batch_count,
                      CUstream stream);
 
   int lod_accum_emit(CUdeviceptr d_dst,
                      CUdeviceptr d_accum,
-                     enum lod_dtype dtype,
+                     enum dtype dtype,
                      enum lod_reduce_method method,
                      uint64_t n_elements,
                      uint32_t count,
@@ -77,7 +77,7 @@ extern "C"
                            CUdeviceptr d_new_data,
                            CUdeviceptr d_level_ids,
                            CUdeviceptr d_counts,
-                           enum lod_dtype dtype,
+                           enum dtype dtype,
                            enum lod_reduce_method method,
                            uint64_t n_elements,
                            CUstream stream);

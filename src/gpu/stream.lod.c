@@ -373,9 +373,9 @@ Fail:
 int
 lod_state_init_buffers(struct lod_state* lod,
                        const struct tile_stream_layout* l0,
-                       enum lod_dtype dtype)
+                       enum dtype dtype)
 {
-  const size_t bpe = lod_dtype_bpe(dtype);
+  const size_t bpe = dtype_bpe(dtype);
   size_t linear_bytes = l0->epoch_elements * bpe;
   CU(Fail, cuMemAlloc(&lod->d_linear, linear_bytes));
 
@@ -411,7 +411,7 @@ lod_state_init_accumulators(struct lod_state* lod,
   if (lod->dim0.total_elements == 0)
     return 0;
 
-  size_t accum_bpe = lod_accum_bpe(config->dtype, config->dim0_reduce_method);
+  size_t accum_bpe = dtype_accum_bpe(config->dtype, config->dim0_reduce_method);
   size_t accum_bytes = lod->dim0.total_elements * accum_bpe;
   CU(Fail, cuMemAlloc(&lod->dim0.d_accum, accum_bytes));
 
@@ -512,13 +512,13 @@ lod_state_destroy(struct lod_state* lod)
 // *out_mask is OR'd with (1u << lv) for each level that emitted.
 static int
 run_dim0_fold_emit(struct lod_state* lod,
-                   enum lod_dtype dtype,
+                   enum dtype dtype,
                    enum lod_reduce_method dim0_reduce_method,
                    CUstream compute,
                    uint32_t* out_mask)
 {
   struct lod_plan* p = &lod->plan;
-  const size_t bpe = lod_dtype_bpe(dtype);
+  const size_t bpe = dtype_bpe(dtype);
 
   // Upload current counts to device before fused kernel
   CU(Error,
@@ -552,7 +552,7 @@ run_dim0_fold_emit(struct lod_state* lod,
       for (int k = 1; k < lv; ++k)
         accum_offset += p->batch_count * p->lod_counts[k];
 
-      size_t accum_bpe = lod_accum_bpe(dtype, dim0_reduce_method);
+      size_t accum_bpe = dtype_accum_bpe(dtype, dim0_reduce_method);
 
       CUdeviceptr morton_lv = lod->d_morton + lev.beg * bpe;
       CUdeviceptr accum_lv = lod->dim0.d_accum + accum_offset * accum_bpe;
@@ -583,12 +583,12 @@ scatter_morton_to_chunks(struct lod_state* lod,
                          const struct level_geometry* levels,
                          const struct tile_stream_layout* layout,
                          void* pool_epoch,
-                         enum lod_dtype dtype,
+                         enum dtype dtype,
                          uint32_t active_levels_mask,
                          CUstream compute)
 {
   struct lod_plan* p = &lod->plan;
-  const size_t bpe = lod_dtype_bpe(dtype);
+  const size_t bpe = dtype_bpe(dtype);
 
   // L0 always scattered
   {
@@ -637,7 +637,7 @@ lod_run_epoch(struct lod_state* lod,
               const struct level_geometry* levels,
               const struct tile_stream_layout* layout,
               void* pool_epoch,
-              enum lod_dtype dtype,
+              enum dtype dtype,
               enum lod_reduce_method reduce_method,
               enum lod_reduce_method dim0_reduce_method,
               CUstream compute,

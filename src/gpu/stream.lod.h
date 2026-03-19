@@ -18,7 +18,7 @@ lod_state_init(struct lod_state* lod,
 int
 lod_state_init_buffers(struct lod_state* lod,
                        const struct tile_stream_layout* l0,
-                       enum lod_dtype dtype);
+                       enum dtype dtype);
 
 // Allocate dim0 accumulators, level-ID buffer, and counts.
 // Must be called AFTER lod_state_init.
@@ -40,7 +40,7 @@ lod_run_epoch(struct lod_state* lod,
               const struct level_geometry* levels,
               const struct tile_stream_layout* layout,
               void* pool_epoch,
-              enum lod_dtype dtype,
+              enum dtype dtype,
               enum lod_reduce_method reduce_method,
               enum lod_reduce_method dim0_reduce_method,
               CUstream compute,

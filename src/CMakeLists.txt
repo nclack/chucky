@@ -17,7 +17,6 @@ add_src_lib(chucky_log SOURCES log/log.c log/log.h)
 add_src_lib(index_ops  SOURCES index.ops.c index.ops.h)
 add_src_lib(lod_plan   SOURCES lod_plan.c lod_plan.h LINKS index_ops)
 add_src_lib(crc32c     SOURCES crc32c.c crc32c.h)
-add_src_lib(json_writer SOURCES json_writer.c json_writer.h)
 add_src_lib(dimension  SOURCES dimension.c dimension.h)
 
 add_src_lib(platform SOURCES platform.h)
@@ -43,14 +42,4 @@ add_src_lib(stream_config SOURCES stream.config.c stream.config.h
 add_subdirectory(gpu)
 add_subdirectory(cpu)
 
-add_src_lib(shard_delivery SOURCES shard_delivery.c shard_delivery.h
-    LINKS crc32c writer platform chucky_log)
-
-add_src_lib(zarr_fs_sink SOURCES zarr_fs_sink.c zarr_fs_sink.h
-    LINKS writer json_writer io_queue platform_io lod_plan dimension chucky_log)
-
-add_src_lib(s3_client SOURCES s3_client.c s3_client.h
-    LINKS AWS::aws-c-s3 chucky_log)
-
-add_src_lib(zarr_s3_sink SOURCES zarr_s3_sink.c zarr_s3_sink.h
-    LINKS s3_client writer json_writer lod_plan dimension chucky_log)
+add_subdirectory(zarr)

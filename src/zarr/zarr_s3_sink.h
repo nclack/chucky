@@ -3,7 +3,7 @@
 #include "dimension.h"
 #include "types.codec.h"
 #include "writer.h"
-#include "zarr_fs_sink.h" // for zarr_dtype
+#include "dtype.h"
 
 #include <stdint.h>
 
@@ -14,7 +14,7 @@ struct zarr_s3_config
   const char* array_name; // e.g. "0"
   const char* region;     // NULL = auto (us-east-1)
   const char* endpoint;   // NULL = AWS default, or e.g. "http://localhost:9000"
-  enum zarr_dtype data_type;
+  enum dtype data_type;
   double fill_value;
   uint8_t rank;
   const struct dimension* dimensions;
@@ -49,7 +49,7 @@ struct zarr_s3_multiscale_config
   const char* array_name; // group name; NULL = write at prefix
   const char* region;
   const char* endpoint;
-  enum zarr_dtype data_type;
+  enum dtype data_type;
   double fill_value;
   uint8_t rank;
   const struct dimension* dimensions; // L0 dimensions

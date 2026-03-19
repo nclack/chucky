@@ -33,7 +33,7 @@ test_scatter_reduce_f32(enum lod_reduce_method method, const char* name)
   for (uint64_t i = 0; i < n; ++i)
     src[i] = (float)(i + 1);
   CHECK(Fail,
-        lod_cpu_compute(&plan, src, &values, lod_dtype_f32, method) == 0);
+        lod_cpu_compute(&plan, src, &values, dtype_f32, method) == 0);
 
   // Verify L0: all source values should be present in the morton buffer.
   struct lod_span l0 = lod_spans_at(&plan.levels, 0);
@@ -92,7 +92,7 @@ test_scatter_reduce_u16(void)
   for (uint64_t i = 0; i < n; ++i)
     src[i] = (uint16_t)((i + 1) & 0xFFFF);
   CHECK(Fail,
-        lod_cpu_compute(&plan, src, &values, lod_dtype_u16, lod_reduce_min) ==
+        lod_cpu_compute(&plan, src, &values, dtype_u16, lod_reduce_min) ==
           0);
 
   // Basic sanity: L1 min values should be <= any L0 value.
@@ -137,7 +137,7 @@ test_f16_rejected(void)
 
   void* values = NULL;
   int rc =
-    lod_cpu_compute(&plan, NULL, &values, lod_dtype_f16, lod_reduce_mean);
+    lod_cpu_compute(&plan, NULL, &values, dtype_f16, lod_reduce_mean);
   CHECK(Fail, rc != 0); // should fail
 
   lod_plan_free(&plan);

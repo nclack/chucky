@@ -195,7 +195,7 @@ test_cross_validate_basic(void)
 
   struct tile_stream_configuration config = {
     .buffer_capacity_bytes = 4096,
-    .dtype = lod_dtype_u16,
+    .dtype = dtype_u16,
     .rank = 3,
     .dimensions = dims,
     .codec = CODEC_NONE,
@@ -300,7 +300,7 @@ test_cross_validate_multishard(void)
 
   struct tile_stream_configuration config = {
     .buffer_capacity_bytes = 8192,
-    .dtype = lod_dtype_u16,
+    .dtype = dtype_u16,
     .rank = 3,
     .dimensions = dims,
     .codec = CODEC_NONE,
@@ -401,7 +401,7 @@ test_cross_validate_lod(void)
 
   struct tile_stream_configuration config = {
     .buffer_capacity_bytes = 8192,
-    .dtype = lod_dtype_u16,
+    .dtype = dtype_u16,
     .rank = 4,
     .dimensions = dims,
     .codec = CODEC_NONE,
@@ -541,7 +541,7 @@ test_cross_validate_lod_dim0(void)
 
   struct tile_stream_configuration config = {
     .buffer_capacity_bytes = 8192,
-    .dtype = lod_dtype_u16,
+    .dtype = dtype_u16,
     .rank = 4,
     .dimensions = dims,
     .codec = CODEC_NONE,

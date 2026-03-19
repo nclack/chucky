@@ -235,7 +235,7 @@ tile_stream_gpu_create(const struct tile_stream_configuration* config)
         init_chunk_pools(&out->pools,
                          &out->levels,
                          out->layout.chunk_stride,
-                         lod_dtype_bpe(config->dtype),
+                         dtype_bpe(config->dtype),
                          out->batch.epochs_per_batch,
                          out->streams.compute) == 0);
 
@@ -334,7 +334,7 @@ tile_stream_gpu_memory_estimate(const struct tile_stream_configuration* config,
     return 1;
 
   const uint8_t rank = config->rank;
-  const size_t bpe = lod_dtype_bpe(config->dtype);
+  const size_t bpe = dtype_bpe(config->dtype);
   const size_t buffer_capacity_bytes =
     (config->buffer_capacity_bytes + 4095) & ~(size_t)4095;
   const uint64_t chunk_stride = cl.l0.chunk_stride;
@@ -440,7 +440,7 @@ tile_stream_gpu_memory_estimate(const struct tile_stream_configuration* config,
 
     if (cl.levels.dim0_downsample) {
       size_t accum_bpe =
-        lod_accum_bpe(config->dtype, config->dim0_reduce_method);
+        dtype_accum_bpe(config->dtype, config->dim0_reduce_method);
       uint64_t total_elems = 0;
       for (int lv = 1; lv < plan->nlod; ++lv)
         total_elems += plan->batch_count * plan->lod_counts[lv];

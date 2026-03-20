@@ -21,7 +21,7 @@ read_file_all(const char* path, uint8_t** out, size_t* out_len)
   fseek(f, 0, SEEK_END);
   long len = ftell(f);
   fseek(f, 0, SEEK_SET);
-  *out = (uint8_t*)malloc((size_t)len);
+  *out = (uint8_t*)malloc((size_t)len + 1);
   if (!*out) {
     fclose(f);
     return -1;

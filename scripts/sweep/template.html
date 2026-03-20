@@ -535,13 +535,16 @@ function renderHeatmap(filtered, presentChunks, presentScenarios, metricKey) {
   const lookup = new Map();
   filtered.forEach(r => lookup.set(`${r.scenario}__${r.chunk_bytes_label}`, r));
 
-  // Use extent across all backends so color scale is stable when flipping
-  const allForScale = filterRuns({includeBackend: false});
-  const vals = allForScale.map(r => r[metricKey]).filter(v => v != null);
-  const extent = d3.extent(vals);
+  // Color domain: autoscale to selected scenarios but stable across codec/backend/dtype/fill
+  const checkedScenarios = new Set(getCheckedScenarios());
+  const colorVals = runs.filter(r => checkedScenarios.has(r.scenario))
+    .map(r => r[metricKey]).filter(v => v != null);
+  const extent = d3.extent(colorVals);
   if (extent[0] == null) { d3.select("#chart").append("p").text("No data for this metric."); return; }
   const colorFn = COLOR_SCHEMES[metricKey] || d3.interpolateViridis;
-  const color = d3.scaleSequential(colorFn).domain(extent);
+  const useLog = metricKey === "compression_fold" && extent[0] > 0;
+  const color = (useLog ? d3.scaleSequentialLog(colorFn) : d3.scaleSequential(colorFn))
+    .domain(extent);
 
   for (const sc of presentScenarios) {
     for (const cl of presentChunks) {

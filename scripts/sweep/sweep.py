@@ -1,25 +1,48 @@
 # /// script
 # requires-python = ">=3.11"
+# dependencies = [
+#   "click",
+#   "rich",
+#   "pydantic",
+# ]
 # ///
 """
 Benchmark sweep runner for chucky streaming zarr write benchmarks.
 
 Usage:
-    uv run scripts/sweep/sweep.py --tier compress --build-dir build --dry-run
-    uv run scripts/sweep/sweep.py --tier compress --build-dir build
-    uv run scripts/sweep/sweep.py --tier compress --tier backend --build-dir build -o results.json
+    uv run scripts/sweep/sweep.py run --tier compress --build-dir build --dry-run
+    uv run scripts/sweep/sweep.py run --tier compress --build-dir build
+    uv run scripts/sweep/sweep.py run --all --build-dir build
+    uv run scripts/sweep/sweep.py run --tier io --build-dir build
 """
 
 from __future__ import annotations
 
-import argparse
 import json
 import platform
 import subprocess
 import sys
+import tempfile
 import time
-from dataclasses import dataclass
 from pathlib import Path
+
+import click
+from pydantic import BaseModel, model_validator
+from rich.console import Console
+from rich.progress import BarColumn, MofNCompleteColumn, Progress, TextColumn, TimeElapsedColumn
+from rich.table import Table
+
+console = Console(stderr=True)
+
+# ---------------------------------------------------------------------------
+# Schema enums (mirrors run.schema.json)
+# ---------------------------------------------------------------------------
+
+VALID_CODECS = {"none", "lz4", "zstd"}
+VALID_FILLS = {"xor", "zeros", "rand"}
+VALID_BACKENDS = {"gpu", "cpu"}
+VALID_DTYPES = {"u8", "u16", "u32", "u64", "i8", "i16", "i32", "i64", "f16", "f32", "f64"}
+VALID_STATUSES = {"pass", "error", "timeout", "missing", "unknown"}
 
 # ---------------------------------------------------------------------------
 # Scenarios
@@ -51,18 +74,34 @@ CHUNK_BYTES = {
 SINGLE_SCENARIOS = [k for k in SCENARIOS if k.endswith("_single")]
 
 # ---------------------------------------------------------------------------
-# Run matrix generation
+# Run spec (pydantic-validated)
 # ---------------------------------------------------------------------------
 
 
-@dataclass
-class RunSpec:
+class RunSpec(BaseModel):
     scenario: str
     codec: str
     fill: str
     backend: str
     dtype: str
     chunk_label: str
+    output_dir: bool = False
+
+    @model_validator(mode="after")
+    def _validate_enums(self) -> RunSpec:
+        if self.scenario not in SCENARIOS:
+            raise ValueError(f"Unknown scenario: {self.scenario}")
+        if self.codec not in VALID_CODECS:
+            raise ValueError(f"Unknown codec: {self.codec} (expected one of {VALID_CODECS})")
+        if self.fill not in VALID_FILLS:
+            raise ValueError(f"Unknown fill: {self.fill} (expected one of {VALID_FILLS})")
+        if self.backend not in VALID_BACKENDS:
+            raise ValueError(f"Unknown backend: {self.backend} (expected one of {VALID_BACKENDS})")
+        if self.dtype not in VALID_DTYPES:
+            raise ValueError(f"Unknown dtype: {self.dtype} (expected one of {VALID_DTYPES})")
+        if self.chunk_label not in CHUNK_BYTES:
+            raise ValueError(f"Unknown chunk_label: {self.chunk_label} (expected one of {set(CHUNK_BYTES)})")
+        return self
 
     @property
     def chunk_bytes(self) -> int:
@@ -70,7 +109,8 @@ class RunSpec:
 
     @property
     def id(self) -> str:
-        return f"{self.scenario}__{self.codec}__{self.fill}__{self.backend}__{self.dtype}__{self.chunk_label}"
+        suffix = "__io" if self.output_dir else ""
+        return f"{self.scenario}__{self.codec}__{self.fill}__{self.backend}__{self.dtype}__{self.chunk_label}{suffix}"
 
     def base_result(self) -> dict:
         """Common fields shared by success, error, and timeout results."""
@@ -86,30 +126,29 @@ class RunSpec:
         }
 
 
-def compress_runs() -> list[RunSpec]:
-    """Core sweep: chunk_size x scenario x codec (GPU-only).
+# ---------------------------------------------------------------------------
+# Run matrix generation
+# ---------------------------------------------------------------------------
 
-    This is a subset of backend_runs() — all compress runs use backend="gpu".
-    Use the 'backend' tier to compare GPU vs CPU.
-    """
+
+def compress_runs() -> list[RunSpec]:
+    """Core sweep: chunk_size x scenario x codec (GPU-only)."""
     runs = []
     for sc in SINGLE_SCENARIOS:
         for codec in ["none", "lz4", "zstd"]:
             for cl in CHUNK_BYTES:
-                runs.append(RunSpec(sc, codec, "xor", "gpu", "u16", cl))
+                runs.append(RunSpec(scenario=sc, codec=codec, fill="xor", backend="gpu", dtype="u16", chunk_label=cl))
     return runs
 
 
 def backend_runs() -> list[RunSpec]:
     """GPU vs CPU backend comparison (superset of compress tier)."""
     runs = []
-
     for sc in SINGLE_SCENARIOS:
         for codec in ["none", "lz4", "zstd"]:
             for cl in CHUNK_BYTES:
                 for backend in ["gpu", "cpu"]:
-                    runs.append(RunSpec(sc, codec, "xor", backend, "u16", cl))
-
+                    runs.append(RunSpec(scenario=sc, codec=codec, fill="xor", backend=backend, dtype="u16", chunk_label=cl))
     return runs
 
 
@@ -119,13 +158,24 @@ def lod_runs() -> list[RunSpec]:
     chunk_labels = ["64K", "256K", "1M"]
     scenarios = ["orca2_multiscale", "256cube_multiscale",
                  "orca2_multiscale_dim0", "256cube_multiscale_dim0"]
-
     for sc in scenarios:
         for cl in chunk_labels:
             for codec in ["none", "zstd"]:
                 for backend in ["gpu", "cpu"]:
-                    runs.append(RunSpec(sc, codec, "xor", backend, "u16", cl))
+                    runs.append(RunSpec(scenario=sc, codec=codec, fill="xor", backend=backend, dtype="u16", chunk_label=cl))
+    return runs
 
+
+def io_runs() -> list[RunSpec]:
+    """I/O tier: measure impact of zarr output vs discard sink."""
+    runs = []
+    chunk_labels = ["32K", "256K", "2M"]
+    scenarios = ["orca2_single", "256cube_single"]
+    for sc in scenarios:
+        for cl in chunk_labels:
+            for codec in ["none", "zstd"]:
+                for backend in ["gpu", "cpu"]:
+                    runs.append(RunSpec(scenario=sc, codec=codec, fill="xor", backend=backend, dtype="u16", chunk_label=cl, output_dir=True))
     return runs
 
 
@@ -133,7 +183,10 @@ TIERS = {
     "compress": compress_runs,
     "backend": backend_runs,
     "lod": lod_runs,
+    "io": io_runs,
 }
+
+ALL_TIER_NAMES = list(TIERS.keys())
 
 
 def deduplicate(runs: list[RunSpec]) -> list[RunSpec]:
@@ -147,11 +200,43 @@ def deduplicate(runs: list[RunSpec]) -> list[RunSpec]:
 
 
 # ---------------------------------------------------------------------------
+# Result validation
+# ---------------------------------------------------------------------------
+
+
+class RunResult(BaseModel, extra="allow"):
+    id: str
+    scenario: str
+    codec: str
+    fill: str
+    backend: str
+    dtype: str
+    chunk_bytes: int
+    chunk_bytes_label: str
+    status: str
+
+    @model_validator(mode="after")
+    def _validate_enums(self) -> RunResult:
+        if self.status not in VALID_STATUSES:
+            raise ValueError(f"Unknown status: {self.status}")
+        return self
+
+
+class ResultsFile(BaseModel, extra="allow"):
+    version: int
+    machine: dict
+    runs: list[RunResult]
+
+
+def validate_results(data: dict) -> ResultsFile:
+    return ResultsFile.model_validate(data)
+
+
+# ---------------------------------------------------------------------------
 # Environment helpers
 # ---------------------------------------------------------------------------
 
 def git_commit() -> str:
-    """Return short commit hash of HEAD, or 'unknown'."""
     try:
         out = subprocess.run(
             ["git", "rev-parse", "--short", "HEAD"],
@@ -180,6 +265,8 @@ def gpu_name() -> str:
 def run_one(spec: RunSpec, build_dir: Path) -> dict:
     """Execute a single benchmark run, return result dict."""
     exe = build_dir / "bench" / f"bench_stream_{spec.scenario}"
+    if sys.platform == "win32":
+        exe = exe.with_suffix(".exe")
     if not exe.exists():
         return {**spec.base_result(), "status": "missing", "error": f"{exe} not found"}
 
@@ -195,95 +282,147 @@ def run_one(spec: RunSpec, build_dir: Path) -> dict:
         "--json",
     ]
 
-    t0 = time.monotonic()
-    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
-    elapsed = time.monotonic() - t0
+    if spec.output_dir:
+        tmpdir = tempfile.mkdtemp(prefix="chucky_io_")
+        cmd.extend(["-o", tmpdir])
+    else:
+        tmpdir = None
 
-    # Parse JSON from stdout
-    parsed: dict = {}
-    stdout = proc.stdout.strip()
-    if stdout:
-        try:
-            parsed = json.loads(stdout)
-        except json.JSONDecodeError:
-            pass
+    try:
+        t0 = time.monotonic()
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+        elapsed = time.monotonic() - t0
 
-    if not parsed:
-        # No JSON output -- mark as error
-        if proc.returncode != 0:
-            parsed["status"] = "error"
-            parsed["returncode"] = proc.returncode
-        else:
-            parsed["status"] = "unknown"
+        parsed: dict = {}
+        stdout = proc.stdout.strip()
+        if stdout:
+            try:
+                parsed = json.loads(stdout)
+            except json.JSONDecodeError:
+                pass
 
-    return {**spec.base_result(), "elapsed_s": round(elapsed, 2), **parsed}
+        if not parsed:
+            if proc.returncode != 0:
+                parsed["status"] = "error"
+                parsed["returncode"] = proc.returncode
+            else:
+                parsed["status"] = "unknown"
+
+        return {**spec.base_result(), "elapsed_s": round(elapsed, 2), **parsed}
+    finally:
+        if tmpdir is not None:
+            import shutil
+            shutil.rmtree(tmpdir, ignore_errors=True)
 
 
 # ---------------------------------------------------------------------------
-# Main
+# Status formatting
 # ---------------------------------------------------------------------------
 
-def main():
-    tier_names = ", ".join(TIERS.keys())
-    ap = argparse.ArgumentParser(description="Benchmark sweep runner")
-    ap.add_argument("--tier", type=str, action="append", default=[],
-                    help=f"Tier(s) to run ({tier_names}). Repeat for multiple.")
-    ap.add_argument("--build-dir", type=Path, default=Path("build"),
-                    help="CMake build directory")
-    ap.add_argument("-o", "--output", type=Path, default=None,
-                    help="Output JSON path (default: bench/results/<commit>-<date>.json)")
-    ap.add_argument("--skip", type=str, action="append", default=[],
-                    help="Scenario(s) to skip (repeat for multiple)")
-    ap.add_argument("--retry", action="store_true",
-                    help="Re-run previously failed or timed-out benchmarks")
-    ap.add_argument("--rerun", type=str, action="append", default=[],
-                    help="Re-run benchmarks whose id contains this substring (repeat for multiple)")
-    ap.add_argument("--dry-run", action="store_true",
-                    help="Print run matrix without executing")
-    args = ap.parse_args()
+_STATUS_STYLE = {
+    "pass": "green",
+    "error": "red",
+    "timeout": "dark_orange",
+    "missing": "red",
+    "unknown": "yellow",
+}
 
+
+def status_style(status: str) -> str:
+    return _STATUS_STYLE.get(status, "white")
+
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
+
+@click.group()
+def cli():
+    """Benchmark sweep runner for chucky."""
+    pass
+
+
+@cli.command()
+@click.option("--tier", "-t", multiple=True, type=click.Choice(ALL_TIER_NAMES),
+              help="Tier(s) to run. Repeat for multiple.")
+@click.option("--all", "run_all", is_flag=True, help="Run all tiers.")
+@click.option("--build-dir", type=click.Path(exists=False, path_type=Path), default=Path("build"),
+              help="CMake build directory.")
+@click.option("-o", "--output", type=click.Path(path_type=Path), default=None,
+              help="Output JSON path (default: bench/results/<host>-<commit>-<date>.json).")
+@click.option("--skip", multiple=True, help="Scenario(s) to skip.")
+@click.option("--retry", is_flag=True, help="Re-run previously failed or timed-out benchmarks.")
+@click.option("--rerun", multiple=True, help="Re-run benchmarks whose id contains this substring.")
+@click.option("--dry-run", is_flag=True, help="Preview run matrix without executing.")
+def run(tier, run_all, build_dir, output, skip, retry, rerun, dry_run):
+    """Execute benchmark sweeps."""
     commit = git_commit()
-    if args.output is None:
+    hostname = platform.node()
+
+    if output is None:
         results_dir = Path("bench/results")
-        # Reuse existing file for this commit if one exists
-        existing_files = sorted(results_dir.glob(f"{commit}-*.json"))
+        existing_files = sorted(results_dir.glob(f"{hostname}-{commit}-*.json"))
         if existing_files:
-            args.output = existing_files[-1]
+            output = existing_files[-1]
         else:
             date_str = time.strftime("%Y%m%d")
-            args.output = results_dir / f"{commit}-{date_str}.json"
+            output = results_dir / f"{hostname}-{commit}-{date_str}.json"
 
-    tiers = args.tier or ["compress"]
+    # Resolve tiers
+    if run_all:
+        selected_tiers = ALL_TIER_NAMES
+    elif tier:
+        selected_tiers = list(tier)
+    else:
+        selected_tiers = ALL_TIER_NAMES
 
     runs: list[RunSpec] = []
-    for t in tiers:
-        if t not in TIERS:
-            print(f"Unknown tier: {t} (available: {tier_names})", file=sys.stderr)
-            return 1
+    for t in selected_tiers:
         runs.extend(TIERS[t]())
     runs = deduplicate(runs)
-    if args.skip:
-        runs = [r for r in runs if r.scenario not in args.skip]
+    if skip:
+        runs = [r for r in runs if r.scenario not in skip]
 
-    if args.dry_run:
+    # -- dry run: rich table --
+    if dry_run:
+        table = Table(title="Sweep Matrix", show_lines=False)
+        table.add_column("#", justify="right", style="dim")
+        table.add_column("Scenario")
+        table.add_column("Codec")
+        table.add_column("Fill")
+        table.add_column("Backend")
+        table.add_column("Dtype")
+        table.add_column("Chunk")
+        table.add_column("I/O", justify="center")
         for i, r in enumerate(runs, 1):
-            print(f"[{i}/{len(runs)}] {r.scenario} {r.codec} {r.fill} "
-                  f"{r.backend} {r.dtype} {r.chunk_label}")
-        print(f"\nTotal: {len(runs)} runs")
-        print(f"Output: {args.output}")
+            table.add_row(
+                str(i), r.scenario, r.codec, r.fill,
+                r.backend, r.dtype, r.chunk_label,
+                "yes" if r.output_dir else "",
+            )
+        console.print(table)
+        console.print(f"\nTotal: [bold]{len(runs)}[/bold] runs across tiers: {', '.join(selected_tiers)}")
+        console.print(f"Output: {output}")
         return
 
-    # Load existing results for resumability
-    args.output.parent.mkdir(parents=True, exist_ok=True)
+    # -- load existing results for resumability --
+    output.parent.mkdir(parents=True, exist_ok=True)
     existing: dict = {}
-    if args.output.exists():
-        with open(args.output) as f:
-            data = json.load(f)
+    if output.exists():
+        with open(output) as f:
+            raw_data = json.load(f)
+        # Validate loaded results
+        try:
+            validated = validate_results(raw_data)
+        except Exception as e:
+            console.print(f"[yellow]Warning: results file validation failed: {e}[/yellow]")
+            console.print("[yellow]Continuing with raw data.[/yellow]")
+        data = raw_data
         for r in data.get("runs", []):
             rid = r["id"]
-            if args.retry and r.get("status") in ("error", "timeout"):
+            if retry and r.get("status") in ("error", "timeout"):
                 continue
-            if args.rerun and any(pat in rid for pat in args.rerun):
+            if rerun and any(pat in rid for pat in rerun):
                 continue
             existing[rid] = r
     else:
@@ -298,40 +437,58 @@ def main():
             "runs": [],
         }
 
-    total = len(runs)
-    skipped = 0
-    for i, spec in enumerate(runs, 1):
-        if spec.id in existing:
-            skipped += 1
-            continue
+    # -- count how many actually need to run --
+    to_run = [spec for spec in runs if spec.id not in existing]
+    skip_count = len(runs) - len(to_run)
 
-        tag = (f"[{i}/{total}] {spec.scenario} {spec.codec} {spec.fill} "
-               f"{spec.backend} {spec.dtype} {spec.chunk_label}")
-        print(f"{tag} ...", end="", flush=True, file=sys.stderr)
+    if skip_count:
+        console.print(f"Skipping [bold]{skip_count}[/bold] existing runs")
 
-        try:
-            result = run_one(spec, args.build_dir)
-        except subprocess.TimeoutExpired:
-            result = {**spec.base_result(), "status": "timeout"}
-        except Exception as e:
-            result = {**spec.base_result(), "status": "error", "error": str(e)}
+    if not to_run:
+        console.print(f"[green]All {len(runs)} runs already complete.[/green]")
+        console.print(f"Results: {output}")
+        return
 
-        tp = result.get("throughput_in_gibs")
-        st = result.get("status", "?")
-        suffix = f" {tp:.2f} GiB/s" if tp else ""
-        print(f"\r{tag} ...{suffix} {st.upper()}", file=sys.stderr)
+    # -- run with progress bar --
+    with Progress(
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        MofNCompleteColumn(),
+        TimeElapsedColumn(),
+        console=console,
+    ) as progress:
+        task = progress.add_task("Sweeping", total=len(to_run))
 
-        existing[spec.id] = result
+        for spec in to_run:
+            tag = f"{spec.scenario} {spec.codec} {spec.backend} {spec.chunk_label}"
+            if spec.output_dir:
+                tag += " io"
+            progress.update(task, description=f"[bold]{tag}")
 
-        # Save incrementally
-        data["runs"] = list(existing.values())
-        with open(args.output, "w") as f:
-            json.dump(data, f, indent=2)
+            try:
+                result = run_one(spec, build_dir)
+            except subprocess.TimeoutExpired:
+                result = {**spec.base_result(), "status": "timeout"}
+            except Exception as e:
+                result = {**spec.base_result(), "status": "error", "error": str(e)}
 
-    if skipped:
-        print(f"Skipped {skipped} existing runs", file=sys.stderr)
-    print(f"Results: {args.output} ({len(existing)} runs)", file=sys.stderr)
+            st = result.get("status", "?")
+            tp = result.get("throughput_in_gibs")
+            suffix = f" {tp:.2f} GiB/s" if tp else ""
+            style = status_style(st)
+            progress.console.print(f"  {tag} [{style}]{st.upper()}[/{style}]{suffix}")
+
+            existing[spec.id] = result
+
+            # Save incrementally
+            data["runs"] = list(existing.values())
+            with open(output, "w") as f:
+                json.dump(data, f, indent=2)
+
+            progress.advance(task)
+
+    console.print(f"\n[bold green]Done.[/bold green] Results: {output} ({len(existing)} runs)")
 
 
 if __name__ == "__main__":
-    main()
+    cli()

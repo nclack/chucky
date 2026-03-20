@@ -8,6 +8,9 @@ Usage:
     uv run scripts/sweep/report.py results.json -o build/html/report.html
     uv run scripts/sweep/report.py bench/results/*.json
     uv run scripts/sweep/report.py --results-dir bench/results/
+
+Note: The report embeds JSON data at generation time. Re-run this script
+after modifying results files to see updated data.
 """
 
 from __future__ import annotations
@@ -18,9 +21,51 @@ import sys
 from pathlib import Path
 
 TEMPLATE_PATH = Path(__file__).parent / "template.html"
+SCHEMA_DIR = Path(__file__).parent / "schema"
 
 
-def load_files(paths: list[Path]) -> list[dict]:
+def validate_results(data: dict, path: Path) -> list[str]:
+    """Validate a results dict against the JSON schema. Returns a list of warnings."""
+    schema_path = SCHEMA_DIR / "results.schema.json"
+    if not schema_path.exists():
+        return []
+    with open(schema_path) as f:
+        schema = json.load(f)
+
+    warnings = []
+    # Validate top-level required fields
+    for key in schema.get("required", []):
+        if key not in data:
+            warnings.append(f"{path.name}: missing required field '{key}'")
+
+    # Validate machine fields
+    machine_schema = schema.get("properties", {}).get("machine", {})
+    machine = data.get("machine", {})
+    for key in machine_schema.get("required", []):
+        if key not in machine:
+            warnings.append(f"{path.name}: machine missing required field '{key}'")
+
+    # Validate run fields
+    run_schema_path = SCHEMA_DIR / "run.schema.json"
+    if run_schema_path.exists():
+        with open(run_schema_path) as f:
+            run_schema = json.load(f)
+        run_required = set(run_schema.get("required", []))
+        run_properties = set(run_schema.get("properties", {}).keys())
+        for i, run in enumerate(data.get("runs", [])):
+            for key in run_required:
+                if key not in run:
+                    warnings.append(f"{path.name}: run[{i}] missing required field '{key}'")
+                    break  # one warning per run is enough
+            extra = set(run.keys()) - run_properties
+            if extra:
+                warnings.append(f"{path.name}: run[{i}] has unknown fields: {extra}")
+                break
+
+    return warnings
+
+
+def load_files(paths: list[Path], *, warn: bool = True) -> list[dict]:
     """Load result files, returning a list of {label, machine, runs} dicts."""
     files = []
     for p in paths:
@@ -30,10 +75,17 @@ def load_files(paths: list[Path]) -> list[dict]:
             except json.JSONDecodeError as e:
                 print(f"Warning: skipping corrupt JSON file {p}: {e}", file=sys.stderr)
                 continue
+
+        if warn:
+            for w in validate_results(data, p):
+                print(f"Warning: {w}", file=sys.stderr)
+
         machine = data.get("machine", {})
+        hostname = machine.get("hostname", "")
         commit = machine.get("commit", "unknown")
         date = machine.get("date", "")[:10]
-        label = f"{commit} ({date})" if date else commit
+        parts = [x for x in [hostname, commit, date] if x]
+        label = " ".join(parts) if parts else "unknown"
         files.append({
             "label": label,
             "filename": p.name,

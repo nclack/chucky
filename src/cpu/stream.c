@@ -517,7 +517,7 @@ flush_batch(struct tile_stream_cpu* s,
     float ms = (float)(platform_toc(&clk) * 1000.0);
     accumulate_metric_ms(
       &s->metrics.compress, ms,
-      n_epochs * total_chunks * s->layout.chunk_elements * bpe);
+      n_epochs * total_chunks * s->layout.chunk_elements * bpe, 0);
   }
 
   // Aggregate + deliver per-level.
@@ -554,7 +554,7 @@ flush_batch(struct tile_stream_cpu* s,
       uint64_t batch_C =
         (uint64_t)active_count * s->agg_layout[lv].covering_count;
       float ms = (float)(platform_toc(&clk) * 1000.0);
-      accumulate_metric_ms(&s->metrics.aggregate, ms, ar.offsets[batch_C]);
+      accumulate_metric_ms(&s->metrics.aggregate, ms, ar.offsets[batch_C], 0);
 
       // Batch deliver.
       platform_toc(&clk);
@@ -564,7 +564,7 @@ flush_batch(struct tile_stream_cpu* s,
                                   s->config.shard_alignment, &sink_bytes))
         return 1;
       ms = (float)(platform_toc(&clk) * 1000.0);
-      accumulate_metric_ms(&s->metrics.sink, ms, sink_bytes);
+      accumulate_metric_ms(&s->metrics.sink, ms, sink_bytes, 0);
     } else {
       // Per-epoch fallback.
       for (uint32_t e = 0; e < n_epochs; ++e) {
@@ -596,7 +596,7 @@ flush_batch(struct tile_stream_cpu* s,
 
         float ms = (float)(platform_toc(&clk) * 1000.0);
         size_t agg_bytes = ar.offsets[s->agg_layout[lv].covering_count];
-        accumulate_metric_ms(&s->metrics.aggregate, ms, agg_bytes);
+        accumulate_metric_ms(&s->metrics.aggregate, ms, agg_bytes, 0);
 
         // Deliver.
         platform_toc(&clk);
@@ -606,7 +606,7 @@ flush_batch(struct tile_stream_cpu* s,
                                     s->config.shard_alignment, &sink_bytes))
           return 1;
         ms = (float)(platform_toc(&clk) * 1000.0);
-        accumulate_metric_ms(&s->metrics.sink, ms, sink_bytes);
+        accumulate_metric_ms(&s->metrics.sink, ms, sink_bytes, 0);
       }
     }
   }
@@ -645,7 +645,7 @@ scatter_epoch(struct tile_stream_cpu* s,
 
   float scatter_ms = (float)(platform_toc(&clk) * 1000.0);
   accumulate_metric_ms(&s->metrics.lod_gather, scatter_ms,
-                        s->layout.epoch_elements * bpe);
+                        s->layout.epoch_elements * bpe, 0);
 
   platform_toc(&clk);
   CHECK(Error, lod_cpu_reduce(&s->cl.plan, s->lod_values, s->config.dtype,
@@ -653,7 +653,7 @@ scatter_epoch(struct tile_stream_cpu* s,
 
   float ms = (float)(platform_toc(&clk) * 1000.0);
   accumulate_metric_ms(&s->metrics.lod_reduce, ms,
-                        s->cl.plan.levels.ends[s->cl.plan.nlod - 1] * bpe);
+                        s->cl.plan.levels.ends[s->cl.plan.nlod - 1] * bpe, 0);
 
   // Dim0 fold/emit: accumulate levels 1+ across epochs.
   // Without dim0_downsample, only L0 is scattered to the chunk pool.
@@ -691,7 +691,7 @@ scatter_epoch(struct tile_stream_cpu* s,
     size_t dim0_bytes = 0;
     for (int lv = 1; lv < s->cl.plan.nlod; ++lv)
       dim0_bytes += s->cl.plan.batch_count * s->cl.plan.lod_counts[lv] * bpe;
-    accumulate_metric_ms(&s->metrics.lod_dim0_fold, dim0_ms, dim0_bytes);
+    accumulate_metric_ms(&s->metrics.lod_dim0_fold, dim0_ms, dim0_bytes, 0);
   }
 
   platform_toc(&clk);
@@ -714,7 +714,7 @@ scatter_epoch(struct tile_stream_cpu* s,
 
   ms = (float)(platform_toc(&clk) * 1000.0);
   accumulate_metric_ms(&s->metrics.lod_morton_chunk, ms,
-                        s->levels.total_chunks * s->layout.chunk_stride * bpe);
+                        s->levels.total_chunks * s->layout.chunk_stride * bpe, 0);
 
   *out_mask = active_levels_mask;
   return 0;
@@ -786,7 +786,7 @@ cpu_append(struct writer* self, struct slice input)
       }
 
       float ms = (float)(platform_toc(&clk) * 1000.0);
-      accumulate_metric_ms(&s->metrics.scatter, ms, bytes);
+      accumulate_metric_ms(&s->metrics.scatter, ms, bytes, 0);
     }
 
     s->cursor += elements;
@@ -912,7 +912,7 @@ cpu_flush(struct writer* self)
     size_t dim0_bytes = 0;
     for (int lv = 1; lv < s->cl.plan.nlod; ++lv)
       dim0_bytes += s->cl.plan.batch_count * s->cl.plan.lod_counts[lv] * bpe;
-    accumulate_metric_ms(&s->metrics.lod_dim0_fold, dim0_ms, dim0_bytes);
+    accumulate_metric_ms(&s->metrics.lod_dim0_fold, dim0_ms, dim0_bytes, 0);
 
     // Compress + aggregate + deliver drained levels (single-epoch batch).
     if (drain_mask) {
@@ -942,7 +942,7 @@ cpu_flush(struct writer* self)
     }
 
     float emit_ms = (float)(platform_toc(&emit_clk) * 1000.0);
-    accumulate_metric_ms(&s->metrics.sink, emit_ms, 0);
+    accumulate_metric_ms(&s->metrics.sink, emit_ms, 0, 0);
   }
 
   // Final metadata.

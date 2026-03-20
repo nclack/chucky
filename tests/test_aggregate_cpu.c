@@ -18,8 +18,8 @@ test_simple(void)
   struct aggregate_layout layout;
   memset(&layout, 0, sizeof(layout));
 
-  uint64_t chunk_count[] = { 2, 3 };
-  uint64_t chunks_per_shard[] = { 2, 3 };
+  uint64_t chunk_count[] = { 0, 2, 3 };
+  uint64_t chunks_per_shard[] = { 0, 2, 3 };
   uint8_t rank = 3; // rank includes dim 0
   uint64_t M = 6;
   size_t max_comp = 128;
@@ -88,8 +88,8 @@ test_multishard(void)
   struct aggregate_layout layout;
   memset(&layout, 0, sizeof(layout));
 
-  uint64_t chunk_count[] = { 4, 3 };
-  uint64_t chunks_per_shard[] = { 2, 3 };
+  uint64_t chunk_count[] = { 0, 4, 3 };
+  uint64_t chunks_per_shard[] = { 0, 2, 3 };
   uint8_t rank = 3;
   uint64_t M = 12;
   size_t max_comp = 64;
@@ -150,8 +150,8 @@ test_page_aligned(void)
 
   // 3D: chunk_count={2, 2}, chunks_per_shard={1, 2}, shard_count={2, 1}
   // cps_inner = 2, C = 2*1 * 1*2 = 4, M = 4
-  uint64_t chunk_count[] = { 2, 2 };
-  uint64_t chunks_per_shard[] = { 1, 2 };
+  uint64_t chunk_count[] = { 0, 2, 2 };
+  uint64_t chunks_per_shard[] = { 0, 1, 2 };
   uint8_t rank = 3;
   uint64_t M = 4;
   size_t max_comp = 100;

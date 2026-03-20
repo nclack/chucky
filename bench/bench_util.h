@@ -120,8 +120,8 @@ struct bench_config
 int
 run_bench(const struct bench_config* cfg);
 
-// CLI driver: parses --fill, --codec, --reduce, -o flags, inits CUDA,
-// calls run_bench, handles xor_pattern_init/free.
+// CLI driver: parses --fill, --codec, --reduce, --dtype, --frames, --json,
+// -o flags, inits CUDA, calls run_bench, handles xor_pattern_init/free.
 int
 bench_stream_main(int ac,
                   char* av[],

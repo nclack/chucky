@@ -11,11 +11,49 @@
 
 // --- S3 shard writer ---
 
+// --- Zarr S3 sink ---
+
+struct zarr_s3_sink
+{
+  struct shard_sink base;
+  struct s3_client* s3;
+  int owns_s3; // 1 if we created the client, 0 if borrowed
+  char bucket[256];
+
+  // Geometry
+  uint8_t rank;
+  uint64_t chunk_count[MAX_ZARR_RANK];
+  uint64_t chunks_per_shard[MAX_ZARR_RANK];
+  uint64_t shard_count[MAX_ZARR_RANK];
+  uint64_t shard_inner_count;
+
+  // Key prefix: "{prefix}/{array_name}"
+  char array_prefix[4096];
+
+  // Writer pool
+  struct s3_shard_writer* writers;
+  uint64_t num_writers;
+
+  // Fence tracking
+  uint64_t finalize_seq; // monotonic count of finalizes issued
+  int finalize_err;      // sticky error from any finalize
+
+  // Metadata (for update_dim0)
+  struct dimension dimensions[MAX_ZARR_RANK];
+  enum dtype data_type;
+  double fill_value;
+  enum compression_codec codec;
+};
+
+// --- S3 shard writer ---
+
 struct s3_shard_writer
 {
   struct shard_writer base;
   struct zarr_s3_sink* parent;
-  struct s3_upload* upload; // active streaming upload, NULL when idle
+  struct s3_upload* upload;          // active upload (receiving writes)
+  struct s3_upload* pending_upload;  // previous upload completing async
+  int pending_eof_err;               // EOF send error from finish_async
 };
 
 static int
@@ -33,55 +71,42 @@ s3_shard_write(struct shard_writer* self,
 }
 
 static int
+s3_wait_pending(struct s3_shard_writer* w)
+{
+  if (!w->pending_upload)
+    return 0;
+  int rc = w->pending_eof_err;
+  rc |= s3_upload_wait(w->pending_upload);
+  s3_upload_destroy(w->pending_upload);
+  w->pending_upload = NULL;
+  w->pending_eof_err = 0;
+  if (rc)
+    w->parent->finalize_err = 1;
+  return rc;
+}
+
+static int
 s3_shard_finalize(struct shard_writer* self)
 {
   struct s3_shard_writer* w = (struct s3_shard_writer*)self;
   if (!w->upload)
     return 0;
-  int rc = s3_upload_finish(w->upload);
+  int eof_err = s3_upload_finish_async(w->upload);
+  w->pending_upload = w->upload;
+  w->pending_eof_err = eof_err;
   w->upload = NULL;
-  return rc;
+  ++w->parent->finalize_seq;
+  return 0; // non-blocking: errors surface at next open() or wait_fence()
 }
-
-// --- Zarr S3 sink ---
-
-struct zarr_s3_sink
-{
-  struct shard_sink base;
-  struct s3_client* s3;
-  char bucket[256];
-
-  // Geometry
-  uint8_t rank;
-  uint64_t chunk_count[MAX_ZARR_RANK];
-  uint64_t chunks_per_shard[MAX_ZARR_RANK];
-  uint64_t shard_count[MAX_ZARR_RANK];
-  uint64_t shard_inner_count;
-
-  // Key prefix: "{prefix}/{array_name}"
-  char array_prefix[4096];
-
-  // Writer pool
-  struct s3_shard_writer* writers;
-  uint64_t num_writers;
-
-  // Metadata (for update_dim0)
-  struct dimension dimensions[MAX_ZARR_RANK];
-  enum dtype data_type;
-  double fill_value;
-  enum compression_codec codec;
-};
 
 // --- shard_sink vtable ---
 
 static struct io_event
 s3_sink_record_fence(struct shard_sink* self, uint8_t level)
 {
-  (void)self;
   (void)level;
-  // CRT manages async I/O internally; no io_queue fence needed.
-  // finalize() blocks until upload completes, providing natural backpressure.
-  return (struct io_event){ 0 };
+  struct zarr_s3_sink* zs = (struct zarr_s3_sink*)self;
+  return (struct io_event){ .seq = zs->finalize_seq };
 }
 
 static void
@@ -89,9 +114,15 @@ s3_sink_wait_fence(struct shard_sink* self,
                    uint8_t level,
                    struct io_event ev)
 {
-  (void)self;
   (void)level;
-  (void)ev;
+  struct zarr_s3_sink* zs = (struct zarr_s3_sink*)self;
+  // Wait for all pending uploads to complete.
+  // Each writer has at most one pending upload; drain all of them
+  // when a fence is requested.
+  if (ev.seq == 0)
+    return;
+  for (uint64_t i = 0; i < zs->num_writers; ++i)
+    s3_wait_pending(&zs->writers[i]);
 }
 
 static struct shard_writer*
@@ -102,6 +133,9 @@ s3_sink_open(struct shard_sink* self, uint8_t level, uint64_t shard_index)
 
   uint64_t inner = shard_index % zs->shard_inner_count;
   struct s3_shard_writer* w = &zs->writers[inner];
+
+  // Wait for previous upload on this writer slot to complete
+  s3_wait_pending(w);
 
   char suffix[4096];
   if (zarr_shard_key(
@@ -158,8 +192,10 @@ s3_sink_update_dim0(struct shard_sink* self,
 
 // --- Create / Destroy ---
 
-struct zarr_s3_sink*
-zarr_s3_sink_create(const struct zarr_s3_config* cfg)
+// Internal: create a sink that borrows an existing client (does not own it).
+static struct zarr_s3_sink*
+zarr_s3_sink_create_with_client(const struct zarr_s3_config* cfg,
+                                struct s3_client* client)
 {
   CHECK(Fail, cfg);
   CHECK(Fail, cfg->bucket);
@@ -167,6 +203,7 @@ zarr_s3_sink_create(const struct zarr_s3_config* cfg)
   CHECK(Fail, cfg->array_name);
   CHECK(Fail, cfg->rank > 0 && cfg->rank <= MAX_ZARR_RANK);
   CHECK(Fail, cfg->dimensions);
+  CHECK(Fail, client);
 
   struct zarr_s3_sink* zs =
     (struct zarr_s3_sink*)calloc(1, sizeof(struct zarr_s3_sink));
@@ -186,13 +223,8 @@ zarr_s3_sink_create(const struct zarr_s3_config* cfg)
   for (int d = 0; d < cfg->rank; ++d)
     zs->dimensions[d] = cfg->dimensions[d];
 
-  // S3 client
-  struct s3_client_config s3cfg = {
-    .region = cfg->region,
-    .endpoint = cfg->endpoint,
-  };
-  zs->s3 = s3_client_create(&s3cfg);
-  CHECK(Fail_alloc, zs->s3);
+  zs->s3 = client;
+  zs->owns_s3 = 0;
 
   // Compute geometry
   struct zarr_geometry g;
@@ -213,10 +245,11 @@ zarr_s3_sink_create(const struct zarr_s3_config* cfg)
   {
     char buf[256];
     int len = zarr_root_json(buf, sizeof(buf));
-    CHECK(Fail_s3, len >= 0);
+    CHECK(Fail_alloc, len >= 0);
     char key[4096];
     snprintf(key, sizeof(key), "%s/zarr.json", cfg->prefix);
-    CHECK(Fail_s3, s3_client_put(zs->s3, zs->bucket, key, buf, (size_t)len) == 0);
+    CHECK(Fail_alloc,
+          s3_client_put(zs->s3, zs->bucket, key, buf, (size_t)len) == 0);
   }
 
   // Write array metadata
@@ -230,17 +263,18 @@ zarr_s3_sink_create(const struct zarr_s3_config* cfg)
                               zs->fill_value,
                               zs->chunks_per_shard,
                               zs->codec);
-    CHECK(Fail_s3, len >= 0);
+    CHECK(Fail_alloc, len >= 0);
     char key[4096];
     snprintf(key, sizeof(key), "%s/zarr.json", zs->array_prefix);
-    CHECK(Fail_s3, s3_client_put(zs->s3, zs->bucket, key, buf, (size_t)len) == 0);
+    CHECK(Fail_alloc,
+          s3_client_put(zs->s3, zs->bucket, key, buf, (size_t)len) == 0);
   }
 
   // Allocate writer pool
   zs->num_writers = zs->shard_inner_count;
   zs->writers = (struct s3_shard_writer*)calloc(zs->num_writers,
                                                 sizeof(struct s3_shard_writer));
-  CHECK(Fail_s3, zs->writers);
+  CHECK(Fail_alloc, zs->writers);
 
   for (uint64_t i = 0; i < zs->num_writers; ++i) {
     zs->writers[i].base.write = s3_shard_write;
@@ -251,11 +285,32 @@ zarr_s3_sink_create(const struct zarr_s3_config* cfg)
 
   return zs;
 
-Fail_s3:
-  s3_client_destroy(zs->s3);
 Fail_alloc:
-  free(zs->writers);
   free(zs);
+Fail:
+  return NULL;
+}
+
+struct zarr_s3_sink*
+zarr_s3_sink_create(const struct zarr_s3_config* cfg)
+{
+  CHECK(Fail, cfg);
+
+  struct s3_client_config s3cfg = {
+    .region = cfg->region,
+    .endpoint = cfg->endpoint,
+  };
+  struct s3_client* client = s3_client_create(&s3cfg);
+  CHECK(Fail, client);
+
+  struct zarr_s3_sink* zs = zarr_s3_sink_create_with_client(cfg, client);
+  CHECK(Fail_client, zs);
+
+  zs->owns_s3 = 1;
+  return zs;
+
+Fail_client:
+  s3_client_destroy(client);
 Fail:
   return NULL;
 }
@@ -265,8 +320,8 @@ zarr_s3_sink_flush(struct zarr_s3_sink* s)
 {
   if (!s)
     return;
-  // All uploads complete synchronously in finalize().
-  // Nothing to wait for here.
+  for (uint64_t i = 0; i < s->num_writers; ++i)
+    s3_wait_pending(&s->writers[i]);
 }
 
 void
@@ -275,16 +330,20 @@ zarr_s3_sink_destroy(struct zarr_s3_sink* s)
   if (!s)
     return;
 
-  zarr_s3_sink_flush(s);
-
   if (s->writers) {
     for (uint64_t i = 0; i < s->num_writers; ++i) {
-      if (s->writers[i].upload)
+      // Drain any pending upload
+      s3_wait_pending(&s->writers[i]);
+      // Abort any active (non-finalized) upload
+      if (s->writers[i].upload) {
         s3_upload_abort(s->writers[i].upload);
+        s->writers[i].upload = NULL;
+      }
     }
     free(s->writers);
   }
-  s3_client_destroy(s->s3);
+  if (s->owns_s3)
+    s3_client_destroy(s->s3);
   free(s);
 }
 
@@ -302,8 +361,8 @@ struct zarr_s3_multiscale_sink
   struct zarr_s3_sink** levels;
   int nlod;
 
-  // For group metadata
-  struct s3_client* s3; // shared ref (owned by levels[0])
+  // Shared S3 client (owned by this struct, borrowed by levels)
+  struct s3_client* s3;
   char bucket[256];
   char group_prefix[4096];
   uint8_t rank;
@@ -313,9 +372,10 @@ struct zarr_s3_multiscale_sink
 static struct io_event
 s3_multiscale_record_fence(struct shard_sink* self, uint8_t level)
 {
-  (void)self;
-  (void)level;
-  return (struct io_event){ 0 };
+  struct zarr_s3_multiscale_sink* ms = (struct zarr_s3_multiscale_sink*)self;
+  if (level >= ms->nlod)
+    return (struct io_event){ 0 };
+  return s3_sink_record_fence(&ms->levels[level]->base, level);
 }
 
 static void
@@ -323,9 +383,10 @@ s3_multiscale_wait_fence(struct shard_sink* self,
                          uint8_t level,
                          struct io_event ev)
 {
-  (void)self;
-  (void)level;
-  (void)ev;
+  struct zarr_s3_multiscale_sink* ms = (struct zarr_s3_multiscale_sink*)self;
+  if (level >= ms->nlod)
+    return;
+  s3_sink_wait_fence(&ms->levels[level]->base, level, ev);
 }
 
 static struct shard_writer*
@@ -545,11 +606,21 @@ zarr_s3_multiscale_sink_create(const struct zarr_s3_multiscale_config* cfg)
   for (int d = 0; d < cfg->rank; ++d)
     ms->dimensions[d] = cfg->dimensions[d];
 
+  // Create shared S3 client
+  {
+    struct s3_client_config s3cfg = {
+      .region = cfg->region,
+      .endpoint = cfg->endpoint,
+    };
+    ms->s3 = s3_client_create(&s3cfg);
+    CHECK(Fail_ms, ms->s3);
+  }
+
   ms->levels = (struct zarr_s3_sink**)calloc((size_t)plan.nlod,
                                               sizeof(struct zarr_s3_sink*));
-  CHECK(Fail_ms, ms->levels);
+  CHECK(Fail_s3, ms->levels);
 
-  // Create one zarr_s3_sink per level
+  // Create one zarr_s3_sink per level, all borrowing the shared client
   for (int lv = 0; lv < plan.nlod; ++lv) {
     struct dimension lv_dims[MAX_ZARR_RANK];
     for (int d = 0; d < cfg->rank; ++d) {
@@ -576,12 +647,9 @@ zarr_s3_multiscale_sink_create(const struct zarr_s3_multiscale_config* cfg)
       .codec = cfg->codec,
     };
 
-    ms->levels[lv] = zarr_s3_sink_create(&zcfg);
+    ms->levels[lv] = zarr_s3_sink_create_with_client(&zcfg, ms->s3);
     CHECK(Fail_levels, ms->levels[lv]);
   }
-
-  // Use the first level's s3 client for group metadata
-  ms->s3 = ms->levels[0]->s3;
 
   // Write root metadata (at prefix level, above group)
   if (cfg->array_name) {
@@ -606,6 +674,8 @@ Fail_levels:
       zarr_s3_sink_destroy(ms->levels[i]);
   }
   free(ms->levels);
+Fail_s3:
+  s3_client_destroy(ms->s3);
 Fail_ms:
   free(ms);
 Fail_plan:
@@ -631,6 +701,7 @@ zarr_s3_multiscale_sink_destroy(struct zarr_s3_multiscale_sink* s)
   for (int i = 0; i < s->nlod; ++i)
     zarr_s3_sink_destroy(s->levels[i]);
   free(s->levels);
+  s3_client_destroy(s->s3);
   free(s);
 }
 

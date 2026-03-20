@@ -18,8 +18,8 @@ test_simple(void)
   struct aggregate_layout layout;
   memset(&layout, 0, sizeof(layout));
 
-  uint64_t chunk_count[] = { 2, 3 };
-  uint64_t chunks_per_shard[] = { 2, 3 };
+  uint64_t chunk_count[] = { 0, 2, 3 };
+  uint64_t chunks_per_shard[] = { 0, 2, 3 };
   uint8_t rank = 3; // rank includes dim 0
   uint64_t M = 6;
   size_t max_comp = 128;
@@ -41,8 +41,11 @@ test_simple(void)
     memset(compressed + i * max_comp, (int)(i + 1), comp_sizes[i]);
   }
 
+  struct aggregate_cpu_workspace ws;
+  memset(&ws, 0, sizeof(ws));
   struct aggregate_result result;
-  CHECK(Fail, aggregate_cpu(compressed, comp_sizes, &layout, &result) == 0);
+  CHECK(Fail, aggregate_cpu_workspace_init(&ws, &layout) == 0);
+  CHECK(Fail, aggregate_cpu_into(compressed, comp_sizes, &layout, &ws, &result) == 0);
 
   // Verify: each chunk i should appear at its permuted position P[i].
   // The offsets should be a valid prefix sum.
@@ -62,12 +65,13 @@ test_simple(void)
       CHECK(Fail, (uint8_t)p[j] == (uint8_t)(i + 1));
   }
 
-  aggregate_cpu_result_free(&result);
+  aggregate_cpu_workspace_free(&ws);
   free(compressed);
   log_info("  PASS");
   return 0;
 
 Fail:
+  aggregate_cpu_workspace_free(&ws);
   free(compressed);
   log_error("  FAIL");
   return 1;
@@ -84,8 +88,8 @@ test_multishard(void)
   struct aggregate_layout layout;
   memset(&layout, 0, sizeof(layout));
 
-  uint64_t chunk_count[] = { 4, 3 };
-  uint64_t chunks_per_shard[] = { 2, 3 };
+  uint64_t chunk_count[] = { 0, 4, 3 };
+  uint64_t chunks_per_shard[] = { 0, 2, 3 };
   uint8_t rank = 3;
   uint64_t M = 12;
   size_t max_comp = 64;
@@ -107,8 +111,11 @@ test_multishard(void)
     memset(compressed + i * max_comp, (int)(i + 1), comp_sizes[i]);
   }
 
+  struct aggregate_cpu_workspace ws;
+  memset(&ws, 0, sizeof(ws));
   struct aggregate_result result;
-  CHECK(Fail, aggregate_cpu(compressed, comp_sizes, &layout, &result) == 0);
+  CHECK(Fail, aggregate_cpu_workspace_init(&ws, &layout) == 0);
+  CHECK(Fail, aggregate_cpu_into(compressed, comp_sizes, &layout, &ws, &result) == 0);
 
   // Verify round-trip: each chunk's data at its permuted offset
   for (uint64_t i = 0; i < M; ++i) {
@@ -120,12 +127,13 @@ test_multishard(void)
       CHECK(Fail, (uint8_t)p[j] == (uint8_t)(i + 1));
   }
 
-  aggregate_cpu_result_free(&result);
+  aggregate_cpu_workspace_free(&ws);
   free(compressed);
   log_info("  PASS");
   return 0;
 
 Fail:
+  aggregate_cpu_workspace_free(&ws);
   free(compressed);
   log_error("  FAIL");
   return 1;
@@ -142,8 +150,8 @@ test_page_aligned(void)
 
   // 3D: chunk_count={2, 2}, chunks_per_shard={1, 2}, shard_count={2, 1}
   // cps_inner = 2, C = 2*1 * 1*2 = 4, M = 4
-  uint64_t chunk_count[] = { 2, 2 };
-  uint64_t chunks_per_shard[] = { 1, 2 };
+  uint64_t chunk_count[] = { 0, 2, 2 };
+  uint64_t chunks_per_shard[] = { 0, 1, 2 };
   uint8_t rank = 3;
   uint64_t M = 4;
   size_t max_comp = 100;
@@ -163,8 +171,11 @@ test_page_aligned(void)
   for (uint64_t i = 0; i < M; ++i)
     memset(compressed + i * max_comp, (int)(i + 1), comp_sizes[i]);
 
+  struct aggregate_cpu_workspace ws;
+  memset(&ws, 0, sizeof(ws));
   struct aggregate_result result;
-  CHECK(Fail, aggregate_cpu(compressed, comp_sizes, &layout, &result) == 0);
+  CHECK(Fail, aggregate_cpu_workspace_init(&ws, &layout) == 0);
+  CHECK(Fail, aggregate_cpu_into(compressed, comp_sizes, &layout, &ws, &result) == 0);
 
   // Verify shard boundaries are page-aligned.
   // Each shard has cps_inner chunks. The offset after each shard group
@@ -186,12 +197,13 @@ test_page_aligned(void)
       CHECK(Fail, (uint8_t)p[j] == (uint8_t)(i + 1));
   }
 
-  aggregate_cpu_result_free(&result);
+  aggregate_cpu_workspace_free(&ws);
   free(compressed);
   log_info("  PASS");
   return 0;
 
 Fail:
+  aggregate_cpu_workspace_free(&ws);
   free(compressed);
   log_error("  FAIL");
   return 1;

@@ -42,11 +42,20 @@ s3_upload_begin(struct s3_client* c, const char* bucket, const char* key);
 int
 s3_upload_write(struct s3_upload* u, const void* data, size_t len);
 
-// Signal EOF and block until the upload is fully complete (all parts uploaded,
-// CompleteMultipartUpload finished). Returns 0 on success.
+// Signal EOF. The upload completes asynchronously in the CRT background.
+// Returns 0 on success (EOF accepted), non-zero on error.
 int
-s3_upload_finish(struct s3_upload* u);
+s3_upload_finish_async(struct s3_upload* u);
 
-// Cancel an in-progress upload and free resources.
+// Block until the upload is fully complete. Returns 0 on success.
+// Must be called after finish_async and before destroy.
+int
+s3_upload_wait(struct s3_upload* u);
+
+// Free the upload struct. Must be called after wait or abort.
+void
+s3_upload_destroy(struct s3_upload* u);
+
+// Cancel an in-progress upload, wait for cancellation, and free resources.
 void
 s3_upload_abort(struct s3_upload* u);

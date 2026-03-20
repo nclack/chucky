@@ -210,6 +210,112 @@ Fail:
   return 1;
 }
 
+static int
+test_concurrent_finalize(void)
+{
+  log_info("=== test_s3_concurrent_finalize ===");
+
+  // 1D, 8 elements, chunk=2, cps=2, so shard_inner_count=1 (only 1 dim).
+  // Use 2D to get multiple inner shards: 2x4, chunk 1x2, cps 1x2.
+  // shard_count = [2, 1], shard_inner_count = 1.
+  // Instead, use a shape that gives multiple inner shards:
+  // 3D: t=0(streaming), y=4, x=4. chunk 1x2x2, cps 1x1x1.
+  // shard_count = [0, 2, 2], shard_inner_count = 4.
+  struct dimension dims[] = {
+    { .size = 0,
+      .chunk_size = 1,
+      .chunks_per_shard = 1,
+      .name = "t",
+      .storage_position = 0 },
+    { .size = 4,
+      .chunk_size = 2,
+      .chunks_per_shard = 1,
+      .name = "y",
+      .storage_position = 1 },
+    { .size = 4,
+      .chunk_size = 2,
+      .chunks_per_shard = 1,
+      .name = "x",
+      .storage_position = 2 },
+  };
+
+  set_minio_creds();
+
+  struct zarr_s3_config cfg = {
+    .bucket = MINIO_BUCKET,
+    .prefix = "test-concurrent",
+    .array_name = "0",
+    .region = "us-east-1",
+    .endpoint = MINIO_ENDPOINT,
+    .data_type = dtype_u16,
+    .fill_value = 0,
+    .rank = 3,
+    .dimensions = dims,
+    .codec = CODEC_NONE,
+  };
+
+  struct zarr_s3_sink* sink = zarr_s3_sink_create(&cfg);
+  CHECK(Fail, sink);
+  struct shard_sink* ss = zarr_s3_sink_as_shard_sink(sink);
+
+  // Write epoch 0: open all 4 inner shards, write, finalize (async)
+  uint16_t data[2] = { 0xAAAA, 0xBBBB };
+  for (int i = 0; i < 4; ++i) {
+    struct shard_writer* w = ss->open(ss, 0, (uint64_t)i);
+    CHECK(Fail_sink, w);
+    CHECK(Fail_sink,
+          w->write(w, 0, data, (char*)data + sizeof(data)) == 0);
+    CHECK(Fail_sink, w->finalize(w) == 0);
+  }
+
+  // Record fence after first epoch
+  struct io_event fence = ss->record_fence(ss, 0);
+  CHECK(Fail_sink, fence.seq > 0);
+
+  // Write epoch 1: open triggers wait on pending, then new uploads
+  uint16_t data2[2] = { 0xCCCC, 0xDDDD };
+  for (int i = 0; i < 4; ++i) {
+    struct shard_writer* w = ss->open(ss, 0, (uint64_t)(4 + i));
+    CHECK(Fail_sink, w);
+    CHECK(Fail_sink,
+          w->write(w, 0, data2, (char*)data2 + sizeof(data2)) == 0);
+    CHECK(Fail_sink, w->finalize(w) == 0);
+  }
+
+  // Wait fence drains all pending
+  ss->wait_fence(ss, 0, fence);
+
+  // Flush to drain epoch 1's pending uploads
+  zarr_s3_sink_flush(sink);
+
+  // Verify epoch 0 shards arrived
+  for (int i = 0; i < 4; ++i) {
+    char key[256];
+    snprintf(key, sizeof(key), "test-concurrent/0/c/0/%d/%d", i / 2, i % 2);
+    uint8_t* obj = NULL;
+    size_t len = 0;
+    CHECK(Fail_sink, minio_get(key, &obj, &len) == 0);
+    CHECK(Fail_obj, len >= sizeof(data));
+    CHECK(Fail_obj, memcmp(obj, data, sizeof(data)) == 0);
+    free(obj);
+    continue;
+  Fail_obj:
+    free(obj);
+    goto Fail_sink;
+  }
+
+  log_info("  concurrent finalize + fence OK");
+  zarr_s3_sink_destroy(sink);
+  log_info("  PASS");
+  return 0;
+
+Fail_sink:
+  zarr_s3_sink_destroy(sink);
+Fail:
+  log_error("  FAIL");
+  return 1;
+}
+
 // --- Main ---
 
 int
@@ -225,5 +331,6 @@ main(void)
   int rc = 0;
   rc |= test_metadata();
   rc |= test_shard_write();
+  rc |= test_concurrent_finalize();
   return rc;
 }

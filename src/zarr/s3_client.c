@@ -446,36 +446,44 @@ s3_upload_write(struct s3_upload* u, const void* data, size_t len)
 }
 
 int
-s3_upload_finish(struct s3_upload* u)
+s3_upload_finish_async(struct s3_upload* u)
 {
-  // Signal EOF
   struct aws_byte_cursor empty = { .ptr = NULL, .len = 0 };
   struct aws_future_void* future =
     aws_s3_meta_request_write(u->meta_request, empty, true);
   aws_future_void_wait(future, UINT64_MAX);
-  int write_err = aws_future_void_get_error(future);
+  int err = aws_future_void_get_error(future);
   aws_future_void_release(future);
 
-  if (write_err)
-    log_error("s3_upload_finish: EOF write error %d", write_err);
+  if (err)
+    log_error("s3_upload_finish_async: EOF write error %d", err);
+  return err ? 1 : 0;
+}
 
-  // Wait for the upload to fully complete
+int
+s3_upload_wait(struct s3_upload* u)
+{
   aws_mutex_lock(&u->mutex);
-  aws_condition_variable_wait_pred(
-    &u->cv, &u->mutex, is_upload_finished, u);
+  aws_condition_variable_wait_pred(&u->cv, &u->mutex, is_upload_finished, u);
   aws_mutex_unlock(&u->mutex);
 
-  int rc = (u->error_code == 0 && write_err == 0) ? 0 : 1;
   if (u->error_code)
-    log_error(
-      "s3_upload_finish: error %d (HTTP %d)", u->error_code, u->response_status);
+    log_error("s3_upload_wait: error %d (HTTP %d)",
+              u->error_code,
+              u->response_status);
+  return u->error_code ? 1 : 0;
+}
 
-  aws_s3_meta_request_release(u->meta_request);
-  aws_http_message_release(u->message);
-  u->meta_request = NULL;
-  u->message = NULL;
+void
+s3_upload_destroy(struct s3_upload* u)
+{
+  if (!u)
+    return;
+  if (u->meta_request)
+    aws_s3_meta_request_release(u->meta_request);
+  if (u->message)
+    aws_http_message_release(u->message);
   free(u);
-  return rc;
 }
 
 void
@@ -483,18 +491,14 @@ s3_upload_abort(struct s3_upload* u)
 {
   if (!u)
     return;
-  if (u->meta_request) {
+  if (u->meta_request)
     aws_s3_meta_request_cancel(u->meta_request);
 
-    // Wait for finish callback
-    aws_mutex_lock(&u->mutex);
-    aws_condition_variable_wait_pred(
-      &u->cv, &u->mutex, is_upload_finished, u);
-    aws_mutex_unlock(&u->mutex);
+  // Wait for CRT to acknowledge cancellation
+  aws_mutex_lock(&u->mutex);
+  aws_condition_variable_wait_pred(
+    &u->cv, &u->mutex, is_upload_finished, u);
+  aws_mutex_unlock(&u->mutex);
 
-    aws_s3_meta_request_release(u->meta_request);
-  }
-  if (u->message)
-    aws_http_message_release(u->message);
-  free(u);
+  s3_upload_destroy(u);
 }

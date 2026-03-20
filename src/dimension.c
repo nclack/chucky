@@ -55,6 +55,7 @@ dims_create(struct dimension* dims, const char* names, const uint64_t* sizes)
       .name = name_table[ch],
       .downsample = 0,
       .storage_position = i,
+      .axis_type = dimension_axis_space,
     };
   }
   return rank;
@@ -158,31 +159,6 @@ dims_budget_chunk_bytes(struct dimension* dims,
                          ratios);
 }
 
-int
-dims_advise(struct dimension* dims,
-            uint8_t rank,
-            size_t target_chunk_bytes,
-            size_t bytes_per_element,
-            const uint8_t* ratios,
-            size_t budget_bytes,
-            dims_estimate_fn estimate,
-            void* estimate_ctx)
-{
-  if (bytes_per_element == 0 || budget_bytes == 0)
-    return 1;
-
-  for (size_t target = target_chunk_bytes; target >= bytes_per_element;
-       target >>= 1) {
-    dims_budget_chunk_bytes(dims, rank, target, bytes_per_element, ratios);
-    size_t estimated = 0;
-    if (estimate(estimate_ctx, &estimated))
-      return 1;
-    if (estimated <= budget_bytes)
-      return 0;
-  }
-  return 1; // nothing fits
-}
-
 void
 dims_set_shard_counts(struct dimension* dims,
                       uint8_t rank,
@@ -199,7 +175,7 @@ dims_set_shard_counts(struct dimension* dims,
 void
 dims_print(const struct dimension* dims, uint8_t rank)
 {
-  printf("dim  name  %10s  %10s  %8s  %6s  %8s  storage  ds\n",
+  fprintf(stderr, "dim  name  %10s  %10s  %8s  %6s  %8s  storage  ds\n",
          "size",
          "chunk",
          "chunks",
@@ -211,7 +187,7 @@ dims_print(const struct dimension* dims, uint8_t rank)
     uint64_t tc = ceildiv(dims[i].size, dims[i].chunk_size);
     uint64_t cps = dims[i].chunks_per_shard ? dims[i].chunks_per_shard : tc;
     uint64_t sc = ceildiv(tc, cps);
-    printf("%3d  %-4s  %10llu  %10llu  %8llu  %6llu  %8llu  %7d  %s\n",
+    fprintf(stderr, "%3d  %-4s  %10llu  %10llu  %8llu  %6llu  %8llu  %7d  %s\n",
            i,
            dims[i].name ? dims[i].name : "?",
            (unsigned long long)dims[i].size,
@@ -226,7 +202,7 @@ dims_print(const struct dimension* dims, uint8_t rank)
       chunks_per_epoch *= tc;
   }
   double epoch_elements = (double)chunks_per_epoch * (double)chunk_elements;
-  printf("chunk_elements: %llu  chunks/epoch: %llu  epoch_elements: %.3g\n",
+  fprintf(stderr, "chunk_elements: %llu  chunks/epoch: %llu  epoch_elements: %.3g\n",
          (unsigned long long)chunk_elements,
          (unsigned long long)chunks_per_epoch,
          epoch_elements);

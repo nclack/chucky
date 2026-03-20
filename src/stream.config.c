@@ -204,6 +204,8 @@ compute_stream_layouts(
   const size_t bpe = dtype_bpe(config->dtype);
   const struct dimension* dims = config->dimensions;
 
+  memset(out, 0, sizeof(*out));
+
   CHECK(Fail, validate_config(config) == 0);
 
   uint8_t storage_order[HALF_MAX_RANK];
@@ -216,7 +218,6 @@ compute_stream_layouts(
       lod_mask |= (1u << d);
   int enable_multiscale = lod_mask != 0;
 
-  memset(out, 0, sizeof(*out));
   out->levels.enable_multiscale = enable_multiscale;
   out->levels.dim0_downsample = dim0_downsample;
   out->levels.nlod = 1;

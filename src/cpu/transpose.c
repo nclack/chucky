@@ -57,7 +57,7 @@ transpose_cpu(void* dst,
 
   const int64_t inner_stride = strides[rank - 1];
 
-#pragma omp parallel
+#pragma omp parallel if(n > 1024)
   {
     int tid = omp_get_thread_num();
     int nthreads = omp_get_num_threads();

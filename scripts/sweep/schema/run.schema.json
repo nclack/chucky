@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "run.schema.json",
+  "title": "Benchmark Run",
+  "description": "A single benchmark run result, as emitted by bench_stream --json and stored in the runs[] array of a results file.",
+  "type": "object",
+  "required": ["id", "scenario", "codec", "fill", "backend", "dtype", "chunk_bytes", "chunk_bytes_label", "status"],
+  "properties": {
+    "id": {
+      "type": "string",
+      "description": "Unique run identifier: scenario__codec__fill__backend__dtype__chunk_label"
+    },
+    "scenario": { "type": "string" },
+    "codec": { "type": "string", "enum": ["none", "lz4", "zstd"] },
+    "fill": { "type": "string", "enum": ["xor", "zeros", "rand"] },
+    "backend": { "type": "string", "enum": ["gpu", "cpu"] },
+    "dtype": { "type": "string", "enum": ["u8", "u16", "u32", "u64", "i8", "i16", "i32", "i64", "f16", "f32", "f64"] },
+    "chunk_bytes": { "type": "integer", "minimum": 1 },
+    "chunk_bytes_label": { "type": "string" },
+    "status": { "type": "string", "enum": ["pass", "error", "timeout", "missing", "unknown"] },
+    "elapsed_s": { "type": "number", "description": "Wall time as measured by the sweep runner (includes process startup)." },
+    "returncode": { "type": "integer" },
+    "error": { "type": "string" },
+    "throughput_in_gibs": { "type": "number", "description": "Input throughput in GiB/s." },
+    "throughput_out_gibs": { "type": "number", "description": "Compressed output throughput in GiB/s." },
+    "compression_fold": { "type": "number", "description": "Compression fold (uncompressed_bytes / compressed_bytes). Values > 1 mean data got smaller." },
+    "input_gib": { "type": "number" },
+    "compressed_gib": { "type": "number" },
+    "total_chunks": { "type": "integer" },
+    "chunks_per_epoch": { "type": "integer" },
+    "num_epochs": { "type": "integer" },
+    "wall_s": { "type": "number", "description": "Benchmark wall time (excludes init)." },
+    "init_s": { "type": "number" },
+    "flush_s": { "type": "number" },
+    "stages": {
+      "type": "object",
+      "description": "Per-pipeline-stage timing metrics.",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["avg_ms", "in_gibs", "out_gibs"],
+        "properties": {
+          "avg_ms": { "type": "number", "description": "Average time per invocation in milliseconds." },
+          "best_ms": { "type": "number", "description": "Best single invocation time in milliseconds." },
+          "in_gibs": { "type": "number", "description": "Input throughput in GiB/s." },
+          "out_gibs": { "type": "number", "description": "Output throughput in GiB/s." }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

@@ -25,7 +25,11 @@ def load_files(paths: list[Path]) -> list[dict]:
     files = []
     for p in paths:
         with open(p) as f:
-            data = json.load(f)
+            try:
+                data = json.load(f)
+            except json.JSONDecodeError as e:
+                print(f"Warning: skipping corrupt JSON file {p}: {e}", file=sys.stderr)
+                continue
         machine = data.get("machine", {})
         commit = machine.get("commit", "unknown")
         date = machine.get("date", "")[:10]

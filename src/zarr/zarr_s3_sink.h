@@ -19,6 +19,12 @@ struct zarr_s3_config
   uint8_t rank;
   const struct dimension* dimensions;
   enum compression_codec codec; // CODEC_ZSTD, CODEC_LZ4, or CODEC_NONE
+  size_t part_size;             // 0 = default (8 MiB)
+  double throughput_gbps;       // 0 = default (10.0)
+  size_t max_retries;           // 0 = CRT default (10)
+  uint32_t backoff_scale_ms;    // 0 = CRT default (500)
+  uint32_t max_backoff_secs;    // 0 = CRT default (20)
+  uint64_t timeout_ns;          // 0 = no timeout (infinite)
 };
 
 struct zarr_s3_sink;
@@ -29,11 +35,17 @@ struct zarr_s3_sink;
 struct zarr_s3_sink*
 zarr_s3_sink_create(const struct zarr_s3_config* cfg);
 
-void
+// Returns non-zero if any upload has failed.
+int
+zarr_s3_sink_has_error(const struct zarr_s3_sink* s);
+
+// Returns non-zero if any upload had failed.
+int
 zarr_s3_sink_destroy(struct zarr_s3_sink* s);
 
 // Block until all in-flight uploads have completed.
-void
+// Returns non-zero if any upload failed.
+int
 zarr_s3_sink_flush(struct zarr_s3_sink* s);
 
 // Get the shard_sink interface for use with the chunk stream.
@@ -55,6 +67,12 @@ struct zarr_s3_multiscale_config
   const struct dimension* dimensions; // L0 dimensions
   int nlod;                           // number of levels (0 = auto)
   enum compression_codec codec;
+  size_t part_size;          // 0 = default (8 MiB)
+  double throughput_gbps;    // 0 = default (10.0)
+  size_t max_retries;        // 0 = CRT default (10)
+  uint32_t backoff_scale_ms; // 0 = CRT default (500)
+  uint32_t max_backoff_secs; // 0 = CRT default (20)
+  uint64_t timeout_ns;       // 0 = no timeout (infinite)
 };
 
 struct zarr_s3_multiscale_sink;
@@ -62,10 +80,13 @@ struct zarr_s3_multiscale_sink;
 struct zarr_s3_multiscale_sink*
 zarr_s3_multiscale_sink_create(const struct zarr_s3_multiscale_config* cfg);
 
-void
+// Returns non-zero if any upload had failed.
+int
 zarr_s3_multiscale_sink_destroy(struct zarr_s3_multiscale_sink* s);
 
-void
+// Block until all in-flight uploads have completed.
+// Returns non-zero if any upload failed.
+int
 zarr_s3_multiscale_sink_flush(struct zarr_s3_multiscale_sink* s);
 
 struct shard_sink*

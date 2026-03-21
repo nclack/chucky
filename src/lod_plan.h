@@ -29,7 +29,7 @@ struct lod_plan
   uint64_t batch_count;
 
   uint64_t lod_shapes[LOD_MAX_LEVELS][LOD_MAX_NDIM];
-  uint64_t lod_counts[LOD_MAX_LEVELS];
+  uint64_t lod_nelem[LOD_MAX_LEVELS];
 
   struct lod_spans levels;
   struct lod_spans lod_levels;

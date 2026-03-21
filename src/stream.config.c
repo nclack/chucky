@@ -72,7 +72,8 @@ resolve_storage_order(uint8_t rank,
 }
 
 // Compute host-side tile_stream_layout fields for a single level (no GPU).
-static void
+// Returns 0 on success, 1 on overflow.
+static int
 compute_level_layout(struct tile_stream_layout* layout,
                      uint8_t rank,
                      size_t bpe,
@@ -112,10 +113,15 @@ compute_level_layout(struct tile_stream_layout* layout,
   }
 
   layout->chunks_per_epoch = layout->lifted_strides[0] / layout->chunk_stride;
+  CHECK_MUL_OVERFLOW(Fail, layout->chunks_per_epoch, layout->chunk_elements,
+                      UINT64_MAX);
   layout->epoch_elements = layout->chunks_per_epoch * layout->chunk_elements;
   layout->lifted_strides[0] = 0; // collapse epoch dim
   layout->chunk_pool_bytes =
     layout->chunks_per_epoch * layout->chunk_stride * bpe;
+  return 0;
+Fail:
+  return 1;
 }
 
 // Validate a tile_stream_configuration.
@@ -227,8 +233,10 @@ compute_stream_layouts(
     uint64_t l0_shape[HALF_MAX_RANK];
     for (int d = 0; d < rank; ++d)
       l0_shape[d] = dims[d].size;
-    compute_level_layout(
-      &out->l0, rank, bpe, dims, l0_shape, codec_alignment, storage_order);
+    CHECK(Fail,
+          compute_level_layout(
+            &out->l0, rank, bpe, dims, l0_shape, codec_alignment,
+            storage_order) == 0);
   }
 
   // --- LOD plan ---
@@ -249,13 +257,14 @@ compute_stream_layouts(
     out->levels.nlod = out->plan.nlod;
 
     for (int lv = 1; lv < out->plan.nlod; ++lv)
-      compute_level_layout(&out->lod_layouts[lv],
-                           rank,
-                           bpe,
-                           dims,
-                           out->plan.shapes[lv],
-                           codec_alignment,
-                           storage_order);
+      CHECK(Fail,
+            compute_level_layout(&out->lod_layouts[lv],
+                                 rank,
+                                 bpe,
+                                 dims,
+                                 out->plan.shapes[lv],
+                                 codec_alignment,
+                                 storage_order) == 0);
   }
 
   // --- Level geometry ---

@@ -66,14 +66,14 @@ setup_gather(const struct lod_plan* p,
     CHECK(Fail,
           upload(d_lod_strides, lod_strides, p->lod_ndim * sizeof(uint64_t)));
 
-    CU(Fail, cuMemAlloc(d_gather_lut, p->lod_counts[0] * sizeof(uint32_t)));
+    CU(Fail, cuMemAlloc(d_gather_lut, p->lod_nelem[0] * sizeof(uint32_t)));
     CHECK(Fail,
           lod_build_gather_lut(*d_gather_lut,
                                *d_lod_shape,
                                *d_lod_strides,
                                p->lod_ndim,
                                p->lod_shapes[0],
-                               p->lod_counts[0],
+                               p->lod_nelem[0],
                                stream) == 0);
   } else {
     uint32_t zero = 0;
@@ -192,7 +192,7 @@ lod_compute_gpu(const struct lod_plan* p,
                  d_gather_lut,
                  d_batch_offsets,
                  dtype_f32,
-                 p->lod_counts[0],
+                 p->lod_nelem[0],
                  p->batch_count,
                  stream);
 
@@ -238,8 +238,8 @@ lod_compute_gpu(const struct lod_plan* p,
                method,
                src_level.beg,
                dst_level.beg,
-               p->lod_counts[l],
-               p->lod_counts[l + 1],
+               p->lod_nelem[l],
+               p->lod_nelem[l + 1],
                p->batch_count,
                stream);
   }
@@ -396,7 +396,7 @@ lod_compute_gpu_u16(const struct lod_plan* p,
                  d_gather_lut,
                  d_batch_offsets,
                  dtype_u16,
-                 p->lod_counts[0],
+                 p->lod_nelem[0],
                  p->batch_count,
                  stream);
 
@@ -442,8 +442,8 @@ lod_compute_gpu_u16(const struct lod_plan* p,
                method,
                src_level.beg,
                dst_level.beg,
-               p->lod_counts[l],
-               p->lod_counts[l + 1],
+               p->lod_nelem[l],
+               p->lod_nelem[l + 1],
                p->batch_count,
                stream);
   }

@@ -51,6 +51,17 @@ tile_stream_gpu_destroy(struct tile_stream_gpu* s)
 {
   if (!s)
     return;
+
+  // Ensure all GPU work completes before tearing down events/memory.
+  if (s->streams.h2d)
+    cuStreamSynchronize(s->streams.h2d);
+  if (s->streams.compute)
+    cuStreamSynchronize(s->streams.compute);
+  if (s->streams.compress)
+    cuStreamSynchronize(s->streams.compress);
+  if (s->streams.d2h)
+    cuStreamSynchronize(s->streams.d2h);
+
   destroy_batch_events(&s->batch);
   d2h_deliver_destroy(&s->d2h_deliver);
   compress_agg_destroy(&s->compress_agg, s->levels.nlod);
@@ -433,7 +444,7 @@ tile_stream_gpu_memory_estimate(const struct tile_stream_configuration* config,
       lod_device += plan->lod_ndim * sizeof(uint64_t);
 
     if (plan->lod_ndim > 0) {
-      lod_device += plan->lod_counts[0] * sizeof(uint32_t);
+      lod_device += plan->lod_nelem[0] * sizeof(uint32_t);
       lod_device += plan->batch_count * sizeof(uint32_t);
     }
 
@@ -456,7 +467,7 @@ tile_stream_gpu_memory_estimate(const struct tile_stream_configuration* config,
         dtype_accum_bpe(config->dtype, config->dim0_reduce_method);
       uint64_t total_elems = 0;
       for (int lv = 1; lv < plan->nlod; ++lv)
-        total_elems += plan->batch_count * plan->lod_counts[lv];
+        total_elems += plan->batch_count * plan->lod_nelem[lv];
       lod_device += total_elems * accum_bpe;
       lod_device += total_elems;
       lod_device += (uint64_t)plan->nlod * sizeof(uint32_t);

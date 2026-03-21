@@ -29,6 +29,19 @@ extern "C"
       goto lbl;                                                                \
   } while (0)
 
+#define CHECK_MUL_OVERFLOW(lbl, a, b, max_val)                                 \
+  do {                                                                         \
+    if ((b) != 0 && (a) > (max_val) / (b)) {                                  \
+      log_error("%s:%d overflow: %llu * %llu > %llu",                          \
+                __FILE__,                                                      \
+                __LINE__,                                                      \
+                (unsigned long long)(a),                                       \
+                (unsigned long long)(b),                                       \
+                (unsigned long long)(max_val));                                \
+      goto lbl;                                                                \
+    }                                                                          \
+  } while (0)
+
   static inline uint64_t ceildiv(uint64_t a, uint64_t b)
   {
     return (a + b - 1) / b;

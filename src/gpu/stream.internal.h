@@ -62,7 +62,7 @@ struct lod_state
 
   CUdeviceptr d_full_shape;    // device copy of shapes[0]
   CUdeviceptr d_lod_shape;     // device copy of lod_shapes[0]
-  CUdeviceptr d_gather_lut;    // u32, lod_counts[0] entries
+  CUdeviceptr d_gather_lut;    // u32, lod_nelem[0] entries
   CUdeviceptr d_batch_offsets; // u32, batch_count entries
 
   CUdeviceptr d_child_shapes[LOD_MAX_LEVELS];
@@ -74,7 +74,7 @@ struct lod_state
   struct tile_stream_layout_gpu layout_gpu[LOD_MAX_LEVELS];
 
   // Morton-to-chunk scatter LUTs (precomputed)
-  CUdeviceptr d_morton_chunk_lut[LOD_MAX_LEVELS]; // u32, lod_counts[lv]
+  CUdeviceptr d_morton_chunk_lut[LOD_MAX_LEVELS]; // u32, lod_nelem[lv]
   CUdeviceptr d_morton_batch_chunk_offsets[LOD_MAX_LEVELS]; // u32, batch_count
 
   CUevent t_start;

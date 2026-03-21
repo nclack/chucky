@@ -301,6 +301,12 @@ zarr_s3_sink_create(const struct zarr_s3_config* cfg)
   struct s3_client_config s3cfg = {
     .region = cfg->region,
     .endpoint = cfg->endpoint,
+    .part_size = cfg->part_size,
+    .throughput_gbps = cfg->throughput_gbps,
+    .max_retries = cfg->max_retries,
+    .backoff_scale_ms = cfg->backoff_scale_ms,
+    .max_backoff_secs = cfg->max_backoff_secs,
+    .timeout_ns = cfg->timeout_ns,
   };
   struct s3_client* client = s3_client_create(&s3cfg);
   CHECK(Fail, client);
@@ -317,20 +323,27 @@ Fail:
   return NULL;
 }
 
-void
+int
+zarr_s3_sink_has_error(const struct zarr_s3_sink* s)
+{
+  return s ? s->finalize_err : 0;
+}
+
+int
 zarr_s3_sink_flush(struct zarr_s3_sink* s)
 {
   if (!s)
-    return;
+    return 0;
   for (uint64_t i = 0; i < s->num_writers; ++i)
     s3_wait_pending(&s->writers[i]);
+  return s->finalize_err;
 }
 
-void
+int
 zarr_s3_sink_destroy(struct zarr_s3_sink* s)
 {
   if (!s)
-    return;
+    return 0;
 
   if (s->writers) {
     for (uint64_t i = 0; i < s->num_writers; ++i) {
@@ -344,9 +357,11 @@ zarr_s3_sink_destroy(struct zarr_s3_sink* s)
     }
     free(s->writers);
   }
+  int err = s->finalize_err;
   if (s->owns_s3)
     s3_client_destroy(s->s3);
   free(s);
+  return err;
 }
 
 struct shard_sink*
@@ -505,6 +520,12 @@ zarr_s3_multiscale_sink_create(const struct zarr_s3_multiscale_config* cfg)
     struct s3_client_config s3cfg = {
       .region = cfg->region,
       .endpoint = cfg->endpoint,
+      .part_size = cfg->part_size,
+      .throughput_gbps = cfg->throughput_gbps,
+      .max_retries = cfg->max_retries,
+      .backoff_scale_ms = cfg->backoff_scale_ms,
+      .max_backoff_secs = cfg->max_backoff_secs,
+      .timeout_ns = cfg->timeout_ns,
     };
     ms->s3 = s3_client_create(&s3cfg);
     CHECK(Fail_ms, ms->s3);
@@ -578,25 +599,29 @@ Fail:
   return NULL;
 }
 
-void
+int
 zarr_s3_multiscale_sink_flush(struct zarr_s3_multiscale_sink* s)
 {
   if (!s)
-    return;
+    return 0;
+  int err = 0;
   for (int i = 0; i < s->nlod; ++i)
-    zarr_s3_sink_flush(s->levels[i]);
+    err |= zarr_s3_sink_flush(s->levels[i]);
+  return err;
 }
 
-void
+int
 zarr_s3_multiscale_sink_destroy(struct zarr_s3_multiscale_sink* s)
 {
   if (!s)
-    return;
+    return 0;
+  int err = 0;
   for (int i = 0; i < s->nlod; ++i)
-    zarr_s3_sink_destroy(s->levels[i]);
+    err |= zarr_s3_sink_destroy(s->levels[i]);
   free(s->levels);
   s3_client_destroy(s->s3);
   free(s);
+  return err;
 }
 
 struct shard_sink*

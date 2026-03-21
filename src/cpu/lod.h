@@ -20,7 +20,7 @@ extern "C"
                      enum lod_reduce_method method);
 
   // Build morton-to-chunk-pool LUT for level lv.
-  // chunk_lut must have room for lod_counts[lv] entries.
+  // chunk_lut must have room for lod_nelem[lv] entries.
   void lod_cpu_build_chunk_lut(const struct lod_plan* p,
                                int lv,
                                const struct tile_stream_layout* layout,
@@ -43,7 +43,7 @@ extern "C"
   // Dim0 fold: accumulate inner-reduced data (levels 1+) from the morton
   // buffer into the accumulator. On first call (counts[lv]==0) copies;
   // subsequent calls reduce (mean/min/max).
-  // accum: buffer sized to sum(batch_count * lod_counts[lv]) for lv=1..nlod-1.
+  // accum: buffer sized to sum(batch_count * lod_nelem[lv]) for lv=1..nlod-1.
   // counts[nlod]: per-level fold count (caller increments after this call).
   int lod_cpu_dim0_fold(const struct lod_plan* p,
                         const void* morton_values,
@@ -63,7 +63,7 @@ extern "C"
                         enum lod_reduce_method method);
 
   // Build scatter LUT for L0: maps morton position to source linear offset
-  // within one batch. lut must have room for lod_counts[0] entries.
+  // within one batch. lut must have room for lod_nelem[0] entries.
   // Computed once at init, reused every epoch.
   void lod_cpu_build_scatter_lut(const struct lod_plan* p, uint32_t* lut);
 

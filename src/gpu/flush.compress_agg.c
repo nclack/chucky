@@ -69,12 +69,14 @@ compress_agg_init(struct compress_agg_stage* stage,
   const uint32_t K = cl->epochs_per_batch;
   const uint64_t total_chunks = cl->levels.total_chunks;
   const uint64_t chunk_stride = cl->l0.chunk_stride;
+  CHECK_MUL_OVERFLOW(Fail, K, total_chunks, UINT64_MAX);
   const uint64_t M = (uint64_t)K * total_chunks;
   const size_t chunk_bytes = chunk_stride * bpe;
 
   // Codec
   CHECK(Fail, codec_init(&stage->codec, config->codec, chunk_bytes, M) == 0);
 
+  CHECK_MUL_OVERFLOW(Fail, M, stage->codec.max_output_size, SIZE_MAX);
   // Compressed buffers + events
   for (int fc = 0; fc < 2; ++fc) {
     CU(Fail,
@@ -247,6 +249,7 @@ compress_agg_kick(struct compress_agg_stage* stage,
 
   // Compress all epochs as one batch
   {
+    CHECK_MUL_OVERFLOW(Error, n_epochs, levels->total_chunks, UINT64_MAX);
     uint64_t batch_chunks = (uint64_t)n_epochs * levels->total_chunks;
     size_t real_chunk_bytes = stage->codec.chunk_bytes;
     CHECK(Error,

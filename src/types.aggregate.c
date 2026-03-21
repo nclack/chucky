@@ -5,6 +5,24 @@
 
 #include <string.h>
 
+size_t
+agg_pool_bytes(uint64_t chunk_count,
+               size_t max_comp_chunk_bytes,
+               uint64_t covering_count,
+               uint64_t cps_inner,
+               size_t page_size)
+{
+  CHECK_MUL_OVERFLOW(Overflow, chunk_count, max_comp_chunk_bytes, SIZE_MAX);
+  size_t bytes = chunk_count * max_comp_chunk_bytes;
+  if (page_size > 0 && cps_inner > 0) {
+    uint64_t num_shards = covering_count / cps_inner;
+    bytes += num_shards * page_size + page_size;
+  }
+  return bytes;
+Overflow:
+  return 0;
+}
+
 int
 aggregate_layout_compute(struct aggregate_layout* layout,
                          uint8_t rank,

@@ -168,7 +168,7 @@ scatter_typed(const lod_plan* p, const T* src, T* dst)
     uint64_t b = plan_batch_index(p, full_coords);
     plan_extract_lod(p, full_coords, lod_coords);
     uint64_t pos = morton_rank(p->lod_ndim, p->lod_shapes[0], lod_coords, 0);
-    dst[b * p->lod_counts[0] + pos] = src[i];
+    dst[b * p->lod_nelem[0] + pos] = src[i];
   }
 }
 
@@ -180,7 +180,7 @@ build_scatter_lut(const lod_plan* p, uint32_t* lut)
   const int ndim = p->ndim;
   const int lod_ndim = p->lod_ndim;
   const uint64_t* lod_shape = p->lod_shapes[0];
-  const uint64_t lod_count = p->lod_counts[0];
+  const uint64_t lod_count = p->lod_nelem[0];
 
   // Compute full-shape row-major strides.
   uint64_t full_strides[LOD_MAX_NDIM];
@@ -238,7 +238,7 @@ gather_typed(const lod_plan* p,
              const uint32_t* scatter_lut,
              const uint64_t* batch_offsets)
 {
-  const uint64_t lod_count = p->lod_counts[0];
+  const uint64_t lod_count = p->lod_nelem[0];
   const uint64_t batch_count = p->batch_count;
 
   // Batch-outer: sequential writes per batch, random reads via LUT.
@@ -262,8 +262,8 @@ reduce_typed(const lod_plan* p, T* values, lod_reduce_method method)
 {
   for (int l = 0; l < p->nlod - 1; ++l) {
     lod_span seg = lod_segment(p, l);
-    uint64_t src_ds = p->lod_counts[l];
-    uint64_t dst_ds = p->lod_counts[l + 1];
+    uint64_t src_ds = p->lod_nelem[l];
+    uint64_t dst_ds = p->lod_nelem[l + 1];
     lod_span src_lv = lod_spans_at(&p->levels, l);
     lod_span dst_lv = lod_spans_at(&p->levels, l + 1);
 
@@ -315,7 +315,7 @@ build_chunk_lut(const lod_plan* p,
                 uint32_t* chunk_lut)
 {
   const uint64_t* lod_shape = p->lod_shapes[lv];
-  const uint64_t lod_count = p->lod_counts[lv];
+  const uint64_t lod_count = p->lod_nelem[lv];
   const int lod_ndim = p->lod_ndim;
 
 #pragma omp parallel for schedule(static) if(lod_count > 1024)
@@ -490,7 +490,7 @@ lod_cpu_morton_to_chunks(const lod_plan* p,
                          const uint64_t* batch_chunk_offsets,
                          enum dtype dtype)
 {
-  const uint64_t lod_count = p->lod_counts[lv];
+  const uint64_t lod_count = p->lod_nelem[lv];
   const lod_span lv_span = lod_spans_at(&p->levels, (uint64_t)lv);
   const size_t bpe = dtype_bpe(dtype);
   const char* lv_values = (const char*)values + lv_span.beg * bpe;
@@ -529,7 +529,7 @@ lod_cpu_dim0_fold(const lod_plan* p,
 
   for (int lv = 1; lv < p->nlod; ++lv) {
     lod_span lev = lod_spans_at(&p->levels, (uint64_t)lv);
-    uint64_t n = p->batch_count * p->lod_counts[lv];
+    uint64_t n = p->batch_count * p->lod_nelem[lv];
     const char* src = (const char*)morton_values + lev.beg * bpe;
     char* dst = (char*)accum + accum_offset * bpe;
 
@@ -555,12 +555,12 @@ lod_cpu_dim0_emit(const lod_plan* p,
 {
   const size_t bpe = dtype_bpe(dtype);
   lod_span lev = lod_spans_at(&p->levels, (uint64_t)lv);
-  uint64_t n = p->batch_count * p->lod_counts[lv];
+  uint64_t n = p->batch_count * p->lod_nelem[lv];
 
   // Compute accum offset for this level
   uint64_t accum_offset = 0;
   for (int k = 1; k < lv; ++k)
-    accum_offset += p->batch_count * p->lod_counts[k];
+    accum_offset += p->batch_count * p->lod_nelem[k];
 
   char* dst = (char*)morton_values + lev.beg * bpe;
   const char* src = (const char*)accum + accum_offset * bpe;

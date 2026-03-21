@@ -8,8 +8,10 @@
 #include <string.h>
 
 int
-emit_shards(struct shard_state* ss, size_t shard_alignment)
+finalize_shards(struct shard_state* ss, size_t shard_alignment)
 {
+  int err = 0;
+
   for (uint64_t si = 0; si < ss->shard_inner_count; ++si) {
     struct active_shard* sh = &ss->shards[si];
     if (!sh->writer)
@@ -18,41 +20,51 @@ emit_shards(struct shard_state* ss, size_t shard_alignment)
     size_t index_data_bytes = ss->chunks_per_shard_total * 2 * sizeof(uint64_t);
     size_t index_total_bytes = index_data_bytes + 4;
 
-    uint8_t* index_buf;
+    uint8_t* index_buf = NULL;
     size_t write_bytes;
-    size_t index_offset; // offset of index data within write buffer
+    size_t index_offset;
 
     if (shard_alignment > 0) {
-      // Unbuffered IO: pad BEFORE the index so the file ends sector-aligned
-      // with the index at the very end. No truncation needed.
       write_bytes = align_up(index_total_bytes, shard_alignment);
       index_buf =
         (uint8_t*)platform_aligned_alloc(shard_alignment, write_bytes);
-      CHECK(Error, index_buf);
       index_offset = write_bytes - index_total_bytes;
-      memset(index_buf, 0, index_offset); // zero the padding before index
     } else {
       write_bytes = index_total_bytes;
       index_buf = (uint8_t*)malloc(write_bytes);
-      CHECK(Error, index_buf);
       index_offset = 0;
     }
 
-    memcpy(index_buf + index_offset, sh->index, index_data_bytes);
+    if (!index_buf) {
+      log_error("finalize_shards: index alloc failed for shard %llu",
+                (unsigned long long)si);
+      err = 1;
+    } else {
+      if (index_offset > 0)
+        memset(index_buf, 0, index_offset);
+      memcpy(index_buf + index_offset, sh->index, index_data_bytes);
 
-    uint32_t crc_val = crc32c(index_buf + index_offset, index_data_bytes);
-    memcpy(index_buf + index_offset + index_data_bytes, &crc_val, 4);
+      uint32_t crc_val = crc32c(index_buf + index_offset, index_data_bytes);
+      memcpy(index_buf + index_offset + index_data_bytes, &crc_val, 4);
 
-    int wrc = sh->writer->write(
-      sh->writer, sh->data_cursor, index_buf, index_buf + write_bytes);
+      if (sh->writer->write(
+            sh->writer, sh->data_cursor, index_buf, index_buf + write_bytes)) {
+        log_error("finalize_shards: index write failed for shard %llu",
+                  (unsigned long long)si);
+        err = 1;
+      }
 
-    if (shard_alignment > 0)
-      platform_aligned_free(index_buf);
-    else
-      free(index_buf);
-    CHECK(Error, wrc == 0);
+      if (shard_alignment > 0)
+        platform_aligned_free(index_buf);
+      else
+        free(index_buf);
+    }
 
-    CHECK(Error, sh->writer->finalize(sh->writer) == 0);
+    if (sh->writer->finalize(sh->writer)) {
+      log_error("finalize_shards: finalize failed for shard %llu",
+                (unsigned long long)si);
+      err = 1;
+    }
 
     sh->writer = NULL;
     sh->data_cursor = 0;
@@ -61,10 +73,7 @@ emit_shards(struct shard_state* ss, size_t shard_alignment)
 
   ss->epoch_in_shard = 0;
   ss->shard_epoch++;
-  return 0;
-
-Error:
-  return 1;
+  return err;
 }
 
 int
@@ -157,7 +166,7 @@ deliver_to_shards_batch(uint8_t level,
     a += run_len;
 
     if (ss->epoch_in_shard >= ss->chunks_per_shard_0) {
-      CHECK(Error, emit_shards(ss, sa) == 0);
+      CHECK(Error, finalize_shards(ss, sa) == 0);
     }
   }
 

@@ -10,6 +10,7 @@
 #include <aws/io/channel_bootstrap.h>
 #include <aws/io/event_loop.h>
 #include <aws/io/host_resolver.h>
+#include <aws/io/retry_strategy.h>
 #include <aws/io/stream.h>
 #include <aws/io/tls_channel_handler.h>
 #include <aws/io/uri.h>
@@ -30,6 +31,7 @@ struct s3_client
   struct aws_client_bootstrap* bootstrap;
   struct aws_tls_ctx* tls_ctx;
   struct aws_credentials_provider* cred_provider;
+  struct aws_retry_strategy* retry_strategy;
   struct aws_s3_client* client;
   struct aws_signing_config_aws signing_config;
 
@@ -39,6 +41,9 @@ struct s3_client
 
   // Region string (kept alive for signing config)
   struct aws_string* region;
+
+  // Timeout for blocking waits (INT64_MAX = no timeout)
+  uint64_t timeout_ns;
 };
 
 struct s3_client*
@@ -116,14 +121,33 @@ s3_client_create(const struct s3_client_config* cfg)
   c->signing_config.service = aws_byte_cursor_from_c_str("s3");
   c->signing_config.signed_body_header = AWS_SBHT_X_AMZ_CONTENT_SHA256;
 
+  // Retry strategy (only if caller requested non-default settings)
+  if (cfg->max_retries || cfg->backoff_scale_ms || cfg->max_backoff_secs) {
+    struct aws_standard_retry_options retry_opts = {
+      .backoff_retry_options = {
+        .el_group = c->el_group,
+        .max_retries = cfg->max_retries,
+        .backoff_scale_factor_ms = cfg->backoff_scale_ms,
+        .max_backoff_secs = cfg->max_backoff_secs,
+      },
+    };
+    c->retry_strategy = aws_retry_strategy_new_standard(alloc, &retry_opts);
+    CHECK(Fail_region, c->retry_strategy);
+  }
+
+  // Timeout
+  c->timeout_ns = cfg->timeout_ns ? cfg->timeout_ns : (uint64_t)INT64_MAX;
+
   // S3 client config
   struct aws_s3_client_config s3cfg = {
     .region = aws_byte_cursor_from_string(c->region),
     .client_bootstrap = c->bootstrap,
     .signing_config = &c->signing_config,
-    .part_size = 8 * 1024 * 1024, // 8 MiB
-    .throughput_target_gbps = 10.0,
+    .part_size = cfg->part_size ? cfg->part_size : 8 * 1024 * 1024,
+    .throughput_target_gbps =
+      cfg->throughput_gbps > 0.0 ? cfg->throughput_gbps : 10.0,
     .tls_mode = use_tls ? AWS_MR_TLS_ENABLED : AWS_MR_TLS_DISABLED,
+    .retry_strategy = c->retry_strategy,
   };
 
   if (use_tls && c->tls_ctx) {
@@ -149,6 +173,8 @@ s3_client_create(const struct s3_client_config* cfg)
   return c;
 
 Fail_region:
+  if (c->retry_strategy)
+    aws_retry_strategy_release(c->retry_strategy);
   aws_string_destroy(c->region);
 Fail_cred:
   aws_credentials_provider_release(c->cred_provider);
@@ -176,6 +202,8 @@ s3_client_destroy(struct s3_client* c)
     return;
 
   aws_s3_client_release(c->client);
+  if (c->retry_strategy)
+    aws_retry_strategy_release(c->retry_strategy);
   aws_credentials_provider_release(c->cred_provider);
   if (c->tls_ctx)
     aws_tls_ctx_release(c->tls_ctx);
@@ -322,14 +350,29 @@ s3_client_put(struct s3_client* c,
     aws_s3_client_make_meta_request(c->client, &opts);
   CHECK(Fail_stream, meta_req);
 
-  // Wait for completion
+  // Wait for completion (with timeout)
   aws_mutex_lock(&ctx.mutex);
-  aws_condition_variable_wait_pred(&ctx.cv, &ctx.mutex, is_meta_request_done, &ctx);
+  aws_condition_variable_wait_for_pred(
+    &ctx.cv, &ctx.mutex, (int64_t)c->timeout_ns, is_meta_request_done, &ctx);
+  int timed_out = !ctx.done;
   aws_mutex_unlock(&ctx.mutex);
+
+  if (timed_out) {
+    log_error("s3_client_put(%s/%s): timed out", bucket, key);
+    aws_s3_meta_request_cancel(meta_req);
+    // Wait for CRT to acknowledge cancellation
+    aws_mutex_lock(&ctx.mutex);
+    aws_condition_variable_wait_pred(
+      &ctx.cv, &ctx.mutex, is_meta_request_done, &ctx);
+    aws_mutex_unlock(&ctx.mutex);
+  }
 
   aws_s3_meta_request_release(meta_req);
   aws_input_stream_release(body_stream);
   aws_http_message_release(msg);
+
+  if (timed_out)
+    return 1;
 
   if (ctx.error_code != 0) {
     log_error("s3_client_put(%s/%s): error %d (HTTP %d)",
@@ -434,7 +477,7 @@ s3_upload_write(struct s3_upload* u, const void* data, size_t len)
   struct aws_byte_cursor cur = aws_byte_cursor_from_array(data, len);
   struct aws_future_void* future =
     aws_s3_meta_request_write(u->meta_request, cur, false);
-  aws_future_void_wait(future, UINT64_MAX);
+  aws_future_void_wait(future, u->client->timeout_ns);
   int err = aws_future_void_get_error(future);
   aws_future_void_release(future);
 
@@ -451,7 +494,7 @@ s3_upload_finish_async(struct s3_upload* u)
   struct aws_byte_cursor empty = { .ptr = NULL, .len = 0 };
   struct aws_future_void* future =
     aws_s3_meta_request_write(u->meta_request, empty, true);
-  aws_future_void_wait(future, UINT64_MAX);
+  aws_future_void_wait(future, u->client->timeout_ns);
   int err = aws_future_void_get_error(future);
   aws_future_void_release(future);
 
@@ -464,8 +507,21 @@ int
 s3_upload_wait(struct s3_upload* u)
 {
   aws_mutex_lock(&u->mutex);
-  aws_condition_variable_wait_pred(&u->cv, &u->mutex, is_upload_finished, u);
+  aws_condition_variable_wait_for_pred(
+    &u->cv, &u->mutex, (int64_t)u->client->timeout_ns, is_upload_finished, u);
+  int timed_out = !u->finished;
   aws_mutex_unlock(&u->mutex);
+
+  if (timed_out) {
+    log_error("s3_upload_wait: timed out");
+    aws_s3_meta_request_cancel(u->meta_request);
+    // Wait for CRT to acknowledge cancellation
+    aws_mutex_lock(&u->mutex);
+    aws_condition_variable_wait_pred(
+      &u->cv, &u->mutex, is_upload_finished, u);
+    aws_mutex_unlock(&u->mutex);
+    return 1;
+  }
 
   if (u->error_code)
     log_error("s3_upload_wait: error %d (HTTP %d)",

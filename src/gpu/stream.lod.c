@@ -61,14 +61,14 @@ build_gather_lut_with_strides(struct lod_state* lod,
   CU(Fail,
      cuMemcpyHtoD(d_lod_strides, lod_strides, p->lod_ndim * sizeof(uint64_t)));
 
-  CU(Fail, cuMemAlloc(&lod->d_gather_lut, p->lod_counts[0] * sizeof(uint32_t)));
+  CU(Fail, cuMemAlloc(&lod->d_gather_lut, p->lod_nelem[0] * sizeof(uint32_t)));
   CHECK(Fail,
         lod_build_gather_lut(lod->d_gather_lut,
                              lod->d_lod_shape,
                              d_lod_strides,
                              p->lod_ndim,
                              p->lod_shapes[0],
-                             p->lod_counts[0],
+                             p->lod_nelem[0],
                              0) == 0);
 
   cuMemFree(d_lod_strides);
@@ -209,7 +209,7 @@ build_chunk_scatter_with_temps(struct lod_state* lod,
                                int lv)
 {
   CUdeviceptr d_chunk_sizes = 0, d_chunk_strides = 0;
-  uint64_t lod_count = p->lod_counts[lv];
+  uint64_t lod_count = p->lod_nelem[lv];
 
   uint64_t lod_chunk_sizes[LOD_MAX_NDIM];
   int64_t lod_chunk_strides[2 * LOD_MAX_NDIM];
@@ -348,10 +348,10 @@ lod_state_init(struct lod_state* lod,
   // compute_stream_layouts). Just do GPU uploads and LUT building.
 
   for (int k = 0; k < lod->plan.nlod; ++k) {
-    if (lod->plan.lod_counts[k] > UINT32_MAX) {
+    if (lod->plan.lod_nelem[k] > UINT32_MAX) {
       log_error("LOD level %d count %llu exceeds uint32_t limit",
                 k,
-                (unsigned long long)lod->plan.lod_counts[k]);
+                (unsigned long long)lod->plan.lod_nelem[k]);
       goto Fail;
     }
   }
@@ -406,7 +406,7 @@ lod_state_init_accumulators(struct lod_state* lod,
 
   lod->dim0.total_elements = 0;
   for (int lv = 1; lv < p->nlod; ++lv)
-    lod->dim0.total_elements += p->batch_count * p->lod_counts[lv];
+    lod->dim0.total_elements += p->batch_count * p->lod_nelem[lv];
 
   if (lod->dim0.total_elements == 0)
     return 0;
@@ -421,7 +421,7 @@ lod_state_init_accumulators(struct lod_state* lod,
 
     uint64_t offset = 0;
     for (int lv = 1; lv < p->nlod; ++lv) {
-      uint64_t n = p->batch_count * p->lod_counts[lv];
+      uint64_t n = p->batch_count * p->lod_nelem[lv];
       memset(h_level_ids + offset, (uint8_t)lv, n);
       offset += n;
     }
@@ -546,11 +546,11 @@ run_dim0_fold_emit(struct lod_state* lod,
 
     if (lod->dim0.counts[lv] >= period) {
       struct lod_span lev = lod_spans_at(&p->levels, lv);
-      uint64_t n_elements = p->batch_count * p->lod_counts[lv];
+      uint64_t n_elements = p->batch_count * p->lod_nelem[lv];
 
       uint64_t accum_offset = 0;
       for (int k = 1; k < lv; ++k)
-        accum_offset += p->batch_count * p->lod_counts[k];
+        accum_offset += p->batch_count * p->lod_nelem[k];
 
       size_t accum_bpe = dtype_accum_bpe(dtype, dim0_reduce_method);
 
@@ -600,7 +600,7 @@ scatter_morton_to_chunks(struct lod_state* lod,
                                    lod->d_morton_chunk_lut[0],
                                    lod->d_morton_batch_chunk_offsets[0],
                                    dtype,
-                                   p->lod_counts[0],
+                                   p->lod_nelem[0],
                                    p->batch_count,
                                    compute) == 0);
   }
@@ -621,7 +621,7 @@ scatter_morton_to_chunks(struct lod_state* lod,
                                    lod->d_morton_chunk_lut[lv],
                                    lod->d_morton_batch_chunk_offsets[lv],
                                    dtype,
-                                   p->lod_counts[lv],
+                                   p->lod_nelem[lv],
                                    p->batch_count,
                                    compute) == 0);
   }
@@ -653,7 +653,7 @@ lod_run_epoch(struct lod_state* lod,
                        lod->d_gather_lut,
                        lod->d_batch_offsets,
                        dtype,
-                       p->lod_counts[0],
+                       p->lod_nelem[0],
                        p->batch_count,
                        compute) == 0);
 
@@ -683,8 +683,8 @@ lod_run_epoch(struct lod_state* lod,
                      reduce_method,
                      src_level.beg,
                      dst_level.beg,
-                     p->lod_counts[l],
-                     p->lod_counts[l + 1],
+                     p->lod_nelem[l],
+                     p->lod_nelem[l + 1],
                      p->batch_count,
                      compute) == 0);
   }

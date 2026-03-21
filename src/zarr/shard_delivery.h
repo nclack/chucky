@@ -23,9 +23,10 @@ struct shard_state
   struct active_shard* shards;     // array[shard_inner_count]
 };
 
-// Emit completed shards (write index block + finalize).
+// Finalize completed shards (write index block + finalize).
+// Best-effort: tries every shard even if one fails. Returns 0 on success.
 int
-emit_shards(struct shard_state* ss, size_t shard_alignment);
+finalize_shards(struct shard_state* ss, size_t shard_alignment);
 
 // Deliver compressed chunk data from a batch aggregate slot to shards.
 // n_active: number of active epochs for this level in the batch.

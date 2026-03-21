@@ -35,7 +35,7 @@ test_scatter_reduce_f32(enum lod_reduce_method method, const char* name)
   for (uint64_t i = 0; i < n; ++i)
     src[i] = (float)(i + 1);
 
-  scatter_lut = (uint32_t*)malloc(plan.lod_counts[0] * sizeof(uint32_t));
+  scatter_lut = (uint32_t*)malloc(plan.lod_nelem[0] * sizeof(uint32_t));
   batch_offsets = (uint64_t*)malloc(plan.batch_count * sizeof(uint64_t));
   CHECK(Fail, scatter_lut && batch_offsets);
   lod_cpu_build_scatter_lut(&plan, scatter_lut);
@@ -111,7 +111,7 @@ test_scatter_reduce_u16(void)
   for (uint64_t i = 0; i < n; ++i)
     src[i] = (uint16_t)((i + 1) & 0xFFFF);
 
-  scatter_lut = (uint32_t*)malloc(plan.lod_counts[0] * sizeof(uint32_t));
+  scatter_lut = (uint32_t*)malloc(plan.lod_nelem[0] * sizeof(uint32_t));
   batch_offsets = (uint64_t*)malloc(plan.batch_count * sizeof(uint64_t));
   CHECK(Fail, scatter_lut && batch_offsets);
   lod_cpu_build_scatter_lut(&plan, scatter_lut);
@@ -170,7 +170,7 @@ test_f16_rejected(void)
   void* values = NULL;
   struct lod_plan plan;
   CHECK(Fail, lod_plan_init(&plan, 2, shape, chunk_shape, 0x2, 4) == 0);
-  scatter_lut = (uint32_t*)malloc(plan.lod_counts[0] * sizeof(uint32_t));
+  scatter_lut = (uint32_t*)malloc(plan.lod_nelem[0] * sizeof(uint32_t));
   batch_offsets = (uint64_t*)malloc(plan.batch_count * sizeof(uint64_t));
   CHECK(Fail, scatter_lut && batch_offsets);
   lod_cpu_build_scatter_lut(&plan, scatter_lut);

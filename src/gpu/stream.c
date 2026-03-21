@@ -201,7 +201,7 @@ tile_stream_gpu_flush(struct writer* self)
     return r;
 
   // Capture actual dim0 chunk counts before partial shard emission,
-  // since emit_shards resets epoch_in_shard and increments shard_epoch.
+  // since finalize_shards resets epoch_in_shard and increments shard_epoch.
   uint64_t dim0_chunks[LOD_MAX_LEVELS];
   for (int lv = 0; lv < s->levels.nlod; ++lv) {
     struct shard_state* ss = &s->compress_agg.levels[lv].shard;
@@ -212,7 +212,7 @@ tile_stream_gpu_flush(struct writer* self)
   // Emit partial shards for all levels
   for (int lv = 0; lv < s->levels.nlod; ++lv) {
     if (s->compress_agg.levels[lv].shard.epoch_in_shard > 0) {
-      if (emit_shards(&s->compress_agg.levels[lv].shard,
+      if (finalize_shards(&s->compress_agg.levels[lv].shard,
                       s->config.shard_alignment))
         return writer_error();
     }

@@ -164,19 +164,22 @@ lod_plan_init(struct lod_plan* p,
   if (lod_plan_init_shapes(p, ndim, shape, chunk_shape, lod_mask, max_levels))
     return 1;
 
+  // lod_nelem[k] = product of lod_shapes[k] — the total element count at each
+  // LOD level. Child levels are strictly smaller than L0, so if L0 fits in
+  // uint64_t the rest do too.
   for (int k = 0; k < p->nlod; ++k) {
-    p->lod_counts[k] = 1;
+    p->lod_nelem[k] = 1;
     for (int d = 0; d < p->lod_ndim; ++d)
-      p->lod_counts[k] *= p->lod_shapes[k][d];
+      p->lod_nelem[k] *= p->lod_shapes[k][d];
   }
 
   p->lod_levels.n = (uint64_t)p->nlod;
   p->lod_levels.ends = (uint64_t*)malloc(p->nlod * sizeof(uint64_t));
   if (!p->lod_levels.ends)
     goto Fail;
-  p->lod_levels.ends[0] = p->lod_counts[0];
+  p->lod_levels.ends[0] = p->lod_nelem[0];
   for (int k = 1; k < p->nlod; ++k)
-    p->lod_levels.ends[k] = p->lod_levels.ends[k - 1] + p->lod_counts[k];
+    p->lod_levels.ends[k] = p->lod_levels.ends[k - 1] + p->lod_nelem[k];
 
   p->levels.n = (uint64_t)p->nlod;
   p->levels.ends = (uint64_t*)malloc(p->nlod * sizeof(uint64_t));

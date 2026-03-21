@@ -45,7 +45,7 @@ morton_unshuffle(const struct lod_plan* p,
     plan_extract_lod(p, full_coords, lod_coords);
     uint64_t pos =
       morton_rank(p->lod_ndim, p->lod_shapes[level], lod_coords, 0);
-    rowmajor[i] = morton_buf[b * p->lod_counts[level] + pos];
+    rowmajor[i] = morton_buf[b * p->lod_nelem[level] + pos];
   }
 }
 

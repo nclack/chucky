@@ -2,8 +2,8 @@
 
 ## TODO
 
-- [ ] s3 writer
-- [ ] make a report to characterize performance/memory by chunk size
+- [x] s3 writer
+- [x] make a report to characterize performance/memory by chunk size
 - [ ] interface for streaming from device, integrating with a cuda stream
 - [x] u8, u32, i8, i16, i32
 - [x] u64, i64, double?
@@ -38,6 +38,21 @@
 Cleanup
 - [ ] make sure everything has extern c guards
 - [ ] comments at the top of each test
+
+## 2026-03-20
+
+I've been trying to use git worktrees and they are a nightmare. I keep loosing
+code - and devlog entries! I've been working on getting benchmark sweeks up.
+Results get recorded in jsons in `bench/results/` and I can aggregte across
+commits and hosts. There's a `report.py` that generates some visualizations
+to browse things and it's all very very useful.
+
+- [ ] sweep doesn't include io at the moment
+
+The other thing I've been working on is s3 integration. It's pretty easy to
+test with a `minio` server launched via `docker`.
+
+
 
 ## 2026-03-18
 

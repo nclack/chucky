@@ -1,104 +1,198 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="light">
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Benchmark Sweep Report</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
 <script src="https://d3js.org/d3.v7.min.js"></script>
 <style>
-* { margin: 0; padding: 0; box-sizing: border-box; }
-body { font-family: "Inter", "Segoe UI", system-ui, sans-serif; background: #f8f9fa; color: #1a1a2e; padding: 24px; }
-h1 { font-size: 1.4em; margin-bottom: 4px; }
-.subtitle { color: #666; font-size: 0.85em; margin-bottom: 16px; }
-.controls { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 16px; align-items: flex-start; }
-.controls > div > label:first-child { font-size: 0.8em; font-weight: 600; color: #444; display: block; margin-bottom: 2px; }
-.controls select, .controls input[type="checkbox"] { font-size: 0.8em; }
+:root {
+  --pico-font-family: "Inter", "Segoe UI", system-ui, sans-serif;
+  --color-primary: #6366f1;
+  --color-primary-bg: #e0e7ff;
+  --color-text: #1a1a2e;
+  --color-muted: #666;
+  --color-border: #ccc;
+  --color-error: #b91c1c;
+  --gap-sm: 4px;
+  --gap-md: 12px;
+  --gap-lg: 24px;
+  --radius: 6px;
+}
+body { background: #f8f9fa; color: var(--color-text); }
+h1 { font-size: 1.4em; margin-bottom: var(--gap-sm); --pico-typography-spacing-vertical: 0; color: var(--color-text); }
+.subtitle { color: var(--color-muted); font-size: 0.85em; margin-bottom: 2px; }
+
+/* Controls bar */
+.controls {
+  display: flex; flex-wrap: wrap; gap: var(--gap-md);
+  margin-bottom: var(--gap-md); align-items: flex-start;
+}
+.controls label { font-size: 0.8em; font-weight: 600; color: #444; display: block; margin-bottom: 2px; }
+.controls select {
+  font-size: 0.8em; padding: 4px 24px 4px 8px; margin-bottom: 0; width: auto;
+  --pico-form-element-spacing-vertical: 0.1rem;
+  --pico-form-element-spacing-horizontal: 0.5rem;
+}
+
+/* Control grouping */
+.control-group { display: flex; flex-wrap: wrap; gap: var(--gap-md); align-items: flex-start; }
+.control-group--primary { flex-wrap: nowrap; }
+.control-group--filters {
+  padding-left: var(--gap-md);
+  border-left: 2px solid var(--color-border);
+}
+
+/* Segmented radio buttons — override Pico */
 .radio-group { display: flex; gap: 2px; }
-.radio-group label { font-weight: 400; padding: 3px 8px; border: 1px solid #ccc; cursor: pointer; font-size: 0.78em; background: #fff; }
-.radio-group label:first-child { border-radius: 4px 0 0 4px; }
-.radio-group label:last-child { border-radius: 0 4px 4px 0; }
+.radio-group label {
+  font-weight: 400; padding: 3px 8px; border: 1px solid var(--color-border);
+  cursor: pointer; font-size: 0.78em; background: #fff; margin-bottom: 0;
+}
+.radio-group label:first-child { border-radius: var(--radius) 0 0 var(--radius); }
+.radio-group label:last-child { border-radius: 0 var(--radius) var(--radius) 0; }
 .radio-group input { display: none; }
 .radio-group input:checked + span { font-weight: 700; }
-.radio-group label:has(input:checked) { background: #e0e7ff; border-color: #6366f1; }
-.checkbox-group { display: flex; flex-wrap: wrap; gap: 4px 10px; }
-.checkbox-group label { font-size: 0.78em; cursor: pointer; display: flex; align-items: center; gap: 3px; }
-#chart { background: #fff; border-radius: 8px; padding: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
-.tooltip { position: absolute; background: rgba(20,20,40,0.92); color: #fff; padding: 8px 12px; border-radius: 6px;
-  font-size: 0.75em; pointer-events: none; line-height: 1.5; max-width: 320px; white-space: pre-line; }
-#stage-chart { background: #fff; border-radius: 8px; padding: 16px; margin-top: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
-.axis text { font-size: 11px; }
-.axis path, .axis line { stroke: #ccc; }
-.grid line { stroke: #eee; }
-.btn-toggle { cursor: pointer; font-size: 0.8em; padding: 4px 10px; border: 1px solid #6366f1; background: #e0e7ff;
-  border-radius: 4px; color: #3730a3; }
-.btn-toggle.active { background: #6366f1; color: #fff; }
+.radio-group label:has(input:checked) { background: var(--color-primary-bg); border-color: var(--color-primary); }
+
+/* Checkbox groups */
+.checkbox-group { display: flex; flex-wrap: wrap; gap: var(--gap-sm) 10px; }
+.checkbox-group label { font-size: 0.78em; cursor: pointer; display: flex; align-items: center; gap: 3px; margin-bottom: 0; }
+
+/* Charts */
+main.container { overflow: visible; }
+#chart, #stage-chart {
+  background: #fff; border-radius: var(--radius); padding: var(--gap-md);
+  box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+  width: fit-content; min-width: 100%;
+}
+#stage-chart { margin-top: var(--gap-md); }
+
+/* SVG axes */
+.axis text { font-size: 12px; fill: #333; }
+.axis path, .axis line { stroke: #888; stroke-width: 2; }
+.grid line { stroke: #ddd; }
+
+/* Tooltip */
+.tooltip {
+  position: absolute; background: rgba(20,20,40,0.92); color: #fff;
+  padding: 8px 12px; border-radius: var(--radius);
+  font-size: 0.75em; pointer-events: none; line-height: 1.5;
+  max-width: 320px; white-space: pre-line; z-index: 100;
+}
+
+/* Toggle button */
+.btn-toggle {
+  cursor: pointer; font-size: 0.8em; padding: 4px 10px;
+  border: 1px solid var(--color-primary); background: var(--color-primary-bg);
+  border-radius: var(--radius); color: #3730a3;
+}
+.btn-toggle.active { background: var(--color-primary); color: #fff; }
+
+/* Scenarios */
 .scenario-groups { display: flex; flex-wrap: wrap; gap: 6px 20px; }
 .scenario-group-box { font-size: 0.78em; }
-.scenario-group-box .group-header { font-weight: 600; color: #555; font-size: 0.9em; margin-bottom: 2px; display: flex; align-items: center; gap: 6px; }
-.scenario-group-box .group-header button { font-size: 0.85em; border: none; background: none; color: #6366f1; cursor: pointer; padding: 0; }
+.scenario-group-box .group-header {
+  font-weight: 600; color: #555; font-size: 0.9em; margin-bottom: 2px;
+  display: flex; align-items: center; gap: 6px;
+}
+.scenario-group-box .group-header button {
+  font-size: 0.85em; border: none; background: none;
+  color: var(--color-primary); cursor: pointer; padding: 0;
+}
 .scenario-group-box .group-header button:hover { text-decoration: underline; }
 .scenario-group-box .checkbox-group { margin-left: 2px; }
-#failures { margin-top: 16px; }
-#failures summary { font-size: 0.85em; font-weight: 600; cursor: pointer; color: #b91c1c; }
+
+/* Failure badge */
+.fail-badge {
+  font-size: 0.5em; font-weight: 600; color: var(--color-error);
+  background: #fef2f2; border: 1px solid #fecaca;
+  border-radius: var(--radius); padding: 2px 8px;
+  vertical-align: middle; white-space: nowrap;
+}
+
+/* Failures details */
+#failures { margin-top: var(--gap-md); }
+#failures summary { font-size: 0.85em; font-weight: 600; cursor: pointer; color: var(--color-error); }
 #failures table { border-collapse: collapse; font-size: 0.75em; margin-top: 6px; width: 100%; }
 #failures th, #failures td { text-align: left; padding: 3px 10px; border-bottom: 1px solid #eee; }
-#failures th { color: #666; font-weight: 600; }
-#failures .status-error { color: #b91c1c; font-weight: 600; }
+#failures th { color: var(--color-muted); font-weight: 600; }
+#failures .status-error { color: var(--color-error); font-weight: 600; }
 #failures .status-timeout { color: #c2410c; font-weight: 600; }
 #failures .status-missing { color: #6b7280; font-weight: 600; }
+
+/* Mobile */
+@media (max-width: 640px) {
+  .controls { flex-direction: column; }
+  .control-group { flex-direction: column; }
+  .control-group--primary { flex-wrap: wrap; }
+  .control-group--filters {
+    border-left: none; padding-left: 0;
+    border-top: 1px solid var(--color-border); padding-top: var(--gap-md);
+  }
+  .scenario-groups { flex-direction: column; gap: var(--gap-md); }
+  .checkbox-group { gap: var(--gap-sm) 14px; }
+}
 </style>
 </head>
 <body>
+<main class="container">
 
-<h1>Benchmark Sweep Report</h1>
+<h1>Benchmark Sweep Report <span class="fail-badge" id="fail-badge" style="display:none"></span></h1>
 <div class="subtitle" id="machine-info"></div>
+<div class="subtitle" id="s3-info" style="display:none"></div>
 
 <div class="controls">
-  <div id="results-wrap">
-    <label>Results</label>
-    <select id="results-sel"></select>
-  </div>
-  <div>
-    <label>Metric</label>
-    <select id="metric-sel">
-      <option value="throughput_in_gibs" selected>Input Throughput (GiB/s)</option>
-      <option value="throughput_out_gibs">Output Throughput (GiB/s)</option>
-      <option value="compression_fold">Compression Ratio</option>
-      <option value="wall_s">Wall Time (s)</option>
-      <option value="init_s">Init Time (s)</option>
-    </select>
-  </div>
-  <div id="codec-wrap">
-    <label>Codec</label>
-    <div class="radio-group" id="codec-group"></div>
-  </div>
-  <div id="fill-wrap">
-    <label>Fill</label>
-    <div class="radio-group" id="fill-group"></div>
-  </div>
-  <div id="backend-wrap">
-    <label>Backend</label>
-    <div class="radio-group" id="backend-group"></div>
-  </div>
-  <div id="dtype-wrap">
-    <label>Dtype</label>
-    <div class="radio-group" id="dtype-group"></div>
+  <div class="control-group control-group--primary">
+    <div id="results-wrap">
+      <label>Results</label>
+      <select id="results-sel"></select>
+    </div>
+    <div id="metric-wrap">
+      <label>Metric</label>
+      <select id="metric-sel">
+        <option value="throughput_in_gibs" selected>Input Throughput (GiB/s)</option>
+        <option value="throughput_out_gibs">Output Throughput (GiB/s)</option>
+        <option value="compression_fold">Compression Ratio</option>
+        <option value="wall_s">Wall Time (s)</option>
+        <option value="init_s">Init Time (s)</option>
+      </select>
+    </div>
   </div>
   <div>
     <label>View</label>
     <div class="radio-group" id="view-group"></div>
   </div>
-  <div id="overlay-wrap" style="display:none">
-    <label>&nbsp;</label>
-    <button class="btn-toggle" id="overlay-toggle">Overlay Backends</button>
-  </div>
-  <div id="stage-metric-wrap" style="display:none">
-    <label>Stage Metric</label>
-    <select id="stage-metric-sel">
-      <option value="avg_ms" selected>Avg Time (ms)</option>
-      <option value="best_ms">Best Time (ms)</option>
-      <option value="in_gibs">Input (GiB/s)</option>
-      <option value="out_gibs">Output (GiB/s)</option>
-    </select>
+  <div class="control-group control-group--filters">
+    <div id="codec-wrap">
+      <label>Codec</label>
+      <div class="radio-group" id="codec-group"></div>
+    </div>
+    <div id="fill-wrap">
+      <label>Fill</label>
+      <div class="radio-group" id="fill-group"></div>
+    </div>
+    <div id="backend-wrap">
+      <label>Backend</label>
+      <div class="radio-group" id="backend-group"></div>
+    </div>
+    <div id="dtype-wrap">
+      <label>Dtype</label>
+      <div class="radio-group" id="dtype-group"></div>
+    </div>
+    <div id="sink-wrap">
+      <label>Sink</label>
+      <div class="radio-group" id="sink-group"></div>
+    </div>
+    <div id="s3-throughput-wrap" style="display:none">
+      <label>S3 Target (Gb/s)</label>
+      <div class="radio-group" id="s3-throughput-group"></div>
+    </div>
+    <div id="overlay-wrap" style="display:none">
+      <label>&nbsp;</label>
+      <button class="btn-toggle" id="overlay-toggle">Overlay Backends</button>
+    </div>
   </div>
 </div>
 
@@ -116,6 +210,8 @@ h1 { font-size: 1.4em; margin-bottom: 4px; }
 <div id="stage-chart"></div>
 <div id="failures"></div>
 
+</main>
+
 <script>
 const DATA = __DATA_PLACEHOLDER__;
 
@@ -124,7 +220,7 @@ const DATA = __DATA_PLACEHOLDER__;
 // =========================================================================
 
 const LAYOUT = {
-  margin:    {top: 40, right: 180, bottom: 60, left: 160},
+  margin:    {top: 40, right: 200, bottom: 60, left: 160},
   heatmap:   {cellW: 70, cellH: 50},
   lines:     {W: 800, H: 400},
   subChart:  {W: 700, H: 200, margin: {top: 30, right: 180, bottom: 40, left: 80}},
@@ -136,6 +232,14 @@ const STAGE_ORDER = ["memcpy","h2d","scatter","lod_gather","lod_reduce","lod_dim
 
 const GROUP_LABELS = { single: "Single", multiscale: "Multiscale", dim0: "Dim0" };
 const GROUP_ORDER = ["single", "multiscale", "dim0"];
+
+const METRIC_LABELS = {
+  throughput_in_gibs: "Input Throughput (GiB/s)",
+  throughput_out_gibs: "Output Throughput (GiB/s)",
+  compression_fold: "Compression Ratio",
+  wall_s: "Wall Time (s)",
+  init_s: "Init Time (s)",
+};
 
 const COLOR_SCHEMES = {
   throughput_in_gibs: d3.interpolateViridis,
@@ -187,9 +291,10 @@ const files = DATA.files || [{
 // --- Active data (rebuilt on file switch) ---
 let runs = [];
 let failedRuns = [];
-let allCodecs = [], allFills = [], allBackends = [], allDtypes = [], allScenarios = [];
+let allCodecs = [], allFills = [], allBackends = [], allDtypes = [], allSinks = [], allScenarios = [];
 let allChunkLabels = [];
 let allStageNames = [];
+let allS3Throughputs = [];
 
 // --- UI state (declared here, wired in section 5) ---
 const resultsSel = document.getElementById("results-sel");
@@ -208,10 +313,17 @@ function rebuildData() {
   allFills = uniq("fill");
   allBackends = uniq("backend");
   allDtypes = uniq("dtype");
+  allSinks = [...new Set(runs.map(r => r.sink))].sort();
   allScenarios = uniq("scenario");
 
   allChunkLabels = [...new Set(runs.map(r => r.chunk_bytes_label))].sort((a, b) =>
     chunkLabelToBytes(a) - chunkLabelToBytes(b));
+
+  allS3Throughputs = [...new Set(runs
+    .filter(r => r.sink === "s3" && r.s3_throughput_gbps > 0)
+    .map(r => r.s3_throughput_gbps))]
+    .sort((a, b) => a - b)
+    .map(String);
 
   const stageSet = new Set();
   runs.forEach(r => { if (r.stages) Object.keys(r.stages).forEach(k => stageSet.add(k)); });
@@ -223,17 +335,32 @@ function filterRuns({includeBackend = true} = {}) {
   const fill = getRadio("fill-group");
   const backend = getRadio("backend-group");
   const dtype = getRadio("dtype-group");
+  const sink = getRadio("sink-group");
+  const s3tp = getRadio("s3-throughput-group");
   const checkedScenarios = new Set(getCheckedScenarios());
-  return runs.filter(r =>
-    r.codec === codec && r.fill === fill &&
-    (includeBackend ? r.backend === backend : true) &&
-    r.dtype === dtype && checkedScenarios.has(r.scenario)
-  );
+  return runs.filter(r => {
+    if (r.codec !== codec || r.fill !== fill || r.dtype !== dtype || r.sink !== sink) return false;
+    if (includeBackend && r.backend !== backend) return false;
+    if (!checkedScenarios.has(r.scenario)) return false;
+    if (sink === "s3" && s3tp && allS3Throughputs.length > 0) {
+      if (String(r.s3_throughput_gbps) !== s3tp) return false;
+    }
+    return true;
+  });
+}
+
+function metricLabel(key) {
+  return METRIC_LABELS[key] || key.replace(/_/g, " ");
 }
 
 function tooltipText(r) {
   let t = `${r.scenario} | ${r.chunk_bytes_label}\n`;
   t += `codec: ${r.codec}  fill: ${r.fill}  backend: ${r.backend}  dtype: ${r.dtype}\n`;
+  if (r.sink && r.sink !== "discard") {
+    t += `sink: ${r.sink}`;
+    if (r.s3_throughput_gbps) t += `  target: ${r.s3_throughput_gbps} Gb/s`;
+    t += "\n";
+  }
   if (r.throughput_in_gibs != null) t += `throughput: ${r.throughput_in_gibs.toFixed(2)} in, ${(r.throughput_out_gibs||0).toFixed(2)} out GiB/s\n`;
   if (r.compression_fold != null) t += `compression: ${r.compression_fold.toFixed(1)}x\n`;
   if (r.wall_s != null) t += `wall: ${r.wall_s.toFixed(3)}s  init: ${(r.init_s||0).toFixed(3)}s  flush: ${(r.flush_s||0).toFixed(3)}s\n`;
@@ -318,7 +445,8 @@ function rebuildScenarios() {
       inp.type = "checkbox"; inp.checked = true; inp.value = sc;
       inp.addEventListener("change", render);
       lbl.appendChild(inp);
-      lbl.appendChild(document.createTextNode(sc));
+      const sp = document.createElement("span"); sp.textContent = sc;
+      lbl.appendChild(sp);
       box.appendChild(lbl);
     });
     scenarioGroup.appendChild(box);
@@ -359,7 +487,8 @@ function rebuildScenarios() {
       inp.addEventListener("change", render);
       lbl.appendChild(inp);
       const short = sc.replace(/_single$/, "").replace(/_multiscale_dim0$/, "").replace(/_multiscale$/, "");
-      lbl.appendChild(document.createTextNode(short));
+      const sp = document.createElement("span"); sp.textContent = short;
+      lbl.appendChild(sp);
       cbGroup.appendChild(lbl);
     });
     box.appendChild(cbGroup);
@@ -382,7 +511,8 @@ function rebuildStageFilters() {
     inp.type = "checkbox"; inp.checked = true; inp.value = name;
     inp.addEventListener("change", render);
     lbl.appendChild(inp);
-    lbl.appendChild(document.createTextNode(name));
+    const sp = document.createElement("span"); sp.textContent = name;
+    lbl.appendChild(sp);
     stageFilterGroup.appendChild(lbl);
   });
 }
@@ -392,30 +522,60 @@ function getCheckedStages() {
 }
 
 // --- Rebuild all controls for the active file ---
-let prevCodec = "zstd", prevFill = "xor", prevBackend = "gpu", prevDtype = "u16";
+let prevCodec = "zstd", prevFill = "xor", prevBackend = "gpu", prevDtype = "u16", prevSink = "discard", prevS3tp = null;
 
 function rebuildControls() {
   const machine = getActiveFile().machine || {};
   document.getElementById("machine-info").textContent =
     `${machine.hostname || "?"} | ${machine.gpu || "?"} | ${machine.commit ? machine.commit + " | " : ""}${machine.date || "?"}`;
 
+  // S3 metadata from runs (region, bucket, endpoint)
+  const s3Runs = (getActiveFile().runs || []).filter(r => r.sink === "s3");
+  const s3Info = document.getElementById("s3-info");
+  if (s3Runs.length > 0) {
+    const regions = [...new Set(s3Runs.map(r => r.s3_region).filter(Boolean))];
+    const buckets = [...new Set(s3Runs.map(r => r.s3_bucket).filter(Boolean))];
+    const endpoints = [...new Set(s3Runs.map(r => r.s3_endpoint).filter(Boolean))];
+    const parts = [];
+    if (regions.length) parts.push("region: " + regions.join(", "));
+    if (buckets.length) parts.push("bucket: " + buckets.join(", "));
+    if (endpoints.length) parts.push("endpoint: " + endpoints.join(", "));
+    if (parts.length) {
+      s3Info.textContent = "S3: " + parts.join(" | ");
+      s3Info.style.display = "";
+    } else {
+      s3Info.style.display = "none";
+    }
+  } else {
+    s3Info.style.display = "none";
+  }
+
   prevCodec = getRadio("codec-group") || prevCodec;
   prevFill = getRadio("fill-group") || prevFill;
   prevBackend = getRadio("backend-group") || prevBackend;
   prevDtype = getRadio("dtype-group") || prevDtype;
+  prevSink = getRadio("sink-group") || prevSink;
+  prevS3tp = getRadio("s3-throughput-group") || prevS3tp;
 
   clearRadio("codec-group");
   clearRadio("fill-group");
   clearRadio("backend-group");
   clearRadio("dtype-group");
+  clearRadio("sink-group");
+  clearRadio("s3-throughput-group");
 
   makeRadio("codec-group", allCodecs, allCodecs.includes(prevCodec) ? prevCodec : undefined);
   makeRadio("fill-group", allFills, allFills.includes(prevFill) ? prevFill : undefined);
   makeRadio("backend-group", allBackends, allBackends.includes(prevBackend) ? prevBackend : undefined);
   makeRadio("dtype-group", allDtypes, allDtypes.includes(prevDtype) ? prevDtype : undefined);
+  makeRadio("sink-group", allSinks, allSinks.includes(prevSink) ? prevSink : undefined);
+  if (allS3Throughputs.length > 0) {
+    makeRadio("s3-throughput-group", allS3Throughputs, allS3Throughputs.includes(prevS3tp) ? prevS3tp : undefined);
+  }
 
   autoHide("fill-wrap", allFills);
   autoHide("dtype-wrap", allDtypes);
+  autoHide("sink-wrap", allSinks);
 
   if (allBackends.length > 1) {
     document.getElementById("overlay-wrap").style.display = "";
@@ -432,7 +592,14 @@ function rebuildControls() {
 function rebuildFailures() {
   const container = document.getElementById("failures");
   container.innerHTML = "";
-  if (failedRuns.length === 0) return;
+
+  const badge = document.getElementById("fail-badge");
+  if (failedRuns.length === 0) {
+    badge.style.display = "none";
+    return;
+  }
+  badge.style.display = "";
+  badge.textContent = `\u26a0 ${failedRuns.length} failed`;
 
   const details = document.createElement("details");
   const summary = document.createElement("summary");
@@ -476,26 +643,59 @@ function rebuildFailures() {
 
 const tooltip = d3.select("body").append("div").attr("class","tooltip").style("display","none");
 
+// --- Metric/stage-metric option swapping ---
+const METRIC_OPTS = [
+  ["throughput_in_gibs","Input Throughput (GiB/s)"],
+  ["throughput_out_gibs","Output Throughput (GiB/s)"],
+  ["compression_fold","Compression Ratio"],
+  ["wall_s","Wall Time (s)"],
+  ["init_s","Init Time (s)"],
+];
+const STAGE_METRIC_OPTS = [
+  ["avg_ms","Avg Time (ms)"],
+  ["best_ms","Best Time (ms)"],
+  ["in_gibs","Input (GiB/s)"],
+  ["out_gibs","Output (GiB/s)"],
+];
+let lastViewIsStages = false;
+let prevMetricVal = "throughput_in_gibs";
+let prevStageMetricVal = "avg_ms";
+
+function swapMetricOptions(isStages) {
+  if (isStages === lastViewIsStages) return;
+  const sel = document.getElementById("metric-sel");
+  if (lastViewIsStages) prevStageMetricVal = sel.value;
+  else prevMetricVal = sel.value;
+  const opts = isStages ? STAGE_METRIC_OPTS : METRIC_OPTS;
+  const prev = isStages ? prevStageMetricVal : prevMetricVal;
+  sel.innerHTML = "";
+  for (const [v, t] of opts) sel.appendChild(new Option(t, v, false, v === prev));
+  lastViewIsStages = isStages;
+}
+
 function updateControlVisibility(viewMode, useOverlay) {
   const isStages = viewMode === "stages";
   const isLineOrStage = viewMode === "lines" || isStages;
-  document.getElementById("stage-metric-wrap").style.display = isStages ? "" : "none";
-  document.getElementById("metric-sel").parentElement.style.display = isStages ? "none" : "";
+  swapMetricOptions(isStages);
   if (allBackends.length > 1) {
     document.getElementById("overlay-wrap").style.display = isLineOrStage ? "" : "none";
   }
   document.getElementById("backend-wrap").style.opacity = useOverlay ? "0.4" : "";
   document.getElementById("backend-wrap").style.pointerEvents = useOverlay ? "none" : "";
   document.getElementById("stage-filter-controls").style.display = isStages ? "" : "none";
+
+  const sink = getRadio("sink-group");
+  const showTp = sink === "s3" && allS3Throughputs.length > 1;
+  document.getElementById("s3-throughput-wrap").style.display = showTp ? "" : "none";
 }
 
 function render() {
   const viewMode = getRadio("view-group");
   const useOverlay = overlayBackends && allBackends.length > 1 && (viewMode === "lines" || viewMode === "stages");
   const filtered = filterRuns({includeBackend: !useOverlay});
-  const metricKey = document.getElementById("metric-sel").value;
 
   updateControlVisibility(viewMode, useOverlay);
+  const metricKey = document.getElementById("metric-sel").value;
 
   d3.select("#chart").selectAll("*").remove();
   d3.select("#stage-chart").selectAll("*").remove();
@@ -510,8 +710,7 @@ function render() {
   const presentScenarios = [...new Set(filtered.map(r => r.scenario))].sort(scenarioSort);
 
   if (viewMode === "stages") {
-    const stageMetric = document.getElementById("stage-metric-sel").value;
-    renderStageLines(filtered, presentChunks, presentScenarios, stageMetric, useOverlay);
+    renderStageLines(filtered, presentChunks, presentScenarios, metricKey, useOverlay);
   } else if (viewMode === "lines") {
     renderLines(filtered, presentChunks, presentScenarios, metricKey, useOverlay);
   } else {
@@ -563,7 +762,7 @@ function renderHeatmap(filtered, presentChunks, presentScenarios, metricKey) {
           .attr("x", x(cl) + x.bandwidth()/2).attr("y", y(sc) + y.bandwidth()/2)
           .attr("text-anchor", "middle").attr("dominant-baseline", "central")
           .attr("fill", d3.lab(color(val)).l > 55 ? "#000" : "#fff")
-          .attr("font-size", "11px").attr("font-weight", 600)
+          .attr("font-size", "12px").attr("font-weight", 600)
           .text(val < 1 ? val.toFixed(3) : val.toFixed(1))
           .style("pointer-events", "none");
       }
@@ -580,13 +779,13 @@ function renderHeatmap(filtered, presentChunks, presentScenarios, metricKey) {
   }
 
   g.append("g").attr("class","axis").attr("transform",`translate(0,${innerH})`)
-    .call(d3.axisBottom(x)).selectAll("text").attr("font-size","11px");
+    .call(d3.axisBottom(x)).selectAll("text").attr("font-size","12px");
   g.append("g").attr("class","axis").call(d3.axisLeft(y))
-    .selectAll("text").attr("font-size","11px");
+    .selectAll("text").attr("font-size","12px");
 
   svg.append("text").attr("x", margin.left).attr("y", 20)
-    .attr("font-size","13px").attr("font-weight",700)
-    .text(`${metricKey.replace(/_/g," ")} — ${getRadio("codec-group")} / ${getRadio("backend-group")}`);
+    .attr("font-size","14px").attr("font-weight",700)
+    .text(`${metricLabel(metricKey)} — ${getRadio("codec-group")} / ${getRadio("backend-group")}`);
 
   // Colorbar
   const cbW = 16, cbH = innerH;
@@ -600,11 +799,11 @@ function renderHeatmap(filtered, presentChunks, presentScenarios, metricKey) {
   }
   cbG.append("rect").attr("width", cbW).attr("height", cbH).attr("fill","url(#cb-grad)").attr("rx",2);
   cbG.append("g").attr("transform",`translate(${cbW},0)`).call(d3.axisRight(cbScale).ticks(5).tickFormat(d3.format(".2f")))
-    .selectAll("text").attr("font-size","10px");
+    .selectAll("text").attr("font-size","12px");
 }
 
 function renderLines(filtered, presentChunks, presentScenarios, metricKey, useOverlay) {
-  const {margin} = LAYOUT;
+  const margin = {...LAYOUT.margin, right: 140};
   const {W, H} = LAYOUT.lines;
   const svg = d3.select("#chart").append("svg").attr("width", W).attr("height", H);
   const g = svg.append("g").attr("transform", `translate(${margin.left},${margin.top})`);
@@ -677,16 +876,16 @@ function renderLines(filtered, presentChunks, presentScenarios, metricKey, useOv
       .attr("stroke", colors(s.scenario)).attr("stroke-width", 2)
       .attr("stroke-dasharray", s.dashed ? "4,2" : "none");
     lg.append("circle").attr("cx",6).attr("cy",gy+6).attr("r",3).attr("fill",colors(s.scenario));
-    lg.append("text").attr("x",18).attr("y",gy+10).attr("font-size","10px").text(s.label);
+    lg.append("text").attr("x",18).attr("y",gy+10).attr("font-size","12px").text(s.label);
   });
 
   svg.append("text").attr("x", margin.left).attr("y", 20)
-    .attr("font-size","13px").attr("font-weight",700)
-    .text(`${metricKey.replace(/_/g," ")} vs chunk size`);
+    .attr("font-size","14px").attr("font-weight",700)
+    .text(`${metricLabel(metricKey)} vs Chunk Size`);
   svg.append("text").attr("x", margin.left + innerW/2).attr("y", H - 6)
-    .attr("text-anchor","middle").attr("font-size","11px").text("chunk bytes");
+    .attr("text-anchor","middle").attr("font-size","12px").text("Chunk Bytes");
   svg.append("text").attr("transform",`translate(14,${margin.top + innerH/2}) rotate(-90)`)
-    .attr("text-anchor","middle").attr("font-size","11px").text(metricKey.replace(/_/g," "));
+    .attr("text-anchor","middle").attr("font-size","12px").text(metricLabel(metricKey));
 }
 
 function renderStageLines(filtered, presentChunks, presentScenarios, stageMetric, useOverlay) {
@@ -799,14 +998,14 @@ function renderStageLines(filtered, presentChunks, presentScenarios, stageMetric
       .call(d3.axisBottom(x).tickValues(xVals).tickFormat((_,i) => presentChunks[i]));
     g.append("g").attr("class","axis").call(d3.axisLeft(y).ticks(4));
 
-    const stageMetricLabel = document.getElementById("stage-metric-sel").selectedOptions[0].textContent;
+    const stageMetricLabel = document.getElementById("metric-sel").selectedOptions[0].textContent;
     svg.append("text").attr("x", subMargin.left).attr("y", 16)
-      .attr("font-size","12px").attr("font-weight",700)
+      .attr("font-size","13px").attr("font-weight",700)
       .text(`${sc} — ${stageMetricLabel}`);
 
     svg.append("text")
       .attr("transform",`translate(14,${subMargin.top + innerH/2}) rotate(-90)`)
-      .attr("text-anchor","middle").attr("font-size","10px").text(stageMetricLabel);
+      .attr("text-anchor","middle").attr("font-size","12px").text(stageMetricLabel);
 
     appendStageLegend(svg);
   });
@@ -846,16 +1045,16 @@ function renderStagesTiming(run, stages) {
     g.append("rect").attr("x",0).attr("y", yy).attr("width", x(s.avg_ms)).attr("height", barH)
       .attr("fill", "#6366f1").attr("rx", 3);
     g.append("text").attr("x", -6).attr("y", yy + barH/2).attr("text-anchor","end")
-      .attr("dominant-baseline","central").attr("font-size","11px").text(name);
+      .attr("dominant-baseline","central").attr("font-size","12px").text(name);
     g.append("text").attr("x", x(s.avg_ms) + 4).attr("y", yy + barH/2)
-      .attr("dominant-baseline","central").attr("font-size","10px").attr("fill","#666")
+      .attr("dominant-baseline","central").attr("font-size","12px").attr("fill","#666")
       .text(`${s.avg_ms.toFixed(1)} ms`);
   });
 
   g.append("g").attr("class","axis").attr("transform",`translate(0,${stages.length*(barH+gap)})`)
     .call(d3.axisBottom(x).ticks(5).tickFormat(d => d + " ms"));
 
-  svg.append("text").attr("x", mL).attr("y", 18).attr("font-size","12px").attr("font-weight",700)
+  svg.append("text").attr("x", mL).attr("y", 18).attr("font-size","13px").attr("font-weight",700)
     .text(`Stage breakdown: ${run.scenario} ${run.chunk_bytes_label} ${run.codec} (${run.backend})`);
 }
 
@@ -887,12 +1086,12 @@ function renderStagesThroughput(run, stages) {
     const yy = i * (rowH + gap);
 
     g.append("text").attr("x", -6).attr("y", yy + rowH/2).attr("text-anchor","end")
-      .attr("dominant-baseline","central").attr("font-size","11px").text(name);
+      .attr("dominant-baseline","central").attr("font-size","12px").text(name);
 
     g.append("rect").attr("x",0).attr("y", yy + 4).attr("width", xMs(s.avg_ms)).attr("height", rowH - 8)
       .attr("fill", "#a5b4fc").attr("rx", 3);
     g.append("text").attr("x", xMs(s.avg_ms) + 3).attr("y", yy + rowH/2)
-      .attr("dominant-baseline","central").attr("font-size","9px").attr("fill","#666")
+      .attr("dominant-baseline","central").attr("font-size","12px").attr("fill","#666")
       .text(`${s.avg_ms.toFixed(1)} ms`);
 
     const inVal = s.in_gibs || 0;
@@ -902,37 +1101,37 @@ function renderStagesThroughput(run, stages) {
       g.append("rect").attr("x", thruX0).attr("y", yy).attr("width", xGibs(inVal)).attr("height", barH)
         .attr("fill", colorIn).attr("rx", 2);
       g.append("text").attr("x", thruX0 + xGibs(inVal) + 3).attr("y", yy + barH/2)
-        .attr("dominant-baseline","central").attr("font-size","9px").attr("fill","#666")
+        .attr("dominant-baseline","central").attr("font-size","12px").attr("fill","#666")
         .text(`${inVal.toFixed(2)}`);
     }
     if (outVal > 0) {
       g.append("rect").attr("x", thruX0).attr("y", yy + barH + 2).attr("width", xGibs(outVal)).attr("height", barH)
         .attr("fill", colorOut).attr("rx", 2);
       g.append("text").attr("x", thruX0 + xGibs(outVal) + 3).attr("y", yy + barH + 2 + barH/2)
-        .attr("dominant-baseline","central").attr("font-size","9px").attr("fill","#666")
+        .attr("dominant-baseline","central").attr("font-size","12px").attr("fill","#666")
         .text(`${outVal.toFixed(2)}`);
     }
   });
 
   g.append("text").attr("x", timingW/2).attr("y", -8).attr("text-anchor","middle")
-    .attr("font-size","10px").attr("fill","#888").text("avg ms");
+    .attr("font-size","12px").attr("fill","#888").text("avg ms");
   g.append("text").attr("x", thruX0 + thruW/2).attr("y", -8).attr("text-anchor","middle")
-    .attr("font-size","10px").attr("fill","#888").text("GiB/s");
+    .attr("font-size","12px").attr("fill","#888").text("GiB/s");
 
   g.append("g").attr("class","axis").attr("transform",`translate(0,${stages.length*(rowH+gap)})`)
     .call(d3.axisBottom(xMs).ticks(4).tickFormat(d => d + " ms"));
   g.append("g").attr("class","axis").attr("transform",`translate(${thruX0},${stages.length*(rowH+gap)})`)
     .call(d3.axisBottom(xGibs).ticks(4).tickFormat(d3.format(".1f")));
 
-  svg.append("text").attr("x", mL).attr("y", 18).attr("font-size","12px").attr("font-weight",700)
+  svg.append("text").attr("x", mL).attr("y", 18).attr("font-size","13px").attr("font-weight",700)
     .text(`Stage breakdown: ${run.scenario} ${run.chunk_bytes_label} ${run.codec} (${run.backend})`);
 
   const legY = mT + stages.length * (rowH + gap) + 36;
   const leg = svg.append("g").attr("transform", `translate(${mL},${legY})`);
   leg.append("rect").attr("width",12).attr("height",12).attr("fill",colorIn).attr("rx",2);
-  leg.append("text").attr("x",16).attr("y",10).attr("font-size","10px").text("in (GiB/s)");
+  leg.append("text").attr("x",16).attr("y",10).attr("font-size","12px").text("in (GiB/s)");
   leg.append("rect").attr("x",90).attr("width",12).attr("height",12).attr("fill",colorOut).attr("rx",2);
-  leg.append("text").attr("x",106).attr("y",10).attr("font-size","10px").text("out (GiB/s)");
+  leg.append("text").attr("x",106).attr("y",10).attr("font-size","12px").text("out (GiB/s)");
 }
 
 // =========================================================================
@@ -954,7 +1153,6 @@ makeRadio("view-group", ["heatmap", "lines", "stages"], "heatmap");
 
 // Event listeners
 document.getElementById("metric-sel").addEventListener("change", render);
-document.getElementById("stage-metric-sel").addEventListener("change", render);
 
 const overlayBtn = document.getElementById("overlay-toggle");
 overlayBtn.addEventListener("click", () => {

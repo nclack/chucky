@@ -30,21 +30,19 @@ from pathlib import Path
 import click
 from pydantic import BaseModel, model_validator
 from rich.console import Console
+from models import (
+    VALID_BACKENDS,
+    VALID_CODECS,
+    VALID_DTYPES,
+    VALID_FILLS,
+    VALID_SINKS,
+    VALID_STATUSES,
+    validate_results,
+)
 from rich.progress import BarColumn, MofNCompleteColumn, Progress, TextColumn, TimeElapsedColumn
 from rich.table import Table
 
 console = Console(stderr=True)
-
-# ---------------------------------------------------------------------------
-# Schema enums (mirrors run.schema.json)
-# ---------------------------------------------------------------------------
-
-VALID_CODECS = {"none", "lz4", "zstd"}
-VALID_FILLS = {"xor", "zeros", "rand"}
-VALID_BACKENDS = {"gpu", "cpu"}
-VALID_SINKS = {"discard", "fs", "s3"}
-VALID_DTYPES = {"u8", "u16", "u32", "u64", "i8", "i16", "i32", "i64", "f16", "f32", "f64"}
-VALID_STATUSES = {"pass", "error", "timeout", "missing", "unknown"}
 
 # ---------------------------------------------------------------------------
 # Scenarios
@@ -88,6 +86,7 @@ class RunSpec(BaseModel):
     dtype: str
     chunk_label: str
     sink: str = "discard"
+    s3_throughput_gbps: float = 0
 
     @model_validator(mode="after")
     def _validate_enums(self) -> RunSpec:
@@ -114,11 +113,13 @@ class RunSpec(BaseModel):
     @property
     def id(self) -> str:
         suffix = f"__{self.sink}" if self.sink != "discard" else ""
+        if self.s3_throughput_gbps > 0:
+            suffix += f"__{int(self.s3_throughput_gbps)}gbps"
         return f"{self.scenario}__{self.codec}__{self.fill}__{self.backend}__{self.dtype}__{self.chunk_label}{suffix}"
 
     def base_result(self) -> dict:
         """Common fields shared by success, error, and timeout results."""
-        return {
+        d = {
             "id": self.id,
             "scenario": self.scenario,
             "codec": self.codec,
@@ -129,6 +130,9 @@ class RunSpec(BaseModel):
             "chunk_bytes_label": self.chunk_label,
             "sink": self.sink,
         }
+        if self.s3_throughput_gbps > 0:
+            d["s3_throughput_gbps"] = self.s3_throughput_gbps
+        return d
 
 
 # ---------------------------------------------------------------------------
@@ -185,7 +189,7 @@ def io_runs() -> list[RunSpec]:
 
 
 def s3_runs() -> list[RunSpec]:
-    """S3 tier: discard vs fs vs S3 sink comparison."""
+    """S3 tier: discard vs fs vs S3 sink comparison, with throughput sweep."""
     runs = []
     chunk_labels = ["32K", "256K", "2M"]
     scenarios = ["orca2_single", "256cube_single"]
@@ -193,8 +197,14 @@ def s3_runs() -> list[RunSpec]:
         for cl in chunk_labels:
             for codec in ["none", "zstd"]:
                 for backend in ["gpu", "cpu"]:
-                    for sink in ["discard", "fs", "s3"]:
-                        runs.append(RunSpec(scenario=sc, codec=codec, fill="xor", backend=backend, dtype="u16", chunk_label=cl, sink=sink))
+                    for throughput in [10, 100]:
+                        for sink in ["discard", "fs", "s3"]:
+                            runs.append(RunSpec(
+                                scenario=sc, codec=codec, fill="xor",
+                                backend=backend, dtype="u16", chunk_label=cl,
+                                sink=sink,
+                                s3_throughput_gbps=throughput if sink == "s3" else 0,
+                            ))
     return runs
 
 
@@ -217,40 +227,6 @@ def deduplicate(runs: list[RunSpec]) -> list[RunSpec]:
             seen.add(r.id)
             out.append(r)
     return out
-
-
-# ---------------------------------------------------------------------------
-# Result validation
-# ---------------------------------------------------------------------------
-
-
-class RunResult(BaseModel, extra="allow"):
-    id: str
-    scenario: str
-    codec: str
-    fill: str
-    backend: str
-    dtype: str
-    chunk_bytes: int
-    chunk_bytes_label: str
-    sink: str = "discard"
-    status: str
-
-    @model_validator(mode="after")
-    def _validate_enums(self) -> RunResult:
-        if self.status not in VALID_STATUSES:
-            raise ValueError(f"Unknown status: {self.status}")
-        return self
-
-
-class ResultsFile(BaseModel, extra="allow"):
-    version: int
-    machine: dict
-    runs: list[RunResult]
-
-
-def validate_results(data: dict) -> ResultsFile:
-    return ResultsFile.model_validate(data)
 
 
 # ---------------------------------------------------------------------------
@@ -317,6 +293,8 @@ def run_one(spec: RunSpec, build_dir: Path, s3_bucket: str | None = None,
                      "--s3-prefix", prefix,
                      "--s3-region", s3_region,
                      "--s3-endpoint", s3_endpoint])
+        if spec.s3_throughput_gbps > 0:
+            cmd.extend(["--s3-throughput-gbps", str(spec.s3_throughput_gbps)])
 
     try:
         t0 = time.monotonic()
@@ -338,7 +316,15 @@ def run_one(spec: RunSpec, build_dir: Path, s3_bucket: str | None = None,
             else:
                 parsed["status"] = "unknown"
 
-        return {**spec.base_result(), "elapsed_s": round(elapsed, 2), **parsed}
+        result = {**spec.base_result(), "elapsed_s": round(elapsed, 2), **parsed}
+        if spec.sink == "s3":
+            if s3_endpoint:
+                result.setdefault("s3_endpoint", s3_endpoint)
+            if s3_region:
+                result.setdefault("s3_region", s3_region)
+            if s3_bucket:
+                result.setdefault("s3_bucket", s3_bucket)
+        return result
     finally:
         if tmpdir is not None:
             import shutil

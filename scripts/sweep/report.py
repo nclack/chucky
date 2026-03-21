@@ -1,5 +1,8 @@
 # /// script
 # requires-python = ">=3.11"
+# dependencies = [
+#   "pydantic",
+# ]
 # ///
 """
 Generate a self-contained HTML+D3 report from benchmark sweep results.
@@ -20,49 +23,11 @@ import json
 import sys
 from pathlib import Path
 
+from pydantic import ValidationError
+
+from models import migrate_results, validate_results
+
 TEMPLATE_PATH = Path(__file__).parent / "template.html"
-SCHEMA_DIR = Path(__file__).parent / "schema"
-
-
-def validate_results(data: dict, path: Path) -> list[str]:
-    """Validate a results dict against the JSON schema. Returns a list of warnings."""
-    schema_path = SCHEMA_DIR / "results.schema.json"
-    if not schema_path.exists():
-        return []
-    with open(schema_path) as f:
-        schema = json.load(f)
-
-    warnings = []
-    # Validate top-level required fields
-    for key in schema.get("required", []):
-        if key not in data:
-            warnings.append(f"{path.name}: missing required field '{key}'")
-
-    # Validate machine fields
-    machine_schema = schema.get("properties", {}).get("machine", {})
-    machine = data.get("machine", {})
-    for key in machine_schema.get("required", []):
-        if key not in machine:
-            warnings.append(f"{path.name}: machine missing required field '{key}'")
-
-    # Validate run fields
-    run_schema_path = SCHEMA_DIR / "run.schema.json"
-    if run_schema_path.exists():
-        with open(run_schema_path) as f:
-            run_schema = json.load(f)
-        run_required = set(run_schema.get("required", []))
-        run_properties = set(run_schema.get("properties", {}).keys())
-        for i, run in enumerate(data.get("runs", [])):
-            for key in run_required:
-                if key not in run:
-                    warnings.append(f"{path.name}: run[{i}] missing required field '{key}'")
-                    break  # one warning per run is enough
-            extra = set(run.keys()) - run_properties
-            if extra:
-                warnings.append(f"{path.name}: run[{i}] has unknown fields: {extra}")
-                break
-
-    return warnings
 
 
 def load_files(paths: list[Path], *, warn: bool = True) -> list[dict]:
@@ -76,9 +41,15 @@ def load_files(paths: list[Path], *, warn: bool = True) -> list[dict]:
                 print(f"Warning: skipping corrupt JSON file {p}: {e}", file=sys.stderr)
                 continue
 
+        migrate_results(data)
+
         if warn:
-            for w in validate_results(data, p):
-                print(f"Warning: {w}", file=sys.stderr)
+            try:
+                validate_results(data)
+            except ValidationError as e:
+                for err in e.errors():
+                    loc = " -> ".join(str(x) for x in err["loc"])
+                    print(f"Warning: {p.name}: {loc}: {err['msg']}", file=sys.stderr)
 
         machine = data.get("machine", {})
         hostname = machine.get("hostname", "")

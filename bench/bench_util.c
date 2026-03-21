@@ -502,6 +502,7 @@ run_bench(const struct bench_config* cfg)
         .array_name = array_name,
         .region = cfg->s3_region,
         .endpoint = cfg->s3_endpoint,
+        .throughput_gbps = cfg->s3_throughput_gbps,
         .data_type = dtype,
         .fill_value = 0,
         .rank = rank,
@@ -519,6 +520,7 @@ run_bench(const struct bench_config* cfg)
         .array_name = array_name,
         .region = cfg->s3_region,
         .endpoint = cfg->s3_endpoint,
+        .throughput_gbps = cfg->s3_throughput_gbps,
         .data_type = dtype,
         .fill_value = 0,
         .rank = rank,
@@ -955,6 +957,7 @@ bench_stream_main(int ac,
   const char* s3_prefix = NULL;
   const char* s3_region = NULL;
   const char* s3_endpoint = NULL;
+  double s3_throughput_gbps = 0;
   enum bench_backend backend = BENCH_GPU;
   enum dtype dtype = dtype_u16;
   size_t target_chunk_bytes = 0;
@@ -997,6 +1000,8 @@ bench_stream_main(int ac,
       s3_region = av[++i];
     } else if (strcmp(av[i], "--s3-endpoint") == 0 && i + 1 < ac) {
       s3_endpoint = av[++i];
+    } else if (strcmp(av[i], "--s3-throughput-gbps") == 0 && i + 1 < ac) {
+      s3_throughput_gbps = strtod(av[++i], NULL);
     } else {
       fprintf(stderr, "Unknown option: %s\n", av[i]);
       fprintf(stderr,
@@ -1004,7 +1009,8 @@ bench_stream_main(int ac,
               "[--reduce mean|min|max|median|max_sup|min_sup] "
               "[--backend gpu|cpu] [--dtype u8|u16|...] [--frames N] "
               "[--json] [--chunk-bytes N] [--memory-budget N] [-o path] "
-              "[--s3-bucket B --s3-region R --s3-endpoint E [--s3-prefix P]]\n",
+              "[--s3-bucket B --s3-region R --s3-endpoint E [--s3-prefix P] "
+              "[--s3-throughput-gbps N]]\n",
               av[0]);
       return 1;
     }
@@ -1042,6 +1048,7 @@ bench_stream_main(int ac,
     .s3_prefix = s3_prefix,
     .s3_region = s3_region,
     .s3_endpoint = s3_endpoint,
+    .s3_throughput_gbps = s3_throughput_gbps,
     .codec = codec,
     .reduce_method = reduce,
     .dim0_reduce_method = reduce == lod_reduce_median ? lod_reduce_max : reduce,

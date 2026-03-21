@@ -65,7 +65,8 @@
           "in_gibs": 53.042,
           "out_gibs": 53.042
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "orca2_single__none__xor__gpu__u16__32K",
@@ -125,7 +126,8 @@
           "in_gibs": 53.1846,
           "out_gibs": 53.1846
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "orca2_single__none__xor__gpu__u16__64K",
@@ -185,7 +187,8 @@
           "in_gibs": 53.2372,
           "out_gibs": 53.2372
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "orca2_single__none__xor__gpu__u16__128K",
@@ -245,7 +248,8 @@
           "in_gibs": 53.2207,
           "out_gibs": 53.2207
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "orca2_single__none__xor__gpu__u16__256K",
@@ -305,7 +309,8 @@
           "in_gibs": 53.2475,
           "out_gibs": 53.2475
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "orca2_single__none__xor__gpu__u16__512K",
@@ -365,7 +370,8 @@
           "in_gibs": 53.2896,
           "out_gibs": 53.2896
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "orca2_single__none__xor__gpu__u16__1M",
@@ -425,7 +431,8 @@
           "in_gibs": 53.33,
           "out_gibs": 53.33
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "orca2_single__none__xor__gpu__u16__2M",
@@ -485,7 +492,8 @@
           "in_gibs": 53.3355,
           "out_gibs": 53.3355
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "orca2_single__lz4__xor__gpu__u16__16K",
@@ -545,7 +553,8 @@
           "in_gibs": 52.8571,
           "out_gibs": 52.8571
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "orca2_single__lz4__xor__gpu__u16__32K",
@@ -605,7 +614,8 @@
           "in_gibs": 52.8553,
           "out_gibs": 52.8553
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "orca2_single__lz4__xor__gpu__u16__64K",
@@ -665,7 +675,8 @@
           "in_gibs": 52.6827,
           "out_gibs": 52.6827
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "orca2_single__lz4__xor__gpu__u16__128K",
@@ -725,7 +736,8 @@
           "in_gibs": 53.0294,
           "out_gibs": 53.0294
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "orca2_single__lz4__xor__gpu__u16__256K",
@@ -785,7 +797,8 @@
           "in_gibs": 52.7996,
           "out_gibs": 52.7996
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "orca2_single__lz4__xor__gpu__u16__512K",
@@ -845,7 +858,8 @@
           "in_gibs": 52.9923,
           "out_gibs": 52.9923
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "orca2_single__lz4__xor__gpu__u16__1M",
@@ -905,7 +919,8 @@
           "in_gibs": 53.1123,
           "out_gibs": 53.1123
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "orca2_single__lz4__xor__gpu__u16__2M",
@@ -965,7 +980,8 @@
           "in_gibs": 53.2006,
           "out_gibs": 53.2006
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "orca2_single__zstd__xor__gpu__u16__16K",
@@ -1025,7 +1041,8 @@
           "in_gibs": 51.6639,
           "out_gibs": 51.6639
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "orca2_single__zstd__xor__gpu__u16__32K",
@@ -1085,7 +1102,8 @@
           "in_gibs": 51.3098,
           "out_gibs": 51.3098
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "orca2_single__zstd__xor__gpu__u16__64K",
@@ -1145,7 +1163,8 @@
           "in_gibs": 51.7166,
           "out_gibs": 51.7166
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "orca2_single__zstd__xor__gpu__u16__128K",
@@ -1205,7 +1224,8 @@
           "in_gibs": 51.5491,
           "out_gibs": 51.5491
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "orca2_single__zstd__xor__gpu__u16__256K",
@@ -1265,7 +1285,8 @@
           "in_gibs": 51.6041,
           "out_gibs": 51.6041
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "orca2_single__zstd__xor__gpu__u16__512K",
@@ -1325,7 +1346,8 @@
           "in_gibs": 52.5431,
           "out_gibs": 52.5431
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "orca2_single__zstd__xor__gpu__u16__1M",
@@ -1385,7 +1407,8 @@
           "in_gibs": 52.5128,
           "out_gibs": 52.5128
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "orca2_single__zstd__xor__gpu__u16__2M",
@@ -1445,7 +1468,8 @@
           "in_gibs": 52.8186,
           "out_gibs": 52.8186
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "256cube_single__none__xor__gpu__u16__16K",
@@ -1505,7 +1529,8 @@
           "in_gibs": 38.6983,
           "out_gibs": 38.6983
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "256cube_single__none__xor__gpu__u16__32K",
@@ -1565,7 +1590,8 @@
           "in_gibs": 52.6639,
           "out_gibs": 52.6639
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "256cube_single__none__xor__gpu__u16__64K",
@@ -1625,7 +1651,8 @@
           "in_gibs": 52.6823,
           "out_gibs": 52.6823
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "256cube_single__none__xor__gpu__u16__128K",
@@ -1685,7 +1712,8 @@
           "in_gibs": 53.1879,
           "out_gibs": 53.1879
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "256cube_single__none__xor__gpu__u16__256K",
@@ -1745,7 +1773,8 @@
           "in_gibs": 53.2734,
           "out_gibs": 53.2734
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "256cube_single__none__xor__gpu__u16__512K",
@@ -1805,7 +1834,8 @@
           "in_gibs": 53.3059,
           "out_gibs": 53.3059
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "256cube_single__none__xor__gpu__u16__1M",
@@ -1865,7 +1895,8 @@
           "in_gibs": 53.297,
           "out_gibs": 53.297
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "256cube_single__none__xor__gpu__u16__2M",
@@ -1925,7 +1956,8 @@
           "in_gibs": 53.2861,
           "out_gibs": 53.2861
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "256cube_single__lz4__xor__gpu__u16__16K",
@@ -1985,7 +2017,8 @@
           "in_gibs": 52.1682,
           "out_gibs": 52.1682
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "256cube_single__lz4__xor__gpu__u16__32K",
@@ -2045,7 +2078,8 @@
           "in_gibs": 52.6708,
           "out_gibs": 52.6708
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "256cube_single__lz4__xor__gpu__u16__64K",
@@ -2105,7 +2139,8 @@
           "in_gibs": 52.3879,
           "out_gibs": 52.3879
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "256cube_single__lz4__xor__gpu__u16__128K",
@@ -2165,7 +2200,8 @@
           "in_gibs": 29.0555,
           "out_gibs": 29.0555
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "256cube_single__lz4__xor__gpu__u16__256K",
@@ -2225,7 +2261,8 @@
           "in_gibs": 51.0084,
           "out_gibs": 51.0084
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "256cube_single__lz4__xor__gpu__u16__512K",
@@ -2285,7 +2322,8 @@
           "in_gibs": 53.0789,
           "out_gibs": 53.0789
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "256cube_single__lz4__xor__gpu__u16__1M",
@@ -2345,7 +2383,8 @@
           "in_gibs": 52.9832,
           "out_gibs": 52.9832
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "256cube_single__lz4__xor__gpu__u16__2M",
@@ -2405,7 +2444,8 @@
           "in_gibs": 52.8586,
           "out_gibs": 52.8586
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "256cube_single__zstd__xor__gpu__u16__16K",
@@ -2465,7 +2505,8 @@
           "in_gibs": 49.215,
           "out_gibs": 49.215
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "256cube_single__zstd__xor__gpu__u16__32K",
@@ -2525,7 +2566,8 @@
           "in_gibs": 50.7896,
           "out_gibs": 50.7896
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "256cube_single__zstd__xor__gpu__u16__64K",
@@ -2585,7 +2627,8 @@
           "in_gibs": 50.9901,
           "out_gibs": 50.9901
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "256cube_single__zstd__xor__gpu__u16__128K",
@@ -2645,7 +2688,8 @@
           "in_gibs": 51.7781,
           "out_gibs": 51.7781
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "256cube_single__zstd__xor__gpu__u16__256K",
@@ -2705,7 +2749,8 @@
           "in_gibs": 52.0975,
           "out_gibs": 52.0975
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "256cube_single__zstd__xor__gpu__u16__512K",
@@ -2765,7 +2810,8 @@
           "in_gibs": 52.5283,
           "out_gibs": 52.5283
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "256cube_single__zstd__xor__gpu__u16__1M",
@@ -2825,7 +2871,8 @@
           "in_gibs": 52.6484,
           "out_gibs": 52.6484
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "256cube_single__zstd__xor__gpu__u16__2M",
@@ -2885,7 +2932,8 @@
           "in_gibs": 52.5953,
           "out_gibs": 52.5953
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "smallepoch_single__none__xor__gpu__u16__16K",
@@ -2945,7 +2993,8 @@
           "in_gibs": 48.8721,
           "out_gibs": 48.8721
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "smallepoch_single__none__xor__gpu__u16__32K",
@@ -3005,7 +3054,8 @@
           "in_gibs": 47.3187,
           "out_gibs": 47.3187
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "smallepoch_single__none__xor__gpu__u16__64K",
@@ -3053,7 +3103,8 @@
           "in_gibs": 48.4815,
           "out_gibs": 48.4815
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "smallepoch_single__none__xor__gpu__u16__128K",
@@ -3101,7 +3152,8 @@
           "in_gibs": 48.9947,
           "out_gibs": 48.9947
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "smallepoch_single__none__xor__gpu__u16__256K",
@@ -3149,7 +3201,8 @@
           "in_gibs": 51.0167,
           "out_gibs": 51.0167
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "smallepoch_single__none__xor__gpu__u16__512K",
@@ -3197,7 +3250,8 @@
           "in_gibs": 52.2317,
           "out_gibs": 52.2317
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "smallepoch_single__none__xor__gpu__u16__1M",
@@ -3245,7 +3299,8 @@
           "in_gibs": 52.7911,
           "out_gibs": 52.7911
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "smallepoch_single__none__xor__gpu__u16__2M",
@@ -3293,7 +3348,8 @@
           "in_gibs": 53.0461,
           "out_gibs": 53.0461
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "smallepoch_single__lz4__xor__gpu__u16__16K",
@@ -3353,7 +3409,8 @@
           "in_gibs": 2.33444,
           "out_gibs": 2.33444
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "smallepoch_single__lz4__xor__gpu__u16__32K",
@@ -3413,7 +3470,8 @@
           "in_gibs": 1.58022,
           "out_gibs": 1.58022
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "smallepoch_single__lz4__xor__gpu__u16__64K",
@@ -3461,7 +3519,8 @@
           "in_gibs": 1.47093,
           "out_gibs": 1.47093
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "smallepoch_single__lz4__xor__gpu__u16__128K",
@@ -3509,7 +3568,8 @@
           "in_gibs": 1.51408,
           "out_gibs": 1.51408
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "smallepoch_single__lz4__xor__gpu__u16__256K",
@@ -3557,7 +3617,8 @@
           "in_gibs": 4.11386,
           "out_gibs": 4.11386
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "smallepoch_single__lz4__xor__gpu__u16__512K",
@@ -3605,7 +3666,8 @@
           "in_gibs": 6.97579,
           "out_gibs": 6.97579
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "smallepoch_single__lz4__xor__gpu__u16__1M",
@@ -3653,7 +3715,8 @@
           "in_gibs": 11.568,
           "out_gibs": 11.568
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "smallepoch_single__lz4__xor__gpu__u16__2M",
@@ -3701,7 +3764,8 @@
           "in_gibs": 21.1183,
           "out_gibs": 21.1183
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "smallepoch_single__zstd__xor__gpu__u16__16K",
@@ -3761,7 +3825,8 @@
           "in_gibs": 1.3594,
           "out_gibs": 1.3594
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "smallepoch_single__zstd__xor__gpu__u16__32K",
@@ -3821,7 +3886,8 @@
           "in_gibs": 0.404627,
           "out_gibs": 0.404627
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "smallepoch_single__zstd__xor__gpu__u16__64K",
@@ -3869,7 +3935,8 @@
           "in_gibs": 0.268718,
           "out_gibs": 0.268718
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "smallepoch_single__zstd__xor__gpu__u16__128K",
@@ -3917,7 +3984,8 @@
           "in_gibs": 0.187644,
           "out_gibs": 0.187644
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "smallepoch_single__zstd__xor__gpu__u16__256K",
@@ -3965,7 +4033,8 @@
           "in_gibs": 0.254532,
           "out_gibs": 0.254532
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "smallepoch_single__zstd__xor__gpu__u16__512K",
@@ -4013,7 +4082,8 @@
           "in_gibs": 0.558993,
           "out_gibs": 0.558993
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "smallepoch_single__zstd__xor__gpu__u16__1M",
@@ -4061,7 +4131,8 @@
           "in_gibs": 0.856472,
           "out_gibs": 0.856472
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "smallepoch_single__zstd__xor__gpu__u16__2M",
@@ -4109,7 +4180,8 @@
           "in_gibs": 1.62365,
           "out_gibs": 1.62365
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "orca2_single__none__xor__cpu__u16__16K",
@@ -4151,7 +4223,8 @@
           "in_gibs": 56.932,
           "out_gibs": 0.0
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "orca2_single__none__xor__cpu__u16__32K",
@@ -4193,7 +4266,8 @@
           "in_gibs": 57.6478,
           "out_gibs": 0.0
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "orca2_single__none__xor__cpu__u16__64K",
@@ -4235,7 +4309,8 @@
           "in_gibs": 57.7681,
           "out_gibs": 0.0
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "orca2_single__none__xor__cpu__u16__128K",
@@ -4277,7 +4352,8 @@
           "in_gibs": 59.1185,
           "out_gibs": 0.0
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "orca2_single__none__xor__cpu__u16__256K",
@@ -4319,7 +4395,8 @@
           "in_gibs": 59.191,
           "out_gibs": 0.0
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "orca2_single__none__xor__cpu__u16__512K",
@@ -4361,7 +4438,8 @@
           "in_gibs": 56.9364,
           "out_gibs": 0.0
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "orca2_single__none__xor__cpu__u16__1M",
@@ -4403,7 +4481,8 @@
           "in_gibs": 54.4827,
           "out_gibs": 0.0
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "orca2_single__none__xor__cpu__u16__2M",
@@ -4445,7 +4524,8 @@
           "in_gibs": 57.196,
           "out_gibs": 0.0
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "orca2_single__lz4__xor__cpu__u16__16K",
@@ -4487,7 +4567,8 @@
           "in_gibs": 54.9754,
           "out_gibs": 0.0
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "orca2_single__lz4__xor__cpu__u16__32K",
@@ -4529,7 +4610,8 @@
           "in_gibs": 58.8304,
           "out_gibs": 0.0
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "orca2_single__lz4__xor__cpu__u16__64K",
@@ -4571,7 +4653,8 @@
           "in_gibs": 56.8112,
           "out_gibs": 0.0
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "orca2_single__lz4__xor__cpu__u16__128K",
@@ -4613,7 +4696,8 @@
           "in_gibs": 57.6532,
           "out_gibs": 0.0
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "orca2_single__lz4__xor__cpu__u16__256K",
@@ -4655,7 +4739,8 @@
           "in_gibs": 59.7065,
           "out_gibs": 0.0
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "orca2_single__lz4__xor__cpu__u16__512K",
@@ -4697,7 +4782,8 @@
           "in_gibs": 59.373,
           "out_gibs": 0.0
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "orca2_single__lz4__xor__cpu__u16__1M",
@@ -4739,7 +4825,8 @@
           "in_gibs": 36.8913,
           "out_gibs": 0.0
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "orca2_single__lz4__xor__cpu__u16__2M",
@@ -4781,7 +4868,8 @@
           "in_gibs": 42.2423,
           "out_gibs": 0.0
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "orca2_single__zstd__xor__cpu__u16__16K",
@@ -4823,7 +4911,8 @@
           "in_gibs": 30.3321,
           "out_gibs": 0.0
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "orca2_single__zstd__xor__cpu__u16__32K",
@@ -4865,7 +4954,8 @@
           "in_gibs": 33.3122,
           "out_gibs": 0.0
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "orca2_single__zstd__xor__cpu__u16__64K",
@@ -4907,7 +4997,8 @@
           "in_gibs": 36.9963,
           "out_gibs": 0.0
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "orca2_single__zstd__xor__cpu__u16__128K",
@@ -4949,7 +5040,8 @@
           "in_gibs": 45.6676,
           "out_gibs": 0.0
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "orca2_single__zstd__xor__cpu__u16__256K",
@@ -4991,7 +5083,8 @@
           "in_gibs": 45.6306,
           "out_gibs": 0.0
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "orca2_single__zstd__xor__cpu__u16__512K",
@@ -5033,7 +5126,8 @@
           "in_gibs": 46.4644,
           "out_gibs": 0.0
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "orca2_single__zstd__xor__cpu__u16__1M",
@@ -5075,7 +5169,8 @@
           "in_gibs": 21.2779,
           "out_gibs": 0.0
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "orca2_single__zstd__xor__cpu__u16__2M",
@@ -5117,7 +5212,8 @@
           "in_gibs": 16.3583,
           "out_gibs": 0.0
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "256cube_single__none__xor__cpu__u16__16K",
@@ -5159,7 +5255,8 @@
           "in_gibs": 64.0773,
           "out_gibs": 0.0
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "256cube_single__none__xor__cpu__u16__32K",
@@ -5201,7 +5298,8 @@
           "in_gibs": 63.831,
           "out_gibs": 0.0
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "256cube_single__none__xor__cpu__u16__64K",
@@ -5243,7 +5341,8 @@
           "in_gibs": 65.9211,
           "out_gibs": 0.0
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "256cube_single__none__xor__cpu__u16__128K",
@@ -5285,7 +5384,8 @@
           "in_gibs": 47.1265,
           "out_gibs": 0.0
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "256cube_single__none__xor__cpu__u16__256K",
@@ -5327,7 +5427,8 @@
           "in_gibs": 44.7521,
           "out_gibs": 0.0
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "256cube_single__none__xor__cpu__u16__512K",
@@ -5369,7 +5470,8 @@
           "in_gibs": 36.8977,
           "out_gibs": 0.0
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "256cube_single__none__xor__cpu__u16__1M",
@@ -5411,7 +5513,8 @@
           "in_gibs": 38.1896,
           "out_gibs": 0.0
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "256cube_single__none__xor__cpu__u16__2M",
@@ -5453,7 +5556,8 @@
           "in_gibs": 21.0778,
           "out_gibs": 0.0
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "256cube_single__lz4__xor__cpu__u16__16K",
@@ -5495,7 +5599,8 @@
           "in_gibs": 59.5912,
           "out_gibs": 0.0
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "256cube_single__lz4__xor__cpu__u16__32K",
@@ -5537,7 +5642,8 @@
           "in_gibs": 62.5684,
           "out_gibs": 0.0
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "256cube_single__lz4__xor__cpu__u16__64K",
@@ -5579,7 +5685,8 @@
           "in_gibs": 63.7271,
           "out_gibs": 0.0
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "256cube_single__lz4__xor__cpu__u16__128K",
@@ -5621,7 +5728,8 @@
           "in_gibs": 42.976,
           "out_gibs": 0.0
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "256cube_single__lz4__xor__cpu__u16__256K",
@@ -5663,7 +5771,8 @@
           "in_gibs": 32.734,
           "out_gibs": 0.0
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "256cube_single__lz4__xor__cpu__u16__512K",
@@ -5705,7 +5814,8 @@
           "in_gibs": 25.3943,
           "out_gibs": 0.0
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "256cube_single__lz4__xor__cpu__u16__1M",
@@ -5747,7 +5857,8 @@
           "in_gibs": 27.923,
           "out_gibs": 0.0
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "256cube_single__lz4__xor__cpu__u16__2M",
@@ -5789,7 +5900,8 @@
           "in_gibs": 18.4031,
           "out_gibs": 0.0
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "256cube_single__zstd__xor__cpu__u16__16K",
@@ -5831,7 +5943,8 @@
           "in_gibs": 34.5401,
           "out_gibs": 0.0
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "256cube_single__zstd__xor__cpu__u16__32K",
@@ -5873,7 +5986,8 @@
           "in_gibs": 34.5536,
           "out_gibs": 0.0
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "256cube_single__zstd__xor__cpu__u16__64K",
@@ -5915,7 +6029,8 @@
           "in_gibs": 40.0629,
           "out_gibs": 0.0
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "256cube_single__zstd__xor__cpu__u16__128K",
@@ -5957,7 +6072,8 @@
           "in_gibs": 39.3497,
           "out_gibs": 0.0
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "256cube_single__zstd__xor__cpu__u16__256K",
@@ -5999,7 +6115,8 @@
           "in_gibs": 32.2132,
           "out_gibs": 0.0
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "256cube_single__zstd__xor__cpu__u16__512K",
@@ -6041,7 +6158,8 @@
           "in_gibs": 16.1673,
           "out_gibs": 0.0
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "256cube_single__zstd__xor__cpu__u16__1M",
@@ -6083,7 +6201,8 @@
           "in_gibs": 10.0509,
           "out_gibs": 0.0
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "256cube_single__zstd__xor__cpu__u16__2M",
@@ -6125,7 +6244,8 @@
           "in_gibs": 19.8365,
           "out_gibs": 0.0
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "smallepoch_single__none__xor__cpu__u16__16K",
@@ -6167,7 +6287,8 @@
           "in_gibs": 6.62989,
           "out_gibs": 0.0
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "smallepoch_single__none__xor__cpu__u16__32K",
@@ -6209,7 +6330,8 @@
           "in_gibs": 18.2046,
           "out_gibs": 0.0
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "smallepoch_single__none__xor__cpu__u16__64K",
@@ -6251,7 +6373,8 @@
           "in_gibs": 13.3701,
           "out_gibs": 0.0
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "smallepoch_single__none__xor__cpu__u16__128K",
@@ -6293,7 +6416,8 @@
           "in_gibs": 8.98427,
           "out_gibs": 0.0
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "smallepoch_single__none__xor__cpu__u16__256K",
@@ -6335,7 +6459,8 @@
           "in_gibs": 8.89819,
           "out_gibs": 0.0
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "smallepoch_single__none__xor__cpu__u16__512K",
@@ -6377,7 +6502,8 @@
           "in_gibs": 8.53878,
           "out_gibs": 0.0
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "smallepoch_single__none__xor__cpu__u16__1M",
@@ -6419,7 +6545,8 @@
           "in_gibs": 8.61356,
           "out_gibs": 0.0
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "smallepoch_single__none__xor__cpu__u16__2M",
@@ -6461,7 +6588,8 @@
           "in_gibs": 9.42637,
           "out_gibs": 0.0
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "smallepoch_single__lz4__xor__cpu__u16__16K",
@@ -6503,7 +6631,8 @@
           "in_gibs": 1.32352,
           "out_gibs": 0.0
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "smallepoch_single__lz4__xor__cpu__u16__32K",
@@ -6545,7 +6674,8 @@
           "in_gibs": 4.76837,
           "out_gibs": 0.0
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "smallepoch_single__lz4__xor__cpu__u16__64K",
@@ -6587,7 +6717,8 @@
           "in_gibs": 3.90615,
           "out_gibs": 0.0
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "smallepoch_single__lz4__xor__cpu__u16__128K",
@@ -6629,7 +6760,8 @@
           "in_gibs": 2.97889,
           "out_gibs": 0.0
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "smallepoch_single__lz4__xor__cpu__u16__256K",
@@ -6671,7 +6803,8 @@
           "in_gibs": 3.99724,
           "out_gibs": 0.0
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "smallepoch_single__lz4__xor__cpu__u16__512K",
@@ -6713,7 +6846,8 @@
           "in_gibs": 4.5373,
           "out_gibs": 0.0
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "smallepoch_single__lz4__xor__cpu__u16__1M",
@@ -6755,7 +6889,8 @@
           "in_gibs": 5.42774,
           "out_gibs": 0.0
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "smallepoch_single__lz4__xor__cpu__u16__2M",
@@ -6797,7 +6932,8 @@
           "in_gibs": 5.9949,
           "out_gibs": 0.0
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "smallepoch_single__zstd__xor__cpu__u16__16K",
@@ -6839,7 +6975,8 @@
           "in_gibs": 0.705913,
           "out_gibs": 0.0
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "smallepoch_single__zstd__xor__cpu__u16__32K",
@@ -6881,7 +7018,8 @@
           "in_gibs": 1.00077,
           "out_gibs": 0.0
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "smallepoch_single__zstd__xor__cpu__u16__64K",
@@ -6923,7 +7061,8 @@
           "in_gibs": 1.04183,
           "out_gibs": 0.0
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "smallepoch_single__zstd__xor__cpu__u16__128K",
@@ -6965,7 +7104,8 @@
           "in_gibs": 0.852623,
           "out_gibs": 0.0
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "smallepoch_single__zstd__xor__cpu__u16__256K",
@@ -7007,7 +7147,8 @@
           "in_gibs": 0.843188,
           "out_gibs": 0.0
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "smallepoch_single__zstd__xor__cpu__u16__512K",
@@ -7049,7 +7190,8 @@
           "in_gibs": 0.658394,
           "out_gibs": 0.0
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "smallepoch_single__zstd__xor__cpu__u16__1M",
@@ -7091,7 +7233,8 @@
           "in_gibs": 0.876696,
           "out_gibs": 0.0
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "smallepoch_single__zstd__xor__cpu__u16__2M",
@@ -7133,7 +7276,8 @@
           "in_gibs": 0.970704,
           "out_gibs": 0.0
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "orca2_multiscale__none__xor__gpu__u16__64K",
@@ -7211,7 +7355,8 @@
           "in_gibs": 53.0174,
           "out_gibs": 53.0174
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "orca2_multiscale__none__xor__cpu__u16__64K",
@@ -7271,7 +7416,8 @@
           "in_gibs": 59.0645,
           "out_gibs": 0.0
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "orca2_multiscale__zstd__xor__gpu__u16__64K",
@@ -7349,7 +7495,8 @@
           "in_gibs": 50.4266,
           "out_gibs": 50.4266
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "orca2_multiscale__zstd__xor__cpu__u16__64K",
@@ -7409,7 +7556,8 @@
           "in_gibs": 40.764,
           "out_gibs": 0.0
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "orca2_multiscale__none__xor__gpu__u16__256K",
@@ -7487,7 +7635,8 @@
           "in_gibs": 53.1804,
           "out_gibs": 53.1804
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "orca2_multiscale__none__xor__cpu__u16__256K",
@@ -7547,7 +7696,8 @@
           "in_gibs": 45.2808,
           "out_gibs": 0.0
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "orca2_multiscale__zstd__xor__gpu__u16__256K",
@@ -7625,7 +7775,8 @@
           "in_gibs": 51.8211,
           "out_gibs": 51.8211
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "orca2_multiscale__zstd__xor__cpu__u16__256K",
@@ -7685,7 +7836,8 @@
           "in_gibs": 29.576,
           "out_gibs": 0.0
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "orca2_multiscale__none__xor__gpu__u16__1M",
@@ -7763,7 +7915,8 @@
           "in_gibs": 53.2808,
           "out_gibs": 53.2808
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "orca2_multiscale__none__xor__cpu__u16__1M",
@@ -7823,7 +7976,8 @@
           "in_gibs": 31.5018,
           "out_gibs": 0.0
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "orca2_multiscale__zstd__xor__gpu__u16__1M",
@@ -7901,7 +8055,8 @@
           "in_gibs": 52.3339,
           "out_gibs": 52.3339
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "orca2_multiscale__zstd__xor__cpu__u16__1M",
@@ -7961,7 +8116,8 @@
           "in_gibs": 14.3558,
           "out_gibs": 0.0
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "256cube_multiscale__none__xor__gpu__u16__64K",
@@ -8039,7 +8195,8 @@
           "in_gibs": 53.0822,
           "out_gibs": 53.0822
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "256cube_multiscale__none__xor__cpu__u16__64K",
@@ -8099,7 +8256,8 @@
           "in_gibs": 57.7946,
           "out_gibs": 0.0
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "256cube_multiscale__zstd__xor__gpu__u16__64K",
@@ -8177,7 +8335,8 @@
           "in_gibs": 50.6333,
           "out_gibs": 50.6333
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "256cube_multiscale__zstd__xor__cpu__u16__64K",
@@ -8237,7 +8396,8 @@
           "in_gibs": 41.4071,
           "out_gibs": 0.0
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "256cube_multiscale__none__xor__gpu__u16__256K",
@@ -8315,7 +8475,8 @@
           "in_gibs": 53.2597,
           "out_gibs": 53.2597
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "256cube_multiscale__none__xor__cpu__u16__256K",
@@ -8375,7 +8536,8 @@
           "in_gibs": 47.7359,
           "out_gibs": 0.0
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "256cube_multiscale__zstd__xor__gpu__u16__256K",
@@ -8453,7 +8615,8 @@
           "in_gibs": 52.1448,
           "out_gibs": 52.1448
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "256cube_multiscale__zstd__xor__cpu__u16__256K",
@@ -8513,7 +8676,8 @@
           "in_gibs": 32.4242,
           "out_gibs": 0.0
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "256cube_multiscale__none__xor__gpu__u16__1M",
@@ -8591,7 +8755,8 @@
           "in_gibs": 53.3131,
           "out_gibs": 53.3131
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "256cube_multiscale__none__xor__cpu__u16__1M",
@@ -8651,7 +8816,8 @@
           "in_gibs": 38.0131,
           "out_gibs": 0.0
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "256cube_multiscale__zstd__xor__gpu__u16__1M",
@@ -8729,7 +8895,8 @@
           "in_gibs": 52.6677,
           "out_gibs": 52.6677
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "256cube_multiscale__zstd__xor__cpu__u16__1M",
@@ -8789,7 +8956,8 @@
           "in_gibs": 14.7649,
           "out_gibs": 0.0
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "orca2_multiscale_dim0__none__xor__gpu__u16__64K",
@@ -8873,7 +9041,8 @@
           "in_gibs": 53.2285,
           "out_gibs": 53.2285
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "orca2_multiscale_dim0__none__xor__cpu__u16__64K",
@@ -8939,7 +9108,8 @@
           "in_gibs": 53.4592,
           "out_gibs": 0.0
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "orca2_multiscale_dim0__zstd__xor__gpu__u16__64K",
@@ -9023,7 +9193,8 @@
           "in_gibs": 51.9062,
           "out_gibs": 51.9062
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "orca2_multiscale_dim0__zstd__xor__cpu__u16__64K",
@@ -9089,7 +9260,8 @@
           "in_gibs": 30.1575,
           "out_gibs": 0.0
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "orca2_multiscale_dim0__none__xor__gpu__u16__256K",
@@ -9173,7 +9345,8 @@
           "in_gibs": 53.1902,
           "out_gibs": 53.1902
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "orca2_multiscale_dim0__none__xor__cpu__u16__256K",
@@ -9239,7 +9412,8 @@
           "in_gibs": 40.5228,
           "out_gibs": 0.0
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "orca2_multiscale_dim0__zstd__xor__gpu__u16__256K",
@@ -9323,7 +9497,8 @@
           "in_gibs": 51.5009,
           "out_gibs": 51.5009
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "orca2_multiscale_dim0__zstd__xor__cpu__u16__256K",
@@ -9389,7 +9564,8 @@
           "in_gibs": 31.8031,
           "out_gibs": 0.0
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "orca2_multiscale_dim0__none__xor__gpu__u16__1M",
@@ -9473,7 +9649,8 @@
           "in_gibs": 53.3026,
           "out_gibs": 53.3026
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "orca2_multiscale_dim0__none__xor__cpu__u16__1M",
@@ -9539,7 +9716,8 @@
           "in_gibs": 36.2578,
           "out_gibs": 0.0
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "orca2_multiscale_dim0__zstd__xor__gpu__u16__1M",
@@ -9623,7 +9801,8 @@
           "in_gibs": 52.5941,
           "out_gibs": 52.5941
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "orca2_multiscale_dim0__zstd__xor__cpu__u16__1M",
@@ -9689,7 +9868,8 @@
           "in_gibs": 18.7666,
           "out_gibs": 0.0
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "256cube_multiscale_dim0__none__xor__gpu__u16__64K",
@@ -9773,7 +9953,8 @@
           "in_gibs": 53.0069,
           "out_gibs": 53.0069
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "256cube_multiscale_dim0__none__xor__cpu__u16__64K",
@@ -9839,7 +10020,8 @@
           "in_gibs": 44.4364,
           "out_gibs": 0.0
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "256cube_multiscale_dim0__zstd__xor__gpu__u16__64K",
@@ -9923,7 +10105,8 @@
           "in_gibs": 50.5606,
           "out_gibs": 50.5606
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "256cube_multiscale_dim0__zstd__xor__cpu__u16__64K",
@@ -9989,7 +10172,8 @@
           "in_gibs": 30.072,
           "out_gibs": 0.0
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "256cube_multiscale_dim0__none__xor__gpu__u16__256K",
@@ -10073,7 +10257,8 @@
           "in_gibs": 53.2947,
           "out_gibs": 53.2947
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "256cube_multiscale_dim0__none__xor__cpu__u16__256K",
@@ -10139,7 +10324,8 @@
           "in_gibs": 39.711,
           "out_gibs": 0.0
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "256cube_multiscale_dim0__zstd__xor__gpu__u16__256K",
@@ -10223,7 +10409,8 @@
           "in_gibs": 51.7621,
           "out_gibs": 51.7621
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "256cube_multiscale_dim0__zstd__xor__cpu__u16__256K",
@@ -10289,7 +10476,8 @@
           "in_gibs": 23.3335,
           "out_gibs": 0.0
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "256cube_multiscale_dim0__none__xor__gpu__u16__1M",
@@ -10373,7 +10561,8 @@
           "in_gibs": 53.2465,
           "out_gibs": 53.2465
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "256cube_multiscale_dim0__none__xor__cpu__u16__1M",
@@ -10439,7 +10628,8 @@
           "in_gibs": 32.7696,
           "out_gibs": 0.0
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "256cube_multiscale_dim0__zstd__xor__gpu__u16__1M",
@@ -10523,7 +10713,8 @@
           "in_gibs": 51.8527,
           "out_gibs": 51.8527
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "256cube_multiscale_dim0__zstd__xor__cpu__u16__1M",
@@ -10589,7 +10780,8 @@
           "in_gibs": 10.4379,
           "out_gibs": 0.0
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "orca2_single__none__xor__gpu__u16__32K__io",
@@ -10655,7 +10847,8 @@
           "in_gibs": 4376.35,
           "out_gibs": 0.0
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "orca2_single__none__xor__cpu__u16__32K__io",
@@ -10703,7 +10896,8 @@
           "in_gibs": 7.92123,
           "out_gibs": 0.0
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "orca2_single__zstd__xor__gpu__u16__32K__io",
@@ -10769,7 +10963,8 @@
           "in_gibs": 1189.05,
           "out_gibs": 0.0
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "orca2_single__zstd__xor__cpu__u16__32K__io",
@@ -10817,7 +11012,8 @@
           "in_gibs": 6.59554,
           "out_gibs": 0.0
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "orca2_single__none__xor__gpu__u16__256K__io",
@@ -10883,7 +11079,8 @@
           "in_gibs": 8151.37,
           "out_gibs": 0.0
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "orca2_single__none__xor__cpu__u16__256K__io",
@@ -10931,7 +11128,8 @@
           "in_gibs": 8.06613,
           "out_gibs": 0.0
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "orca2_single__zstd__xor__gpu__u16__256K__io",
@@ -10997,7 +11195,8 @@
           "in_gibs": 2061.23,
           "out_gibs": 0.0
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "orca2_single__zstd__xor__cpu__u16__256K__io",
@@ -11045,7 +11244,8 @@
           "in_gibs": 7.16555,
           "out_gibs": 0.0
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "orca2_single__none__xor__gpu__u16__2M__io",
@@ -11111,7 +11311,8 @@
           "in_gibs": 18735.4,
           "out_gibs": 0.0
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "orca2_single__none__xor__cpu__u16__2M__io",
@@ -11159,7 +11360,8 @@
           "in_gibs": 8.8624,
           "out_gibs": 0.0
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "orca2_single__zstd__xor__gpu__u16__2M__io",
@@ -11225,7 +11427,8 @@
           "in_gibs": 12.5252,
           "out_gibs": 0.0
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "orca2_single__zstd__xor__cpu__u16__2M__io",
@@ -11273,7 +11476,8 @@
           "in_gibs": 6.68204,
           "out_gibs": 0.0
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "256cube_single__none__xor__gpu__u16__32K__io",
@@ -11339,7 +11543,8 @@
           "in_gibs": 8843.13,
           "out_gibs": 0.0
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "256cube_single__none__xor__cpu__u16__32K__io",
@@ -11387,7 +11592,8 @@
           "in_gibs": 7.70774,
           "out_gibs": 0.0
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "256cube_single__zstd__xor__gpu__u16__32K__io",
@@ -11453,7 +11659,8 @@
           "in_gibs": 1463.49,
           "out_gibs": 0.0
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "256cube_single__zstd__xor__cpu__u16__32K__io",
@@ -11501,7 +11708,8 @@
           "in_gibs": 6.99679,
           "out_gibs": 0.0
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "256cube_single__none__xor__gpu__u16__256K__io",
@@ -11567,7 +11775,8 @@
           "in_gibs": 11778.6,
           "out_gibs": 0.0
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "256cube_single__none__xor__cpu__u16__256K__io",
@@ -11615,7 +11824,8 @@
           "in_gibs": 7.64444,
           "out_gibs": 0.0
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "256cube_single__zstd__xor__gpu__u16__256K__io",
@@ -11681,7 +11891,8 @@
           "in_gibs": 18.6615,
           "out_gibs": 0.0
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "256cube_single__zstd__xor__cpu__u16__256K__io",
@@ -11729,7 +11940,8 @@
           "in_gibs": 7.51555,
           "out_gibs": 0.0
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "256cube_single__none__xor__gpu__u16__2M__io",
@@ -11795,7 +12007,8 @@
           "in_gibs": 10758.2,
           "out_gibs": 0.0
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "256cube_single__none__xor__cpu__u16__2M__io",
@@ -11843,7 +12056,8 @@
           "in_gibs": 8.66348,
           "out_gibs": 0.0
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "256cube_single__zstd__xor__gpu__u16__2M__io",
@@ -11909,7 +12123,8 @@
           "in_gibs": 4096.53,
           "out_gibs": 0.0
         }
-      }
+      },
+      "sink": "discard"
     },
     {
       "id": "256cube_single__zstd__xor__cpu__u16__2M__io",
@@ -11957,7 +12172,8 @@
           "in_gibs": 6.60972,
           "out_gibs": 0.0
         }
-      }
+      },
+      "sink": "discard"
     }
   ]
 }

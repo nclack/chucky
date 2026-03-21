@@ -109,6 +109,7 @@ struct bench_config
   const char* s3_prefix;    // key prefix (no leading/trailing /)
   const char* s3_region;    // e.g. "us-east-1"
   const char* s3_endpoint;  // e.g. "https://s3.us-east-1.amazonaws.com"
+  double s3_throughput_gbps; // gigabits/s, 0 = CRT default (10.0)
   enum compression_codec codec;
   enum lod_reduce_method reduce_method;
   enum lod_reduce_method dim0_reduce_method;

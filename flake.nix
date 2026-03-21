@@ -55,6 +55,7 @@
             aws-c-sdkutils
             aws-checksums
             s2n-tls
+            awscli2
             # for viewing w neuroglancer
             python3
             uv

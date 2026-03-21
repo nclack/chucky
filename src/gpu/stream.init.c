@@ -388,9 +388,13 @@ tile_stream_gpu_memory_estimate(const struct tile_stream_configuration* config,
     size_t agg_layout_dev =
       2 * (rank - 1) * sizeof(uint64_t) + 2 * (rank - 1) * sizeof(int64_t);
 
+    size_t cub_temp = 0;
+    aggregate_cub_temp_bytes(batch_covering, &cub_temp);
+
     size_t slot_dev = (batch_covering + 1) * sizeof(size_t) +
                       (batch_covering + 1) * sizeof(size_t) +
-                      batch_chunks * sizeof(uint32_t) + batch_agg_bytes;
+                      batch_chunks * sizeof(uint32_t) + batch_agg_bytes +
+                      cub_temp;
 
     size_t slot_host = batch_agg_bytes + (batch_covering + 1) * sizeof(size_t) +
                        batch_covering * sizeof(size_t);
@@ -401,6 +405,15 @@ tile_stream_gpu_memory_estimate(const struct tile_stream_configuration* config,
 
     aggregate_device += agg_layout_dev + 2 * slot_dev + lut_dev;
     aggregate_host += 2 * slot_host;
+  }
+
+  // Shard state: active_shard arrays + index buffers (host heap).
+  size_t shard_heap = 0;
+  for (int lv = 0; lv < nlod; ++lv) {
+    const struct level_layout_info* li = &cl.per_level[lv];
+    shard_heap += li->shard_inner_count *
+      (sizeof(struct active_shard) +
+       2 * li->chunks_per_shard_total * sizeof(uint64_t));
   }
 
   size_t lod_device = 0;
@@ -456,6 +469,7 @@ tile_stream_gpu_memory_estimate(const struct tile_stream_configuration* config,
   info->aggregate_bytes = aggregate_device;
   info->lod_bytes = lod_device;
   info->codec_bytes = codec_bytes;
+  info->shard_bytes = shard_heap;
 
   info->device_bytes = staging_bytes + chunk_pool_bytes +
                        compressed_pool_bytes + aggregate_device + lod_device +

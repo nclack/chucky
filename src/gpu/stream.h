@@ -22,6 +22,9 @@ struct tile_stream_memory_info
   size_t lod_bytes;             // d_linear + d_morton + shape arrays
   size_t codec_bytes;           // nvcomp workspace + pointer arrays
 
+  // Breakdown (host heap, not pinned)
+  size_t shard_bytes;           // active_shard arrays + index buffers
+
   // Key parameters used in the estimate
   uint64_t chunks_per_epoch; // L0
   uint64_t total_chunks;     // sum across all LOD levels

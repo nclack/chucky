@@ -111,6 +111,21 @@ pad_shard_sizes_k(size_t* __restrict__ d_permuted_sizes,
 // ---------------------------------------------------------------------------
 
 extern "C" int
+aggregate_cub_temp_bytes(uint64_t count, size_t* out_bytes)
+{
+  if (!out_bytes)
+    return 1;
+  if (count == 0) {
+    *out_bytes = 0;
+    return 0;
+  }
+  *out_bytes = 0;
+  cub::DeviceScan::ExclusiveSum(
+    nullptr, *out_bytes, (size_t*)nullptr, (size_t*)nullptr, (int)count);
+  return 0;
+}
+
+extern "C" int
 aggregate_layout_upload(struct aggregate_layout* layout)
 {
   if (layout->lifted_rank == 0)

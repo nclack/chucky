@@ -33,6 +33,16 @@ zarr_shard_key(char* buf,
                const uint64_t* shard_count,
                uint64_t flat);
 
+// Generate OME-NGFF v0.5 multiscale group JSON into buf.
+// level_dims[lv] points to the rank-length dimension array for level lv.
+// Returns JSON length on success, -1 on error.
+int
+zarr_multiscale_group_json(char* buf,
+                           size_t cap,
+                           uint8_t rank,
+                           int nlod,
+                           const struct dimension* const* level_dims);
+
 // Compute shard geometry from dimensions.
 struct zarr_geometry
 {

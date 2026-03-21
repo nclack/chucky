@@ -12,6 +12,10 @@ extern "C"
 {
 #endif
 
+  // Query CUB scratch workspace size for ExclusiveSum over count elements.
+  // Writes result to *out_bytes. Returns 0 on success.
+  int aggregate_cub_temp_bytes(uint64_t count, size_t* out_bytes);
+
   struct aggregate_slot
   {
     size_t* d_permuted_sizes; // device: (C+1) size_t, zeroed each epoch

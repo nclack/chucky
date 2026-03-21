@@ -179,19 +179,3 @@ _Static_assert(LOD_MAX_LEVELS <= 32,
 void
 tile_stream_gpu_init_writer(struct tile_stream_gpu* s);
 
-// Context for flush pipeline operations.
-struct flush_context
-{
-  struct flush_pipeline* flush;
-  struct compress_agg_stage* compress_agg;
-  struct d2h_deliver_stage* d2h_deliver;
-  const struct level_geometry* levels;
-  struct batch_state* batch;
-  struct pool_state* pools;
-  struct lod_state* lod;
-  struct stream_metrics* metrics;
-  const struct tile_stream_configuration* config;
-  const struct tile_stream_layout* layout;
-  struct gpu_streams streams;
-  struct platform_clock* metadata_update_clock;
-};

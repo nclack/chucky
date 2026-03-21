@@ -28,25 +28,6 @@ current_pool_epoch(struct tile_stream_gpu* s, uint32_t epoch_in_batch)
                                                    s->layout.chunk_stride * bpe;
 }
 
-static struct flush_context
-make_flush_context(struct tile_stream_gpu* s)
-{
-  return (struct flush_context){
-    .flush = &s->flush,
-    .compress_agg = &s->compress_agg,
-    .d2h_deliver = &s->d2h_deliver,
-    .levels = &s->levels,
-    .batch = &s->batch,
-    .pools = &s->pools,
-    .lod = &s->lod,
-    .metrics = &s->metrics,
-    .config = &s->config,
-    .layout = &s->layout,
-    .streams = s->streams,
-    .metadata_update_clock = &s->metadata_update_clock,
-  };
-}
-
 // --- Ingest dispatch ---
 
 static int
@@ -169,8 +150,7 @@ tile_stream_gpu_append(struct writer* self, struct slice input)
     src += bytes_this_pass;
 
     if (s->cursor % s->layout.epoch_elements == 0 && s->cursor > 0) {
-      struct flush_context fctx = make_flush_context(s);
-      struct writer_result fr = flush_accumulate_epoch(&fctx);
+      struct writer_result fr = flush_accumulate_epoch(s);
       if (fr.error)
         return writer_error_at(src, end);
     }
@@ -195,30 +175,28 @@ tile_stream_gpu_flush(struct writer* self)
     s->stage.bytes_written = 0;
   }
 
-  struct flush_context fctx = make_flush_context(s);
-
-  struct writer_result r = flush_drain_pending(&fctx);
+  struct writer_result r = flush_drain_pending(s);
   if (r.error)
     return r;
 
   // Flush any partial epoch first (sub-epoch data)
   if (s->cursor % s->layout.epoch_elements != 0) {
     // run_lod + record pool event + increment epochs_accumulated
-    if (flush_run_epoch_lod(&fctx))
+    if (flush_run_epoch_lod(s))
       return writer_error();
     CU(Error,
-       cuEventRecord(fctx.batch->pool_events[fctx.batch->accumulated],
-                     fctx.streams.compute));
-    fctx.batch->accumulated++;
+       cuEventRecord(s->batch.pool_events[s->batch.accumulated],
+                     s->streams.compute));
+    s->batch.accumulated++;
   }
 
   // Flush any accumulated epochs (partial batch)
-  r = flush_accumulated_sync(&fctx);
+  r = flush_accumulated_sync(s);
   if (r.error)
     return r;
 
   // Drain any partial dim0 accumulators
-  r = flush_partial_dim0(&fctx);
+  r = flush_partial_dim0(s);
   if (r.error)
     return r;
 

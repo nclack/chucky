@@ -7,13 +7,16 @@ Each Zarr v3 shard becomes a single S3 object. The [AWS Common Runtime
 compressed chunks into parts of `part_size` bytes and uploading them
 concurrently. Small objects (e.g. `zarr.json` metadata) use a simple PUT.
 
-FIXME: this is a transition to "what it means to use object storage". The
-reader might to adjust from file-system to object storage and needs to understand
-the limitations.
+Unlike a local filesystem, S3 objects are immutable — you cannot seek,
+append, or partially overwrite them. A shard must be written as a single
+upload from start to finish. If the upload fails or is interrupted the
+object is not created (see [Error Handling](#error-handling) and
+[Bucket Lifecycle Policy](#bucket-lifecycle-policy)).
 
-S3 allows at most **10,000 parts** per [multipart upload][s3-limits].
-The sink rejects configurations that could exceed this limit (see
-[Choosing `part_size`](#choosing-part_size)).
+S3 also imposes hard limits on multipart uploads: at most **10,000 parts**
+and a maximum part size of 5 GiB per [upload][s3-limits]. The sink
+rejects configurations that could exceed the part-count limit (see
+[Limitations](#limitations)).
 
 ## Configuration
 
@@ -21,31 +24,27 @@ The S3 transport is configured via `zarr_s3_config`, defined in
 [`zarr_s3_sink.h`](../src/zarr/zarr_s3_sink.h). The transport-specific
 fields are:
 
-FIXME: the defaults are described twice. remove the mentions in the descriptions
-
 | Field | Default | Description |
 |-------|---------|-------------|
 | `region` | *required* | AWS region (e.g. `"us-east-1"`) |
 | `endpoint` | *required* | S3-compatible endpoint URL (e.g. `"https://s3.us-east-1.amazonaws.com"` or `"http://localhost:9000"`) |
-| `part_size` | 8 MiB | [Multipart upload][mpu] part size (see below) |
+| `part_size` | 8 MiB | [Multipart upload][mpu] part size (see [Limitations](#limitations)) |
 | `throughput_gbps` | 10.0 | Target throughput in gigabits/s for the CRT |
-| `max_retries` | 10 | Retry count per part (0 = CRT default) |
-| `backoff_scale_ms` | 500 | Exponential backoff scale in ms (0 = CRT default) |
-| `max_backoff_secs` | 20 | Maximum backoff delay in seconds (0 = CRT default) |
-| `timeout_ns` | 0 | Timeout per upload wait (0 = infinite) |
+| `max_retries` | 10 | Retry count per part |
+| `backoff_scale_ms` | 500 | Exponential backoff scale in ms |
+| `max_backoff_secs` | 20 | Maximum backoff delay in seconds |
+| `timeout_ns` | 0 (infinite) | Timeout per upload wait |
 
 ### Defaults and validation
 
-Call `zarr_s3_config_set_defaults()` to fill zero-valued optional fields
-with their defaults, or let `zarr_s3_sink_create()` do it for you — it
-calls `set_defaults` followed by `zarr_s3_config_validate()`
-internally. You can also call `validate` yourself for early error
-reporting.
-
-FIXME: confusing. does the user need to call set defaults or not?
+`zarr_s3_sink_create()` fills zero-valued optional fields with their
+defaults and validates the configuration automatically — you do not need
+to call `zarr_s3_config_set_defaults()` or `zarr_s3_config_validate()`
+yourself. If you want to check for errors before creating the sink, you
+can call them explicitly:
 
 ```c
-zarr_s3_config_set_defaults(&cfg);       // fill part_size, throughput_gbps
+zarr_s3_config_set_defaults(&cfg);       // fill part_size, throughput_gbps, …
 if (zarr_s3_config_validate(&cfg))       // check required fields + part count
   return error;
 struct zarr_s3_sink* sink = zarr_s3_sink_create(&cfg);
@@ -71,17 +70,21 @@ The CRT uses the [standard credential provider chain][cred-chain]:
 environment variables (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`),
 `~/.aws/credentials`, or an IAM instance role.
 
-### Choosing `part_size`
+### Limitations
 
-FIXME: a better title for this section might be Limitations. and then we
-describe them and how to deal.
+S3 multipart uploads are subject to two hard limits:
 
-The default 8 MiB works well for most workloads (~80 GB max object
-size). Reasons to change it:
+- **10,000 parts per upload.** With the default 8 MiB `part_size` this
+  caps a single shard at ~80 GB. The sink rejects configurations that
+  could exceed this limit at creation time.
+- **5 GiB maximum part size.** This sets an absolute ceiling of ~50 TB
+  per shard.
 
-- **Large shards** — if a shard exceeds ~80 GB, increase `part_size`
-  (up to 5 GiB) or reduce `chunks_per_shard` to stay under the
-  10,000-part limit.
+If your shards are larger than `part_size × 10,000`, either increase
+`part_size` or reduce `chunks_per_shard`.
+
+Other considerations when tuning `part_size`:
+
 - **High-latency links** — larger parts mean fewer round-trips but each
   failed part is more expensive to retry.
 - **Low memory** — the CRT buffers a few parts in flight; smaller parts

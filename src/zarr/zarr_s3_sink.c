@@ -157,7 +157,7 @@ s3_sink_open(struct shard_sink* self, uint8_t level, uint64_t shard_index)
 
 // --- update_dim0 ---
 
-static void
+static int
 s3_sink_update_dim0(struct shard_sink* self,
                     uint8_t level,
                     uint64_t dim0_size)
@@ -165,7 +165,7 @@ s3_sink_update_dim0(struct shard_sink* self,
   (void)level;
   struct zarr_s3_sink* zs = (struct zarr_s3_sink*)self;
   if (zs->dimensions[0].size == dim0_size)
-    return;
+    return 0;
   zs->dimensions[0].size = dim0_size;
 
   char buf[4096];
@@ -180,13 +180,16 @@ s3_sink_update_dim0(struct shard_sink* self,
   if (len < 0) {
     log_error("s3_sink_update_dim0: failed to generate zarr.json for %s",
               zs->array_prefix);
-    return;
+    return 1;
   }
   char key[4096];
   snprintf(key, sizeof(key), "%s/zarr.json", zs->array_prefix);
-  if (s3_client_put(zs->s3, zs->bucket, key, buf, (size_t)len))
+  if (s3_client_put(zs->s3, zs->bucket, key, buf, (size_t)len)) {
     log_error("s3_sink_update_dim0: failed to write zarr.json for %s",
               zs->array_prefix);
+    return 1;
+  }
+  return 0;
 }
 
 // --- Create / Destroy ---
@@ -365,7 +368,6 @@ struct zarr_s3_multiscale_sink
   char bucket[256];
   char group_prefix[4096];
   uint8_t rank;
-  struct dimension dimensions[MAX_ZARR_RANK];
 };
 
 static struct io_event
@@ -419,24 +421,28 @@ put_multiscale_group_metadata(const struct zarr_s3_multiscale_sink* ms)
   return s3_client_put(ms->s3, ms->bucket, key, buf, (size_t)len);
 }
 
-static void
+static int
 s3_multiscale_update_dim0(struct shard_sink* self,
                           uint8_t level,
                           uint64_t dim0_size)
 {
   struct zarr_s3_multiscale_sink* ms = (struct zarr_s3_multiscale_sink*)self;
   if (level >= ms->nlod)
-    return;
+    return 1;
 
   uint64_t old = ms->levels[level]->dimensions[0].size;
-  s3_sink_update_dim0(&ms->levels[level]->base, level, dim0_size);
+  if (s3_sink_update_dim0(&ms->levels[level]->base, level, dim0_size))
+    return 1;
   if (old == dim0_size)
-    return;
+    return 0;
 
-  if (put_multiscale_group_metadata(ms))
+  if (put_multiscale_group_metadata(ms)) {
     log_error(
       "s3_multiscale_update_dim0: failed to rewrite group zarr.json for %s",
       ms->group_prefix);
+    return 1;
+  }
+  return 0;
 }
 
 struct zarr_s3_multiscale_sink*
@@ -493,8 +499,6 @@ zarr_s3_multiscale_sink_create(const struct zarr_s3_multiscale_config* cfg)
   ms->rank = cfg->rank;
   snprintf(ms->bucket, sizeof(ms->bucket), "%s", cfg->bucket);
   snprintf(ms->group_prefix, sizeof(ms->group_prefix), "%s", group_prefix);
-  for (int d = 0; d < cfg->rank; ++d)
-    ms->dimensions[d] = cfg->dimensions[d];
 
   // Create shared S3 client
   {

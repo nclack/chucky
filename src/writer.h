@@ -54,9 +54,9 @@ struct shard_sink
   // Optional: update dim0 extent in metadata (e.g. zarr.json shape[0]).
   // Called periodically during streaming and at final flush.
   // NULL means no-op (non-zarr sinks can ignore).
-  void (*update_dim0)(struct shard_sink* self,
-                      uint8_t level,
-                      uint64_t dim0_size);
+  int (*update_dim0)(struct shard_sink* self,
+                     uint8_t level,
+                     uint64_t dim0_size);
 
   // IO fence for backpressure. NULL = no async IO.
   struct io_event (*record_fence)(struct shard_sink* self, uint8_t level);

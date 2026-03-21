@@ -835,8 +835,9 @@ cpu_append(struct writer* self, struct slice input)
             struct shard_state* ss = &s->shard[lv];
             uint64_t d0c =
               ss->shard_epoch * ss->chunks_per_shard_0 + ss->epoch_in_shard;
-            s->config.shard_sink->update_dim0(
-              s->config.shard_sink, (uint8_t)lv, d0c * dims[0].chunk_size);
+            if (s->config.shard_sink->update_dim0(
+                  s->config.shard_sink, (uint8_t)lv, d0c * dims[0].chunk_size))
+              goto Error;
           }
         }
       }
@@ -950,8 +951,9 @@ cpu_flush(struct writer* self)
     const struct dimension* dims = s->config.dimensions;
     for (int lv = 0; lv < s->levels.nlod; ++lv) {
       uint64_t dim0_extent = dim0_chunks[lv] * dims[0].chunk_size;
-      s->config.shard_sink->update_dim0(
-        s->config.shard_sink, (uint8_t)lv, dim0_extent);
+      if (s->config.shard_sink->update_dim0(
+            s->config.shard_sink, (uint8_t)lv, dim0_extent))
+        return writer_error();
     }
   }
 

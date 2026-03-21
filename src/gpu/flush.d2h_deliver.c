@@ -296,18 +296,18 @@ Error:
 }
 
 // Periodic metadata update (dim0 extent per level).
-static void
+static int
 maybe_update_metadata(const struct d2h_deliver_stage* stage,
                       const struct tile_stream_configuration* config,
                       struct platform_clock* metadata_update_clock)
 {
   if (!config->shard_sink->update_dim0)
-    return;
+    return 0;
 
   struct platform_clock peek = *metadata_update_clock;
   float elapsed = platform_toc(&peek);
   if (elapsed < config->metadata_update_interval_s)
-    return;
+    return 0;
 
   *metadata_update_clock = peek;
   const struct dimension* dims = config->dimensions;
@@ -316,9 +316,11 @@ maybe_update_metadata(const struct d2h_deliver_stage* stage,
     uint64_t dim0_chunks =
       ss->shard_epoch * ss->chunks_per_shard_0 + ss->epoch_in_shard;
     uint64_t dim0_extent = dim0_chunks * dims[0].chunk_size;
-    config->shard_sink->update_dim0(
-      config->shard_sink, (uint8_t)lv, dim0_extent);
+    if (config->shard_sink->update_dim0(
+          config->shard_sink, (uint8_t)lv, dim0_extent))
+      return 1;
   }
+  return 0;
 }
 
 // --- Public interface ---
@@ -360,7 +362,9 @@ d2h_deliver_drain(struct d2h_deliver_stage* stage,
 {
   struct writer_result r = sync_and_deliver(
     stage, handoff, levels, batch, layout, config, lod, metrics);
-  if (!r.error)
-    maybe_update_metadata(stage, config, metadata_update_clock);
+  if (!r.error) {
+    if (maybe_update_metadata(stage, config, metadata_update_clock))
+      return writer_error();
+  }
   return r;
 }

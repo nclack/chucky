@@ -332,15 +332,15 @@ write_array_metadata_file(const char* array_dir,
 
 // --- Metadata update ---
 
-static void
+static int
 zarr_fs_sink_update_dim0(struct shard_sink* self,
-                      uint8_t level,
-                      uint64_t dim0_size)
+                         uint8_t level,
+                         uint64_t dim0_size)
 {
   (void)level;
   struct zarr_fs_sink* zs = (struct zarr_fs_sink*)self;
   if (zs->dimensions[0].size == dim0_size)
-    return;
+    return 0;
   zs->dimensions[0].size = dim0_size;
   if (write_array_metadata_file(zs->array_dir,
                                 zs->rank,
@@ -348,9 +348,12 @@ zarr_fs_sink_update_dim0(struct shard_sink* self,
                                 zs->data_type,
                                 zs->fill_value,
                                 zs->chunks_per_shard,
-                                zs->codec))
+                                zs->codec)) {
     log_error("zarr_fs_sink_update_dim0: failed to rewrite zarr.json for %s",
               zs->array_dir);
+    return 1;
+  }
+  return 0;
 }
 
 // --- Create / Destroy ---
@@ -520,8 +523,6 @@ struct zarr_fs_multiscale_sink
   // For group metadata regeneration
   char group_path[4096];
   uint8_t rank;
-  struct dimension
-    dimensions[MAX_ZARR_RANK]; // L0 dims (names, downsample flags)
 };
 
 static struct io_event
@@ -575,26 +576,30 @@ write_multiscale_group_metadata(const struct zarr_fs_multiscale_sink* ms)
   return write_file(path, buf, (size_t)len);
 }
 
-static void
+static int
 zarr_multiscale_update_dim0(struct shard_sink* self,
                             uint8_t level,
                             uint64_t dim0_size)
 {
   struct zarr_fs_multiscale_sink* ms = (struct zarr_fs_multiscale_sink*)self;
   if (level >= ms->nlod)
-    return;
+    return 1;
 
   // Skip if unchanged
   uint64_t old = ms->levels[level]->dimensions[0].size;
-  zarr_fs_sink_update_dim0(&ms->levels[level]->base, level, dim0_size);
+  if (zarr_fs_sink_update_dim0(&ms->levels[level]->base, level, dim0_size))
+    return 1;
   if (old == dim0_size)
-    return;
+    return 0;
 
   // Regenerate group metadata
-  if (write_multiscale_group_metadata(ms))
+  if (write_multiscale_group_metadata(ms)) {
     log_error(
       "zarr_multiscale_update_dim0: failed to rewrite group zarr.json for %s",
       ms->group_path);
+    return 1;
+  }
+  return 0;
 }
 
 struct zarr_fs_multiscale_sink*
@@ -651,8 +656,6 @@ zarr_fs_multiscale_sink_create(const struct zarr_multiscale_config* cfg)
   ms->nlod = plan.nlod;
   ms->rank = cfg->rank;
   snprintf(ms->group_path, sizeof(ms->group_path), "%s", group_path);
-  for (int d = 0; d < cfg->rank; ++d)
-    ms->dimensions[d] = cfg->dimensions[d];
 
   ms->levels =
     (struct zarr_fs_sink**)calloc((size_t)plan.nlod, sizeof(struct zarr_fs_sink*));

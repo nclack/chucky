@@ -62,6 +62,7 @@ think about a suspend state.
 - maybe separate zarr v ngff metadata
 - distinguish public vs private api more
 - should probably get struct slice out of the public api, it's not necessary
+- document the benchmark sweeps and how they work. reporting, schema, aggregation
 
 ## 2026-03-18
 

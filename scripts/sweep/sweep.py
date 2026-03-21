@@ -14,6 +14,7 @@ Usage:
     uv run scripts/sweep/sweep.py --tier compress
     uv run scripts/sweep/sweep.py --all
     uv run scripts/sweep/sweep.py --tier io
+    uv run scripts/sweep/sweep.py --tier s3 --s3-bucket my-bucket
 """
 
 from __future__ import annotations
@@ -41,6 +42,7 @@ console = Console(stderr=True)
 VALID_CODECS = {"none", "lz4", "zstd"}
 VALID_FILLS = {"xor", "zeros", "rand"}
 VALID_BACKENDS = {"gpu", "cpu"}
+VALID_SINKS = {"discard", "fs", "s3"}
 VALID_DTYPES = {"u8", "u16", "u32", "u64", "i8", "i16", "i32", "i64", "f16", "f32", "f64"}
 VALID_STATUSES = {"pass", "error", "timeout", "missing", "unknown"}
 
@@ -85,7 +87,7 @@ class RunSpec(BaseModel):
     backend: str
     dtype: str
     chunk_label: str
-    output_dir: bool = False
+    sink: str = "discard"
 
     @model_validator(mode="after")
     def _validate_enums(self) -> RunSpec:
@@ -101,6 +103,8 @@ class RunSpec(BaseModel):
             raise ValueError(f"Unknown dtype: {self.dtype} (expected one of {VALID_DTYPES})")
         if self.chunk_label not in CHUNK_BYTES:
             raise ValueError(f"Unknown chunk_label: {self.chunk_label} (expected one of {set(CHUNK_BYTES)})")
+        if self.sink not in VALID_SINKS:
+            raise ValueError(f"Unknown sink: {self.sink} (expected one of {VALID_SINKS})")
         return self
 
     @property
@@ -109,7 +113,7 @@ class RunSpec(BaseModel):
 
     @property
     def id(self) -> str:
-        suffix = "__io" if self.output_dir else ""
+        suffix = f"__{self.sink}" if self.sink != "discard" else ""
         return f"{self.scenario}__{self.codec}__{self.fill}__{self.backend}__{self.dtype}__{self.chunk_label}{suffix}"
 
     def base_result(self) -> dict:
@@ -123,6 +127,7 @@ class RunSpec(BaseModel):
             "dtype": self.dtype,
             "chunk_bytes": self.chunk_bytes,
             "chunk_bytes_label": self.chunk_label,
+            "sink": self.sink,
         }
 
 
@@ -175,7 +180,21 @@ def io_runs() -> list[RunSpec]:
         for cl in chunk_labels:
             for codec in ["none", "zstd"]:
                 for backend in ["gpu", "cpu"]:
-                    runs.append(RunSpec(scenario=sc, codec=codec, fill="xor", backend=backend, dtype="u16", chunk_label=cl, output_dir=True))
+                    runs.append(RunSpec(scenario=sc, codec=codec, fill="xor", backend=backend, dtype="u16", chunk_label=cl, sink="fs"))
+    return runs
+
+
+def s3_runs() -> list[RunSpec]:
+    """S3 tier: discard vs fs vs S3 sink comparison."""
+    runs = []
+    chunk_labels = ["32K", "256K", "2M"]
+    scenarios = ["orca2_single", "256cube_single"]
+    for sc in scenarios:
+        for cl in chunk_labels:
+            for codec in ["none", "zstd"]:
+                for backend in ["gpu", "cpu"]:
+                    for sink in ["discard", "fs", "s3"]:
+                        runs.append(RunSpec(scenario=sc, codec=codec, fill="xor", backend=backend, dtype="u16", chunk_label=cl, sink=sink))
     return runs
 
 
@@ -184,6 +203,7 @@ TIERS = {
     "backend": backend_runs,
     "lod": lod_runs,
     "io": io_runs,
+    "s3": s3_runs,
 }
 
 ALL_TIER_NAMES = list(TIERS.keys())
@@ -213,6 +233,7 @@ class RunResult(BaseModel, extra="allow"):
     dtype: str
     chunk_bytes: int
     chunk_bytes_label: str
+    sink: str = "discard"
     status: str
 
     @model_validator(mode="after")
@@ -262,7 +283,8 @@ def gpu_name() -> str:
 # Runner
 # ---------------------------------------------------------------------------
 
-def run_one(spec: RunSpec, build_dir: Path) -> dict | None:
+def run_one(spec: RunSpec, build_dir: Path, s3_bucket: str | None = None,
+            s3_region: str | None = None, s3_endpoint: str | None = None) -> dict | None:
     """Execute a single benchmark run, return result dict or None if exe missing."""
     exe = build_dir / "bench" / f"bench_stream_{spec.scenario}"
     if sys.platform == "win32":
@@ -282,11 +304,19 @@ def run_one(spec: RunSpec, build_dir: Path) -> dict | None:
         "--json",
     ]
 
-    if spec.output_dir:
+    tmpdir = None
+    if spec.sink == "fs":
         tmpdir = tempfile.mkdtemp(prefix="chucky_io_")
         cmd.extend(["-o", tmpdir])
-    else:
-        tmpdir = None
+    elif spec.sink == "s3":
+        if not s3_bucket or not s3_region or not s3_endpoint:
+            return {**spec.base_result(), "status": "error",
+                    "error": "s3 sink requires --s3-bucket, --s3-region, --s3-endpoint"}
+        prefix = f"bench/{spec.id}"
+        cmd.extend(["--s3-bucket", s3_bucket,
+                     "--s3-prefix", prefix,
+                     "--s3-region", s3_region,
+                     "--s3-endpoint", s3_endpoint])
 
     try:
         t0 = time.monotonic()
@@ -349,7 +379,12 @@ def status_style(status: str) -> str:
 @click.option("--retry", is_flag=True, help="Re-run previously failed or timed-out benchmarks.")
 @click.option("--rerun", multiple=True, help="Re-run benchmarks whose id contains this substring.")
 @click.option("--dry-run", is_flag=True, help="Preview run matrix without executing.")
-def main(tier, run_all, build_dir, output, skip, retry, rerun, dry_run):
+@click.option("--s3-bucket", default=None, help="S3 bucket (required for s3 tier).")
+@click.option("--s3-region", default="us-east-1", show_default=True, help="S3 region.")
+@click.option("--s3-endpoint", default="http://localhost:9000", show_default=True,
+              help="S3 endpoint URL.")
+def main(tier, run_all, build_dir, output, skip, retry, rerun, dry_run,
+         s3_bucket, s3_region, s3_endpoint):
     """Benchmark sweep runner for chucky."""
     commit = git_commit()
     hostname = platform.node()
@@ -378,6 +413,12 @@ def main(tier, run_all, build_dir, output, skip, retry, rerun, dry_run):
     if skip:
         runs = [r for r in runs if not any(pat in r.scenario for pat in skip)]
 
+    # Validate S3 config if any runs need it
+    has_s3_runs = any(r.sink == "s3" for r in runs)
+    if has_s3_runs and not dry_run and not s3_bucket:
+        console.print("[red]Error: S3 runs require --s3-bucket[/red]")
+        raise SystemExit(1)
+
     # -- dry run: rich table --
     if dry_run:
         table = Table(title="Sweep Matrix", show_lines=False)
@@ -388,12 +429,12 @@ def main(tier, run_all, build_dir, output, skip, retry, rerun, dry_run):
         table.add_column("Backend")
         table.add_column("Dtype")
         table.add_column("Chunk")
-        table.add_column("I/O", justify="center")
+        table.add_column("Sink", justify="center")
         for i, r in enumerate(runs, 1):
             table.add_row(
                 str(i), r.scenario, r.codec, r.fill,
                 r.backend, r.dtype, r.chunk_label,
-                "yes" if r.output_dir else "",
+                r.sink if r.sink != "discard" else "",
             )
         console.print(table)
         console.print(f"\nTotal: [bold]{len(runs)}[/bold] runs across tiers: {', '.join(selected_tiers)}")
@@ -456,12 +497,15 @@ def main(tier, run_all, build_dir, output, skip, retry, rerun, dry_run):
 
         for spec in to_run:
             tag = f"{spec.scenario} {spec.codec} {spec.backend} {spec.chunk_label}"
-            if spec.output_dir:
-                tag += " io"
+            if spec.sink != "discard":
+                tag += f" {spec.sink}"
             progress.update(task, description=f"[bold]{tag}")
 
             try:
-                result = run_one(spec, build_dir)
+                result = run_one(spec, build_dir,
+                                 s3_bucket=s3_bucket,
+                                 s3_region=s3_region,
+                                 s3_endpoint=s3_endpoint)
             except subprocess.TimeoutExpired:
                 result = {**spec.base_result(), "status": "timeout"}
             except Exception as e:

@@ -105,6 +105,10 @@ struct bench_config
   fill_fn fill;
   const char* output_path;
   const char* array_name;
+  const char* s3_bucket;    // NULL = no S3 output
+  const char* s3_prefix;    // key prefix (no leading/trailing /)
+  const char* s3_region;    // e.g. "us-east-1"
+  const char* s3_endpoint;  // e.g. "https://s3.us-east-1.amazonaws.com"
   enum compression_codec codec;
   enum lod_reduce_method reduce_method;
   enum lod_reduce_method dim0_reduce_method;

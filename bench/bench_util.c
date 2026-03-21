@@ -7,6 +7,7 @@
 #include "prelude.cuda.h"
 #include "prelude.h"
 #include "zarr_fs_sink.h"
+#include "zarr_s3_sink.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -446,7 +447,7 @@ run_bench(const struct bench_config* cfg)
         .reduce_method = cfg->reduce_method,
         .dim0_reduce_method = cfg->dim0_reduce_method,
         .target_batch_chunks = 2048,
-        .shard_alignment = output_path ? platform_page_size() : 0,
+        .shard_alignment = (output_path || cfg->s3_bucket) ? platform_page_size() : 0,
       };
       int advise_ok;
       if (cfg->backend == BENCH_GPU) {
@@ -486,11 +487,51 @@ run_bench(const struct bench_config* cfg)
 
   struct zarr_fs_sink* zsink = NULL;
   struct zarr_fs_multiscale_sink* zmsink = NULL;
+  struct zarr_s3_sink* zs3sink = NULL;
+  struct zarr_s3_multiscale_sink* zs3msink = NULL;
   struct metering_sink meter = { 0 };
   struct shard_sink* sink = &dss.base;
   struct bench_handle h = { .backend = cfg->backend };
 
-  if (output_path) {
+  if (cfg->s3_bucket) {
+    struct shard_sink* zarr_sink_ptr = NULL;
+    if (is_multiscale) {
+      struct zarr_s3_multiscale_config zcfg = {
+        .bucket = cfg->s3_bucket,
+        .prefix = cfg->s3_prefix ? cfg->s3_prefix : label,
+        .array_name = array_name,
+        .region = cfg->s3_region,
+        .endpoint = cfg->s3_endpoint,
+        .data_type = dtype,
+        .fill_value = 0,
+        .rank = rank,
+        .dimensions = dims,
+        .nlod = 0,
+        .codec = cfg->codec,
+      };
+      zs3msink = zarr_s3_multiscale_sink_create(&zcfg);
+      CHECK(Fail, zs3msink);
+      zarr_sink_ptr = zarr_s3_multiscale_sink_as_shard_sink(zs3msink);
+    } else {
+      struct zarr_s3_config zcfg = {
+        .bucket = cfg->s3_bucket,
+        .prefix = cfg->s3_prefix ? cfg->s3_prefix : label,
+        .array_name = array_name,
+        .region = cfg->s3_region,
+        .endpoint = cfg->s3_endpoint,
+        .data_type = dtype,
+        .fill_value = 0,
+        .rank = rank,
+        .dimensions = dims,
+        .codec = cfg->codec,
+      };
+      zs3sink = zarr_s3_sink_create(&zcfg);
+      CHECK(Fail, zs3sink);
+      zarr_sink_ptr = zarr_s3_sink_as_shard_sink(zs3sink);
+    }
+    metering_sink_init(&meter, zarr_sink_ptr);
+    sink = &meter.base;
+  } else if (output_path) {
     struct shard_sink* zarr_fs_sink_ptr = NULL;
     if (is_multiscale) {
       struct zarr_multiscale_config zcfg = {
@@ -533,7 +574,7 @@ run_bench(const struct bench_config* cfg)
     .reduce_method = cfg->reduce_method,
     .dim0_reduce_method = cfg->dim0_reduce_method,
     .target_batch_chunks = 2048,
-    .shard_alignment = output_path ? platform_page_size() : 0,
+    .shard_alignment = (output_path || cfg->s3_bucket) ? platform_page_size() : 0,
   };
 
   uint64_t est_total_chunks = 0;
@@ -636,6 +677,10 @@ run_bench(const struct bench_config* cfg)
     zarr_fs_sink_flush(zsink);
   if (zmsink)
     zarr_fs_multiscale_sink_flush(zmsink);
+  if (zs3sink)
+    zarr_s3_sink_flush(zs3sink);
+  if (zs3msink)
+    zarr_s3_multiscale_sink_flush(zs3msink);
   float flush_s = platform_toc(&flush_clock);
   float wall_s = platform_toc(&clock);
 
@@ -649,11 +694,12 @@ run_bench(const struct bench_config* cfg)
 
   {
     struct stream_metrics m = bench_get_metrics(&h);
+    int has_output = output_path || cfg->s3_bucket;
     struct sink_stats ss =
-      output_path ? (struct sink_stats){ .total_bytes = meter.total_bytes,
-                                         .total_chunks = est_total_chunks }
-                  : (struct sink_stats){ .total_bytes = dss.total_bytes,
-                                         .total_chunks = est_total_chunks };
+      has_output ? (struct sink_stats){ .total_bytes = meter.total_bytes,
+                                        .total_chunks = est_total_chunks }
+                 : (struct sink_stats){ .total_bytes = dss.total_bytes,
+                                        .total_chunks = est_total_chunks };
     print_bench_report(&m,
                        layout,
                        config.dtype,
@@ -779,9 +825,15 @@ Cleanup:
     zarr_fs_sink_flush(zsink);
   if (zmsink)
     zarr_fs_multiscale_sink_flush(zmsink);
+  if (zs3sink)
+    zarr_s3_sink_flush(zs3sink);
+  if (zs3msink)
+    zarr_s3_multiscale_sink_flush(zs3msink);
   bench_destroy(&h);
   zarr_fs_sink_destroy(zsink);
   zarr_fs_multiscale_sink_destroy(zmsink);
+  zarr_s3_sink_destroy(zs3sink);
+  zarr_s3_multiscale_sink_destroy(zs3msink);
   return rc;
 }
 
@@ -899,6 +951,10 @@ bench_stream_main(int ac,
   enum compression_codec codec = CODEC_ZSTD;
   enum lod_reduce_method reduce = lod_reduce_mean;
   const char* output_path = NULL;
+  const char* s3_bucket = NULL;
+  const char* s3_prefix = NULL;
+  const char* s3_region = NULL;
+  const char* s3_endpoint = NULL;
   enum bench_backend backend = BENCH_GPU;
   enum dtype dtype = dtype_u16;
   size_t target_chunk_bytes = 0;
@@ -933,13 +989,22 @@ bench_stream_main(int ac,
       memory_budget = parse_bytes(av[++i]);
     } else if (strcmp(av[i], "-o") == 0 && i + 1 < ac) {
       output_path = av[++i];
+    } else if (strcmp(av[i], "--s3-bucket") == 0 && i + 1 < ac) {
+      s3_bucket = av[++i];
+    } else if (strcmp(av[i], "--s3-prefix") == 0 && i + 1 < ac) {
+      s3_prefix = av[++i];
+    } else if (strcmp(av[i], "--s3-region") == 0 && i + 1 < ac) {
+      s3_region = av[++i];
+    } else if (strcmp(av[i], "--s3-endpoint") == 0 && i + 1 < ac) {
+      s3_endpoint = av[++i];
     } else {
       fprintf(stderr, "Unknown option: %s\n", av[i]);
       fprintf(stderr,
               "Usage: %s [--fill xor|zeros|rand] [--codec none|lz4|zstd] "
               "[--reduce mean|min|max|median|max_sup|min_sup] "
               "[--backend gpu|cpu] [--dtype u8|u16|...] [--frames N] "
-              "[--json] [--chunk-bytes N] [--memory-budget N] [-o path]\n",
+              "[--json] [--chunk-bytes N] [--memory-budget N] [-o path] "
+              "[--s3-bucket B --s3-region R --s3-endpoint E [--s3-prefix P]]\n",
               av[0]);
       return 1;
     }
@@ -973,6 +1038,10 @@ bench_stream_main(int ac,
     .fill = fill,
     .output_path = output_path,
     .array_name = label,
+    .s3_bucket = s3_bucket,
+    .s3_prefix = s3_prefix,
+    .s3_region = s3_region,
+    .s3_endpoint = s3_endpoint,
     .codec = codec,
     .reduce_method = reduce,
     .dim0_reduce_method = reduce == lod_reduce_median ? lod_reduce_max : reduce,

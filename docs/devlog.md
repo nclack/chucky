@@ -43,6 +43,10 @@ Cleanup
 - [ ] comments at the top of each test
 - [ ] look into j8 failures
 
+## 2026-03-24
+
+Need to move to soa internal representation for dims
+
 ## 2026-03-23
 
 Looking at aqz integrtion more. Need to think about what it takes to

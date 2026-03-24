@@ -9,6 +9,7 @@
 #include "prelude.h"
 #include "stream.config.h"
 
+#include <cuda.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -39,6 +40,13 @@ destroy_batch_events(struct batch_state* batch)
     cu_event_destroy(batch->pool_events[i]);
 }
 
+static void
+sync(CUstream stream)
+{
+  if (stream)
+    cuStreamSynchronize(stream);
+}
+
 void
 tile_stream_gpu_destroy(struct tile_stream_gpu* s)
 {
@@ -46,14 +54,10 @@ tile_stream_gpu_destroy(struct tile_stream_gpu* s)
     return;
 
   // Ensure all GPU work completes before tearing down events/memory.
-  if (s->streams.h2d)
-    cuStreamSynchronize(s->streams.h2d);
-  if (s->streams.compute)
-    cuStreamSynchronize(s->streams.compute);
-  if (s->streams.compress)
-    cuStreamSynchronize(s->streams.compress);
-  if (s->streams.d2h)
-    cuStreamSynchronize(s->streams.d2h);
+  sync(s->streams.h2d);
+  sync(s->streams.compute);
+  sync(s->streams.compress);
+  sync(s->streams.d2h);
 
   destroy_batch_events(&s->batch);
   d2h_deliver_destroy(&s->d2h_deliver);
@@ -170,10 +174,9 @@ tile_stream_gpu_create(const struct tile_stream_configuration* config,
 
   // Phase 1: CPU-only layout computation.
   CHECK(FailPhase1,
-        compute_stream_layouts(config,
-                               codec_alignment(config->codec),
-                               codec_max_output_size,
-                               &cl) == 0);
+        compute_stream_layouts(
+          config, codec_alignment(config->codec), codec_max_output_size, &cl) ==
+          0);
 
   // Phase 2: Allocate and initialize tile_stream_gpu.
   struct tile_stream_gpu* out =
@@ -209,9 +212,7 @@ tile_stream_gpu_create(const struct tile_stream_configuration* config,
         ingest_init(&out->stage,
                     out->config.buffer_capacity_bytes,
                     out->streams.compute) == 0);
-  CHECK(FailPhase2,
-        lod_state_init(&out->lod, &out->levels, &out->config) ==
-          0);
+  CHECK(FailPhase2, lod_state_init(&out->lod, &out->levels, &out->config) == 0);
   CHECK(FailPhase2,
         init_chunk_pools(&out->pools,
                          &out->levels,
@@ -233,8 +234,7 @@ tile_stream_gpu_create(const struct tile_stream_configuration* config,
   CHECK(FailPhase2, init_batch_events(&out->batch, out->streams.compute) == 0);
   if (out->levels.enable_multiscale) {
     CHECK(FailPhase2,
-          lod_state_init_buffers(&out->lod, out->config.dtype) ==
-            0);
+          lod_state_init_buffers(&out->lod, out->config.dtype) == 0);
     if (out->levels.dim0_downsample)
       CHECK(FailPhase2,
             lod_state_init_accumulators(&out->lod, &out->config) == 0);
@@ -393,8 +393,8 @@ tile_stream_gpu_memory_estimate(const struct tile_stream_configuration* config,
   for (int lv = 0; lv < nlod; ++lv) {
     const struct level_layout_info* li = &cl.per_level[lv];
     shard_heap += li->shard_inner_count *
-      (sizeof(struct active_shard) +
-       2 * li->chunks_per_shard_total * sizeof(uint64_t));
+                  (sizeof(struct active_shard) +
+                   2 * li->chunks_per_shard_total * sizeof(uint64_t));
   }
 
   size_t lod_device = 0;
@@ -444,6 +444,7 @@ tile_stream_gpu_memory_estimate(const struct tile_stream_configuration* config,
     }
   }
 
+  // FIXME: use designated initializers here
   info->staging_bytes = staging_bytes;
   info->chunk_pool_bytes = chunk_pool_bytes;
   info->compressed_pool_bytes = compressed_pool_bytes;
@@ -468,11 +469,10 @@ tile_stream_gpu_memory_estimate(const struct tile_stream_configuration* config,
 }
 
 int
-tile_stream_gpu_advise_chunk_sizes(
-    struct tile_stream_configuration* config,
-    size_t target_chunk_bytes,
-    const uint8_t* ratios,
-    size_t budget_bytes)
+tile_stream_gpu_advise_chunk_sizes(struct tile_stream_configuration* config,
+                                   size_t target_chunk_bytes,
+                                   const uint8_t* ratios,
+                                   size_t budget_bytes)
 {
   const size_t bpe = dtype_bpe(config->dtype);
   if (bpe == 0 || budget_bytes == 0)

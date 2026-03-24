@@ -91,3 +91,22 @@ lod_plan_init_from_epoch_dims(struct lod_plan* p,
 
 void
 lod_plan_free(struct lod_plan* p);
+
+// Shard geometry computed from array shape, chunk sizes, and shard config.
+struct shard_geometry
+{
+  uint64_t chunk_count[HALF_MAX_RANK];
+  uint64_t chunks_per_shard[HALF_MAX_RANK];
+  uint64_t shard_count[HALF_MAX_RANK];
+  uint64_t shard_inner_count; // prod(shard_count[d] for d > 0)
+};
+
+// Compute shard geometry from explicit shape, chunk_size, and
+// chunks_per_shard arrays (each rank elements).
+// chunks_per_shard[d] == 0 means all chunks along that dimension.
+void
+shard_geometry_compute(struct shard_geometry* g,
+                       uint8_t rank,
+                       const uint64_t* shape,
+                       const uint64_t* chunk_size,
+                       const uint64_t* chunks_per_shard);

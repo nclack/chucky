@@ -1,3 +1,5 @@
+// User-facing API for configuring the dimension array that describes
+// array shape, chunking, sharding, storage order, and downsampling.
 #pragma once
 
 #include <stddef.h>

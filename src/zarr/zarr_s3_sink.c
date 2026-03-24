@@ -371,12 +371,20 @@ zarr_s3_sink_create_with_client(const struct zarr_s3_config* cfg,
   zs->owns_s3 = 0;
 
   // Compute geometry
-  struct zarr_geometry g;
-  zarr_compute_geometry(&g, cfg->rank, cfg->dimensions);
-  memcpy(zs->chunk_count, g.chunk_count, sizeof(zs->chunk_count));
-  memcpy(zs->chunks_per_shard, g.chunks_per_shard, sizeof(zs->chunks_per_shard));
-  memcpy(zs->shard_count, g.shard_count, sizeof(zs->shard_count));
-  zs->shard_inner_count = g.shard_inner_count;
+  {
+    uint64_t shape[HALF_MAX_RANK], cs[HALF_MAX_RANK], cps[HALF_MAX_RANK];
+    for (int d = 0; d < cfg->rank; ++d) {
+      shape[d] = cfg->dimensions[d].size;
+      cs[d] = cfg->dimensions[d].chunk_size;
+      cps[d] = cfg->dimensions[d].chunks_per_shard;
+    }
+    struct shard_geometry g;
+    shard_geometry_compute(&g, cfg->rank, shape, cs, cps);
+    memcpy(zs->chunk_count, g.chunk_count, cfg->rank * sizeof(uint64_t));
+    memcpy(zs->chunks_per_shard, g.chunks_per_shard, cfg->rank * sizeof(uint64_t));
+    memcpy(zs->shard_count, g.shard_count, cfg->rank * sizeof(uint64_t));
+    zs->shard_inner_count = g.shard_inner_count;
+  }
 
   // Build array prefix key
   snprintf(zs->array_prefix,

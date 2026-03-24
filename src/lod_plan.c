@@ -318,3 +318,22 @@ lod_plan_free(struct lod_plan* p)
   free(p->ends);
   memset(p, 0, sizeof(*p));
 }
+
+void
+shard_geometry_compute(struct shard_geometry* g,
+                       uint8_t rank,
+                       const uint64_t* shape,
+                       const uint64_t* chunk_size,
+                       const uint64_t* chunks_per_shard)
+{
+  g->shard_inner_count = 1;
+  for (int d = 0; d < rank; ++d) {
+    g->chunk_count[d] =
+      (shape[d] == 0) ? 1 : ceildiv(shape[d], chunk_size[d]);
+    uint64_t cps = chunks_per_shard[d];
+    g->chunks_per_shard[d] = (cps == 0) ? g->chunk_count[d] : cps;
+    g->shard_count[d] = ceildiv(g->chunk_count[d], g->chunks_per_shard[d]);
+    if (d > 0)
+      g->shard_inner_count *= g->shard_count[d];
+  }
+}

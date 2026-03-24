@@ -3,7 +3,6 @@
 #include "index.ops.h"
 #include "prelude.h"
 #include "types.aggregate.h"
-#include "zarr/zarr_metadata.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -243,14 +242,21 @@ compute_stream_layouts(
   }
 
   // --- Per-level aggregate layout and shard geometry ---
+  uint64_t chunk_size[HALF_MAX_RANK], cps[HALF_MAX_RANK];
+  for (int d = 0; d < rank; ++d) {
+    chunk_size[d] = dims[d].chunk_size;
+    cps[d] = dims[d].chunks_per_shard;
+  }
+
+  // L0 uses the full array shape; L1+ use the epoch-split plan shapes.
+  uint64_t array_shape[HALF_MAX_RANK];
+  for (int d = 0; d < rank; ++d)
+    array_shape[d] = dims[d].size;
+
   for (int lv = 0; lv < out->levels.nlod; ++lv) {
-    struct zarr_geometry geo;
-    if (lv == 0) {
-      zarr_compute_geometry(&geo, rank, dims);
-    } else {
-      zarr_compute_geometry_from_shape(
-        &geo, rank, out->plan.shapes[lv], dims);
-    }
+    const uint64_t* shape = (lv == 0) ? array_shape : out->plan.shapes[lv];
+    struct shard_geometry geo;
+    shard_geometry_compute(&geo, rank, shape, chunk_size, cps);
 
     uint64_t chunks_lv = out->levels.chunk_count[lv];
 

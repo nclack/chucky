@@ -1,7 +1,6 @@
 #include "zarr_metadata.h"
 #include "defs.limits.h"
 #include "json_writer.h"
-#include "prelude.h"
 
 #include <stdio.h>
 
@@ -331,33 +330,4 @@ zarr_shard_key(char* buf,
     pos += n;
   }
   return 0;
-}
-
-void
-zarr_compute_geometry_from_shape(struct zarr_geometry* g,
-                                 uint8_t rank,
-                                 const uint64_t* shape,
-                                 const struct dimension* dimensions)
-{
-  g->shard_inner_count = 1;
-  for (int d = 0; d < rank; ++d) {
-    g->chunk_count[d] =
-      (shape[d] == 0) ? 1 : ceildiv(shape[d], dimensions[d].chunk_size);
-    uint64_t cps = dimensions[d].chunks_per_shard;
-    g->chunks_per_shard[d] = (cps == 0) ? g->chunk_count[d] : cps;
-    g->shard_count[d] = ceildiv(g->chunk_count[d], g->chunks_per_shard[d]);
-    if (d > 0)
-      g->shard_inner_count *= g->shard_count[d];
-  }
-}
-
-void
-zarr_compute_geometry(struct zarr_geometry* g,
-                      uint8_t rank,
-                      const struct dimension* dimensions)
-{
-  uint64_t shape[8];
-  for (int d = 0; d < rank; ++d)
-    shape[d] = dimensions[d].size;
-  zarr_compute_geometry_from_shape(g, rank, shape, dimensions);
 }

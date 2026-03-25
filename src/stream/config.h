@@ -1,6 +1,7 @@
 #pragma once
 
 #include "stream/layouts.h"
+#include "types.stream.h"
 
 // Validate config and compute all CPU-only layout math.
 // codec_alignment: input chunk alignment required by the compression backend

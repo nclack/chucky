@@ -43,11 +43,20 @@ Cleanup
 - [ ] comments at the top of each test
 - [ ] look into j8 failures
 
+## 2026-03-25
+
+
+
 ## 2026-03-24
 
 Need to move to soa internal representation for dims. Doing some refactoring
 of the public/private interfaces first, so that I can clearly distinguish
 the soa representation as private.
+
+Turns out it's a little more complicated then i thought. The idea is already
+wrapped up in a few types. I need to review the types and see what makes sense.
+This isn't super productive so I'm going to move back to enabling the stream
+to target different output arrays.
 
 ## 2026-03-23
 

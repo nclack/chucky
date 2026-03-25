@@ -1,5 +1,8 @@
 #include "stream/config.h"
 
+#include "dimension.h"
+#include "dtype.h"
+#include "types.stream.h"
 #include "util/index.ops.h"
 #include "util/prelude.h"
 #include "stream/types.aggregate.h"

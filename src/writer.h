@@ -69,40 +69,17 @@ struct shard_sink
                      struct io_event ev);
 };
 
-static inline struct writer_result
-writer_ok(void)
-{
-  struct writer_result r = { 0, { 0, 0 } };
-  return r;
-}
+struct writer_result
+writer_ok(void);
 
-static inline struct writer_result
-writer_error(void)
-{
-  struct writer_result r = { 0, { 0, 0 } };
-  r.error = 1;
-  return r;
-}
+struct writer_result
+writer_error(void);
 
-static inline struct writer_result
-writer_error_at(const void* beg, const void* end)
-{
-  struct writer_result r = { 0, { 0, 0 } };
-  r.error = writer_error_fail;
-  r.rest.beg = beg;
-  r.rest.end = end;
-  return r;
-}
+struct writer_result
+writer_error_at(const void* beg, const void* end);
 
-static inline struct writer_result
-writer_finished_at(const void* beg, const void* end)
-{
-  struct writer_result r = { 0, { 0, 0 } };
-  r.error = writer_error_finished;
-  r.rest.beg = beg;
-  r.rest.end = end;
-  return r;
-}
+struct writer_result
+writer_finished_at(const void* beg, const void* end);
 
 // Dispatch to the writer's append method.
 struct writer_result

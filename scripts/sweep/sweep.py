@@ -189,6 +189,19 @@ def io_runs() -> list[RunSpec]:
     return runs
 
 
+def fill_runs() -> list[RunSpec]:
+    """Fill-pattern sweep: xor vs zeros vs rand across codecs and chunk sizes."""
+    runs = []
+    chunk_labels = ["32K", "256K", "2M"]
+    scenarios = ["orca2_single", "256cube_single"]
+    for sc in scenarios:
+        for fill in ["xor", "zeros", "rand"]:
+            for codec in ["none", "lz4", "zstd"]:
+                for cl in chunk_labels:
+                    runs.append(RunSpec(scenario=sc, codec=codec, fill=fill, backend="gpu", dtype="u16", chunk_label=cl))
+    return runs
+
+
 def s3_runs() -> list[RunSpec]:
     """S3 tier: discard vs fs vs S3 sink comparison, with throughput sweep."""
     runs = []
@@ -213,6 +226,7 @@ TIERS = {
     "compress": compress_runs,
     "backend": backend_runs,
     "lod": lod_runs,
+    "fill": fill_runs,
     "io": io_runs,
     "s3": s3_runs,
 }

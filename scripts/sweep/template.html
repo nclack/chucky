@@ -780,12 +780,14 @@ function renderHeatmap(filtered, presentChunks, presentScenarios, metricKey) {
 
   g.append("g").attr("class","axis").attr("transform",`translate(0,${innerH})`)
     .call(d3.axisBottom(x)).selectAll("text").attr("font-size","12px");
+  g.append("text").attr("x", innerW/2).attr("y", innerH + margin.bottom - 10)
+    .attr("text-anchor","middle").attr("font-size","12px").attr("fill","#666").text("Chunk Size");
   g.append("g").attr("class","axis").call(d3.axisLeft(y))
     .selectAll("text").attr("font-size","12px");
 
   svg.append("text").attr("x", margin.left).attr("y", 20)
     .attr("font-size","14px").attr("font-weight",700)
-    .text(`${metricLabel(metricKey)} — ${getRadio("codec-group")} / ${getRadio("backend-group")}`);
+    .text(`${metricLabel(metricKey)} — ${getRadio("codec-group")} / ${getRadio("fill-group")} / ${getRadio("backend-group")}`);
 
   // Colorbar
   const cbW = 16, cbH = innerH;

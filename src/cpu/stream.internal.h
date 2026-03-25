@@ -38,14 +38,14 @@ struct tile_stream_cpu
   struct aggregate_layout agg_layout[LOD_MAX_LEVELS];
 
   // Per-level aggregate output (batch-scaled when K > 1).
-  uint32_t* agg_perm[LOD_MAX_LEVELS];          // [M] per-epoch permutations
+  uint32_t* chunk_to_shard_map[LOD_MAX_LEVELS]; // [M] chunk → shard position
   struct cpu_agg_slot agg_slots[LOD_MAX_LEVELS]; // [level] sized for batch
-  size_t* agg_permuted_sizes;  // [max_batch_C] shared scratch
+  size_t* shard_order_sizes;   // [max_batch_C] shared scratch
 
   // Batch aggregate LUTs (K > 1 only, per level).
   uint32_t* batch_gather[LOD_MAX_LEVELS];   // [K_l * M_l]
-  uint32_t* batch_agg_perm[LOD_MAX_LEVELS]; // [K_l * M_l] interleaved perm
-  uint32_t batch_agg_active_count[LOD_MAX_LEVELS]; // K_l per level
+  uint32_t* batch_chunk_to_shard_map[LOD_MAX_LEVELS]; // [K_l * M_l] interleaved map
+  uint32_t batch_active_count[LOD_MAX_LEVELS]; // K_l per level
 
   // LOD (multiscale only)
   void* linear;     // linear epoch buffer (input accumulated here before scatter)

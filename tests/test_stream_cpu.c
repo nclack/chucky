@@ -1,5 +1,6 @@
 #include "stream/layouts.h"
 #include "stream.cpu.h"
+#include "test_shard_sink.h"
 #include "zarr/crc32c.h"
 #include "defs.limits.h"
 #include "util/prelude.h"
@@ -7,80 +8,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-// ---- Minimal in-memory shard sink ----
-
-#define MAX_SHARDS 16
-#define SHARD_CAP  (1 << 20)
-
-struct mem_shard_writer
-{
-  struct shard_writer base;
-  uint8_t* buf;
-  size_t size;
-  int finalized;
-};
-
-struct mem_shard_sink
-{
-  struct shard_sink base;
-  struct mem_shard_writer writers[MAX_SHARDS];
-  int finalize_count;
-};
-
-static int
-mem_write(struct shard_writer* self, uint64_t offset, const void* beg, const void* end)
-{
-  struct mem_shard_writer* w = (struct mem_shard_writer*)self;
-  size_t n = (size_t)((const char*)end - (const char*)beg);
-  if (offset + n > SHARD_CAP)
-    return 1;
-  memcpy(w->buf + offset, beg, n);
-  if (offset + n > w->size)
-    w->size = offset + n;
-  return 0;
-}
-
-static int
-mem_finalize(struct shard_writer* self)
-{
-  struct mem_shard_writer* w = (struct mem_shard_writer*)self;
-  w->finalized = 1;
-  return 0;
-}
-
-static struct shard_writer*
-mem_open(struct shard_sink* self, uint8_t level, uint64_t shard_index)
-{
-  (void)level;
-  struct mem_shard_sink* s = (struct mem_shard_sink*)self;
-  if (shard_index >= MAX_SHARDS)
-    return NULL;
-  struct mem_shard_writer* w = &s->writers[shard_index];
-  if (!w->buf) {
-    w->buf = (uint8_t*)calloc(1, SHARD_CAP);
-    if (!w->buf)
-      return NULL;
-    w->base.write = mem_write;
-    w->base.finalize = mem_finalize;
-  }
-  w->finalized = 0;
-  w->size = 0;
-  return &w->base;
-}
-
-static void
-mem_sink_init(struct mem_shard_sink* s)
-{
-  memset(s, 0, sizeof(*s));
-  s->base.open = mem_open;
-}
-
-static void
-mem_sink_free(struct mem_shard_sink* s)
-{
-  for (int i = 0; i < MAX_SHARDS; ++i)
-    free(s->writers[i].buf);
-}
+#define SHARD_CAP (1 << 20)
 
 // ---- Test: write 2 epochs of u16 data, verify shards are non-empty ----
 
@@ -89,8 +17,8 @@ test_basic_pipeline(void)
 {
   log_info("=== test_stream_cpu_basic ===");
 
-  struct mem_shard_sink sink;
-  mem_sink_init(&sink);
+  struct test_shard_sink sink;
+  test_sink_init(&sink, 16, SHARD_CAP);
 
   // 3D: 4×4×6, chunk 2×2×3, chunks_per_shard = 1×2×2
   struct dimension dims[] = {
@@ -135,10 +63,11 @@ test_basic_pipeline(void)
 
   // Verify at least one shard was written.
   int found = 0;
-  for (int i = 0; i < MAX_SHARDS; ++i) {
-    if (sink.writers[i].buf && sink.writers[i].size > 0) {
+  for (int i = 0; i < TEST_SHARD_SINK_MAX_SHARDS; ++i) {
+    if (sink.writers[0][i].buf && sink.writers[0][i].size > 0) {
       found = 1;
-      log_info("  shard %d: %lu bytes", i, (unsigned long)sink.writers[i].size);
+      log_info("  shard %d: %lu bytes", i,
+               (unsigned long)sink.writers[0][i].size);
     }
   }
   CHECK(Fail, found);
@@ -151,13 +80,13 @@ test_basic_pipeline(void)
 
   free(data);
   tile_stream_cpu_destroy(s);
-  mem_sink_free(&sink);
+  test_sink_free(&sink);
   log_info("  PASS");
   return 0;
 
 Fail:
   tile_stream_cpu_destroy(s);
-  mem_sink_free(&sink);
+  test_sink_free(&sink);
   log_error("  FAIL");
   return 1;
 }
@@ -168,8 +97,8 @@ test_f16_rejected(void)
 {
   log_info("=== test_stream_cpu_f16 ===");
 
-  struct mem_shard_sink sink;
-  mem_sink_init(&sink);
+  struct test_shard_sink sink;
+  test_sink_init(&sink, 16, SHARD_CAP);
 
   struct dimension dims[] = {
     { .size = 4, .chunk_size = 2, .chunks_per_shard = 1, .storage_position = 0 },
@@ -186,12 +115,12 @@ test_f16_rejected(void)
   struct tile_stream_cpu* s = tile_stream_cpu_create(&config, &sink.base);
   CHECK(Fail, s == NULL); // should be rejected
 
-  mem_sink_free(&sink);
+  test_sink_free(&sink);
   log_info("  PASS");
   return 0;
 
 Fail:
-  mem_sink_free(&sink);
+  test_sink_free(&sink);
   log_error("  FAIL");
   return 1;
 }

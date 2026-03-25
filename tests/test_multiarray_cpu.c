@@ -1,93 +1,20 @@
 #include "multiarray.cpu.h"
+#include "test_shard_sink.h"
 #include "util/prelude.h"
 
 #include <stdlib.h>
 #include <string.h>
 
-// ---- Minimal in-memory shard sink ----
-
-#define MAX_SHARDS 16
-#define SHARD_CAP  (1 << 20)
-
-struct mem_shard_writer
-{
-  struct shard_writer base;
-  uint8_t* buf;
-  size_t size;
-  int finalized;
-};
-
-struct mem_shard_sink
-{
-  struct shard_sink base;
-  struct mem_shard_writer writers[MAX_SHARDS];
-  int finalize_count;
-};
+#define SHARD_CAP     (1 << 20)
+#define SINK_N_SHARDS 16
+#define test_sink_init_1(s) test_sink_init((s), SINK_N_SHARDS, SHARD_CAP)
 
 static int
-mem_write(struct shard_writer* self,
-          uint64_t offset,
-          const void* beg,
-          const void* end)
-{
-  struct mem_shard_writer* w = (struct mem_shard_writer*)self;
-  size_t n = (size_t)((const char*)end - (const char*)beg);
-  if (offset + n > SHARD_CAP)
-    return 1;
-  memcpy(w->buf + offset, beg, n);
-  if (offset + n > w->size)
-    w->size = offset + n;
-  return 0;
-}
-
-static int
-mem_finalize(struct shard_writer* self)
-{
-  struct mem_shard_writer* w = (struct mem_shard_writer*)self;
-  w->finalized = 1;
-  return 0;
-}
-
-static struct shard_writer*
-mem_open(struct shard_sink* self, uint8_t level, uint64_t shard_index)
-{
-  (void)level;
-  struct mem_shard_sink* s = (struct mem_shard_sink*)self;
-  if (shard_index >= MAX_SHARDS)
-    return NULL;
-  struct mem_shard_writer* w = &s->writers[shard_index];
-  if (!w->buf) {
-    w->buf = (uint8_t*)calloc(1, SHARD_CAP);
-    if (!w->buf)
-      return NULL;
-    w->base.write = mem_write;
-    w->base.finalize = mem_finalize;
-  }
-  w->finalized = 0;
-  w->size = 0;
-  return &w->base;
-}
-
-static void
-mem_sink_init(struct mem_shard_sink* s)
-{
-  memset(s, 0, sizeof(*s));
-  s->base.open = mem_open;
-}
-
-static void
-mem_sink_free(struct mem_shard_sink* s)
-{
-  for (int i = 0; i < MAX_SHARDS; ++i)
-    free(s->writers[i].buf);
-}
-
-static int
-mem_sink_shard_count(const struct mem_shard_sink* s)
+test_sink_shard_count(const struct test_shard_sink* s)
 {
   int count = 0;
-  for (int i = 0; i < MAX_SHARDS; ++i)
-    if (s->writers[i].buf && s->writers[i].size > 0)
+  for (int i = 0; i < TEST_SHARD_SINK_MAX_SHARDS; ++i)
+    if (s->writers[0][i].buf && s->writers[0][i].size > 0)
       count++;
   return count;
 }
@@ -99,9 +26,9 @@ test_basic_two_array(void)
 {
   log_info("=== test_multiarray_basic_two_array ===");
 
-  struct mem_shard_sink sink0, sink1;
-  mem_sink_init(&sink0);
-  mem_sink_init(&sink1);
+  struct test_shard_sink sink0, sink1;
+  test_sink_init_1(&sink0);
+  test_sink_init_1(&sink1);
 
   // Array 0: 3D 4x4x6, chunk 2x2x3, cps 1x2x2
   struct dimension dims0[] = {
@@ -186,22 +113,22 @@ test_basic_two_array(void)
   CHECK(Fail, fr.error == multiarray_writer_ok);
 
   // Verify shards written for both arrays.
-  CHECK(Fail, mem_sink_shard_count(&sink0) > 0);
-  CHECK(Fail, mem_sink_shard_count(&sink1) > 0);
+  CHECK(Fail, test_sink_shard_count(&sink0) > 0);
+  CHECK(Fail, test_sink_shard_count(&sink1) > 0);
   log_info("  sink0: %d shards, sink1: %d shards",
-           mem_sink_shard_count(&sink0),
-           mem_sink_shard_count(&sink1));
+           test_sink_shard_count(&sink0),
+           test_sink_shard_count(&sink1));
 
   multiarray_tile_stream_cpu_destroy(ms);
-  mem_sink_free(&sink0);
-  mem_sink_free(&sink1);
+  test_sink_free(&sink0);
+  test_sink_free(&sink1);
   log_info("  PASS");
   return 0;
 
 Fail:
   multiarray_tile_stream_cpu_destroy(ms);
-  mem_sink_free(&sink0);
-  mem_sink_free(&sink1);
+  test_sink_free(&sink0);
+  test_sink_free(&sink1);
   log_error("  FAIL");
   return 1;
 }
@@ -213,9 +140,9 @@ test_switch_at_epoch_boundary(void)
 {
   log_info("=== test_switch_at_epoch_boundary ===");
 
-  struct mem_shard_sink sink0, sink1;
-  mem_sink_init(&sink0);
-  mem_sink_init(&sink1);
+  struct test_shard_sink sink0, sink1;
+  test_sink_init_1(&sink0);
+  test_sink_init_1(&sink1);
 
   struct dimension dims[] = {
     { .size = 4, .chunk_size = 2, .chunks_per_shard = 1,
@@ -262,16 +189,16 @@ test_switch_at_epoch_boundary(void)
 
   free(data);
   multiarray_tile_stream_cpu_destroy(ms);
-  mem_sink_free(&sink0);
-  mem_sink_free(&sink1);
+  test_sink_free(&sink0);
+  test_sink_free(&sink1);
   log_info("  PASS");
   return 0;
 
 Fail:
   free(data);
   multiarray_tile_stream_cpu_destroy(ms);
-  mem_sink_free(&sink0);
-  mem_sink_free(&sink1);
+  test_sink_free(&sink0);
+  test_sink_free(&sink1);
   log_error("  FAIL");
   return 1;
 }
@@ -283,9 +210,9 @@ test_switch_mid_epoch_rejected(void)
 {
   log_info("=== test_switch_mid_epoch_rejected ===");
 
-  struct mem_shard_sink sink0, sink1;
-  mem_sink_init(&sink0);
-  mem_sink_init(&sink1);
+  struct test_shard_sink sink0, sink1;
+  test_sink_init_1(&sink0);
+  test_sink_init_1(&sink1);
 
   struct dimension dims[] = {
     { .size = 4, .chunk_size = 2, .chunks_per_shard = 1,
@@ -338,16 +265,16 @@ test_switch_mid_epoch_rejected(void)
 
   free(data);
   multiarray_tile_stream_cpu_destroy(ms);
-  mem_sink_free(&sink0);
-  mem_sink_free(&sink1);
+  test_sink_free(&sink0);
+  test_sink_free(&sink1);
   log_info("  PASS");
   return 0;
 
 Fail:
   free(data);
   multiarray_tile_stream_cpu_destroy(ms);
-  mem_sink_free(&sink0);
-  mem_sink_free(&sink1);
+  test_sink_free(&sink0);
+  test_sink_free(&sink1);
   log_error("  FAIL");
   return 1;
 }
@@ -359,10 +286,10 @@ test_flush_all(void)
 {
   log_info("=== test_flush_all ===");
 
-  struct mem_shard_sink sink0, sink1, sink2;
-  mem_sink_init(&sink0);
-  mem_sink_init(&sink1);
-  mem_sink_init(&sink2);
+  struct test_shard_sink sink0, sink1, sink2;
+  test_sink_init_1(&sink0);
+  test_sink_init_1(&sink1);
+  test_sink_init_1(&sink2);
 
   struct dimension dims[] = {
     { .size = 4, .chunk_size = 2, .chunks_per_shard = 1,
@@ -409,24 +336,24 @@ test_flush_all(void)
   struct multiarray_writer_result fr = w->flush(w);
   CHECK(Fail, fr.error == multiarray_writer_ok);
 
-  CHECK(Fail, mem_sink_shard_count(&sink0) > 0);
-  CHECK(Fail, mem_sink_shard_count(&sink1) > 0);
-  CHECK(Fail, mem_sink_shard_count(&sink2) > 0);
+  CHECK(Fail, test_sink_shard_count(&sink0) > 0);
+  CHECK(Fail, test_sink_shard_count(&sink1) > 0);
+  CHECK(Fail, test_sink_shard_count(&sink2) > 0);
 
   free(data);
   multiarray_tile_stream_cpu_destroy(ms);
-  mem_sink_free(&sink0);
-  mem_sink_free(&sink1);
-  mem_sink_free(&sink2);
+  test_sink_free(&sink0);
+  test_sink_free(&sink1);
+  test_sink_free(&sink2);
   log_info("  PASS");
   return 0;
 
 Fail:
   free(data);
   multiarray_tile_stream_cpu_destroy(ms);
-  mem_sink_free(&sink0);
-  mem_sink_free(&sink1);
-  mem_sink_free(&sink2);
+  test_sink_free(&sink0);
+  test_sink_free(&sink1);
+  test_sink_free(&sink2);
   log_error("  FAIL");
   return 1;
 }
@@ -460,14 +387,14 @@ test_many_arrays(void)
       N * sizeof(struct tile_stream_configuration));
   struct shard_sink** sinks_arr =
     (struct shard_sink**)malloc(N * sizeof(struct shard_sink*));
-  struct mem_shard_sink* mem_sinks =
-    (struct mem_shard_sink*)calloc(N, sizeof(struct mem_shard_sink));
+  struct test_shard_sink* mem_sinks =
+    (struct test_shard_sink*)calloc(N, sizeof(struct test_shard_sink));
   struct multiarray_tile_stream_cpu* ms = NULL;
   CHECK(Fail, configs && sinks_arr && mem_sinks);
 
   for (int i = 0; i < N; ++i) {
     configs[i] = config;
-    mem_sink_init(&mem_sinks[i]);
+    test_sink_init_1(&mem_sinks[i]);
     sinks_arr[i] = &mem_sinks[i].base;
   }
 
@@ -493,12 +420,12 @@ test_many_arrays(void)
 
   // Verify all arrays produced shards.
   for (int i = 0; i < N; ++i)
-    CHECK(Fail, mem_sink_shard_count(&mem_sinks[i]) > 0);
+    CHECK(Fail, test_sink_shard_count(&mem_sinks[i]) > 0);
 
   free(data);
   multiarray_tile_stream_cpu_destroy(ms);
   for (int i = 0; i < N; ++i)
-    mem_sink_free(&mem_sinks[i]);
+    test_sink_free(&mem_sinks[i]);
   free(configs);
   free(sinks_arr);
   free(mem_sinks);
@@ -509,7 +436,7 @@ Fail:
   multiarray_tile_stream_cpu_destroy(ms);
   if (mem_sinks)
     for (int i = 0; i < N; ++i)
-      mem_sink_free(&mem_sinks[i]);
+      test_sink_free(&mem_sinks[i]);
   free(configs);
   free(sinks_arr);
   free(mem_sinks);
@@ -524,8 +451,8 @@ test_same_array_repeated(void)
 {
   log_info("=== test_same_array_repeated ===");
 
-  struct mem_shard_sink sink;
-  mem_sink_init(&sink);
+  struct test_shard_sink sink;
+  test_sink_init_1(&sink);
 
   struct dimension dims[] = {
     { .size = 8, .chunk_size = 2, .chunks_per_shard = 1,
@@ -575,18 +502,159 @@ test_same_array_repeated(void)
   struct multiarray_writer_result fr = w->flush(w);
   CHECK(Fail, fr.error == multiarray_writer_ok);
 
-  CHECK(Fail, mem_sink_shard_count(&sink) > 0);
+  CHECK(Fail, test_sink_shard_count(&sink) > 0);
 
   free(data);
   multiarray_tile_stream_cpu_destroy(ms);
-  mem_sink_free(&sink);
+  test_sink_free(&sink);
   log_info("  PASS");
   return 0;
 
 Fail:
   free(data);
   multiarray_tile_stream_cpu_destroy(ms);
-  mem_sink_free(&sink);
+  test_sink_free(&sink);
+  log_error("  FAIL");
+  return 1;
+}
+
+// ---- Test: content isolation (cross-contamination check) ----
+
+static int
+test_content_isolation(void)
+{
+  log_info("=== test_content_isolation ===");
+
+  struct test_shard_sink sink0, sink1;
+  test_sink_init_1(&sink0);
+  test_sink_init_1(&sink1);
+
+  // Both arrays: 2D 4x4 u16, chunk 2x2, cps 1x2.
+  // 2 epochs (dim0: 4/2=2), 2 chunks/epoch, 2 chunks/shard.
+  // → 2 shards per array, each with 2 chunks of 4 u16 values.
+  struct dimension dims[] = {
+    { .size = 4, .chunk_size = 2, .chunks_per_shard = 1,
+      .storage_position = 0 },
+    { .size = 4, .chunk_size = 2, .chunks_per_shard = 2,
+      .storage_position = 1 },
+  };
+  struct tile_stream_configuration config = {
+    .buffer_capacity_bytes = 4096,
+    .dtype = dtype_u16,
+    .rank = 2,
+    .dimensions = dims,
+    .codec = CODEC_NONE,
+  };
+
+  struct tile_stream_configuration configs[] = { config, config };
+  struct shard_sink* sinks_arr[] = { &sink0.base, &sink1.base };
+
+  struct multiarray_tile_stream_cpu* ms =
+    multiarray_tile_stream_cpu_create(2, configs, sinks_arr);
+  CHECK(Fail, ms);
+
+  struct multiarray_writer* w = multiarray_tile_stream_cpu_writer(ms);
+
+  // Array 0: values 0x1000..0x100F (16 elements = 4x4).
+  {
+    uint16_t data[16];
+    for (int i = 0; i < 16; ++i)
+      data[i] = (uint16_t)(0x1000 + i);
+    struct slice sl = { .beg = data,
+                        .end = (const char*)data + sizeof(data) };
+    struct multiarray_writer_result r = w->update(w, 0, sl);
+    CHECK(Fail, r.error == multiarray_writer_ok);
+  }
+
+  // Array 1: values 0x2000..0x200F (16 elements = 4x4).
+  {
+    uint16_t data[16];
+    for (int i = 0; i < 16; ++i)
+      data[i] = (uint16_t)(0x2000 + i);
+    struct slice sl = { .beg = data,
+                        .end = (const char*)data + sizeof(data) };
+    struct multiarray_writer_result r = w->update(w, 1, sl);
+    CHECK(Fail, r.error == multiarray_writer_ok);
+  }
+
+  struct multiarray_writer_result fr = w->flush(w);
+  CHECK(Fail, fr.error == multiarray_writer_ok);
+
+  CHECK(Fail, test_sink_shard_count(&sink0) > 0);
+  CHECK(Fail, test_sink_shard_count(&sink1) > 0);
+
+  // Shard layout:
+  //   chunks_per_shard_total = 1 * 2 = 2
+  //   index_tail = 2 * 2 * 8 + 4 (CRC32C) = 36 bytes
+  //   chunk_bytes = (2*2) * sizeof(u16) = 8
+  const size_t cps_total = 2;
+  const size_t index_tail = cps_total * 2 * sizeof(uint64_t) + 4;
+  const size_t chunk_bytes = 4 * sizeof(uint16_t);
+
+  // Verify array 0: all chunk u16 values in [0x1000, 0x100F].
+  int chunks_0 = 0;
+  for (int si = 0; si < TEST_SHARD_SINK_MAX_SHARDS; ++si) {
+    struct test_shard_writer* sw = &sink0.writers[0][si];
+    if (!sw->buf || sw->size == 0)
+      continue;
+    CHECK(Fail, sw->size >= index_tail);
+
+    const uint64_t* idx =
+      (const uint64_t*)(sw->buf + sw->size - index_tail);
+    for (size_t c = 0; c < cps_total; ++c) {
+      uint64_t off = idx[2 * c];
+      uint64_t nb = idx[2 * c + 1];
+      if (off == UINT64_MAX && nb == UINT64_MAX)
+        continue;
+      CHECK(Fail, nb == chunk_bytes);
+      CHECK(Fail, off + nb <= sw->size - index_tail);
+
+      const uint16_t* vals = (const uint16_t*)(sw->buf + off);
+      for (size_t v = 0; v < nb / sizeof(uint16_t); ++v)
+        CHECK(Fail, vals[v] >= 0x1000 && vals[v] <= 0x100F);
+      chunks_0++;
+    }
+  }
+  CHECK(Fail, chunks_0 == 4); // 2 shards * 2 chunks/shard
+
+  // Verify array 1: all chunk u16 values in [0x2000, 0x200F].
+  int chunks_1 = 0;
+  for (int si = 0; si < TEST_SHARD_SINK_MAX_SHARDS; ++si) {
+    struct test_shard_writer* sw = &sink1.writers[0][si];
+    if (!sw->buf || sw->size == 0)
+      continue;
+    CHECK(Fail, sw->size >= index_tail);
+
+    const uint64_t* idx =
+      (const uint64_t*)(sw->buf + sw->size - index_tail);
+    for (size_t c = 0; c < cps_total; ++c) {
+      uint64_t off = idx[2 * c];
+      uint64_t nb = idx[2 * c + 1];
+      if (off == UINT64_MAX && nb == UINT64_MAX)
+        continue;
+      CHECK(Fail, nb == chunk_bytes);
+      CHECK(Fail, off + nb <= sw->size - index_tail);
+
+      const uint16_t* vals = (const uint16_t*)(sw->buf + off);
+      for (size_t v = 0; v < nb / sizeof(uint16_t); ++v)
+        CHECK(Fail, vals[v] >= 0x2000 && vals[v] <= 0x200F);
+      chunks_1++;
+    }
+  }
+  CHECK(Fail, chunks_1 == 4);
+
+  log_info("  array0: %d chunks, array1: %d chunks", chunks_0, chunks_1);
+
+  multiarray_tile_stream_cpu_destroy(ms);
+  test_sink_free(&sink0);
+  test_sink_free(&sink1);
+  log_info("  PASS");
+  return 0;
+
+Fail:
+  multiarray_tile_stream_cpu_destroy(ms);
+  test_sink_free(&sink0);
+  test_sink_free(&sink1);
   log_error("  FAIL");
   return 1;
 }
@@ -604,5 +672,6 @@ main(int ac, char* av[])
   rc |= test_flush_all();
   rc |= test_many_arrays();
   rc |= test_same_array_repeated();
+  rc |= test_content_isolation();
   return rc;
 }

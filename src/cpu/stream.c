@@ -73,7 +73,7 @@ tile_stream_cpu_create(const struct tile_stream_configuration* config,
       const struct aggregate_layout* al = &s->agg_layout[lv];
 
       uint32_t K_l = li->batch_active_count;
-      s->batch_agg_active_count[lv] = K_l;
+      s->batch_active_count[lv] = K_l;
       uint32_t slot_count = K_l > 0 ? K_l : 1;
       uint64_t C_lv = al->covering_count;
       uint64_t M_lv = al->chunks_per_epoch;
@@ -83,10 +83,10 @@ tile_stream_cpu_create(const struct tile_stream_configuration* config,
         max_batch_C = batch_C;
 
       // Per-level perm (single-epoch, for fallback).
-      s->agg_perm[lv] = (uint32_t*)malloc(M_lv * sizeof(uint32_t));
-      CHECK(Fail, s->agg_perm[lv]);
+      s->chunk_to_shard_map[lv] = (uint32_t*)malloc(M_lv * sizeof(uint32_t));
+      CHECK(Fail, s->chunk_to_shard_map[lv]);
       for (uint64_t i = 0; i < M_lv; ++i)
-        s->agg_perm[lv][i] = (uint32_t)ravel(
+        s->chunk_to_shard_map[lv][i] = (uint32_t)ravel(
           al->lifted_rank, al->lifted_shape, al->lifted_strides, i);
 
       // Per-level aggregate output buffers (batch-scaled).
@@ -114,8 +114,8 @@ tile_stream_cpu_create(const struct tile_stream_configuration* config,
         uint64_t lut_len = (uint64_t)K_l * M_lv;
 
         s->batch_gather[lv] = (uint32_t*)malloc(lut_len * sizeof(uint32_t));
-        s->batch_agg_perm[lv] = (uint32_t*)malloc(lut_len * sizeof(uint32_t));
-        CHECK(Fail, s->batch_gather[lv] && s->batch_agg_perm[lv]);
+        s->batch_chunk_to_shard_map[lv] = (uint32_t*)malloc(lut_len * sizeof(uint32_t));
+        CHECK(Fail, s->batch_gather[lv] && s->batch_chunk_to_shard_map[lv]);
 
         for (uint32_t a = 0; a < K_l; ++a) {
           uint32_t period =
@@ -129,7 +129,7 @@ tile_stream_cpu_create(const struct tile_stream_configuration* config,
                          s->levels.chunk_offset[lv] + j);
             uint32_t perm_pos = (uint32_t)ravel(
               al->lifted_rank, al->lifted_shape, al->lifted_strides, j);
-            s->batch_agg_perm[lv][idx] = perm_pos * K_l + a;
+            s->batch_chunk_to_shard_map[lv][idx] = perm_pos * K_l + a;
           }
         }
       }
@@ -154,8 +154,8 @@ tile_stream_cpu_create(const struct tile_stream_configuration* config,
 
     // Shared permuted_sizes scratch (sized to max batch C).
     if (max_batch_C > 0) {
-      s->agg_permuted_sizes = (size_t*)calloc(max_batch_C, sizeof(size_t));
-      CHECK(Fail, s->agg_permuted_sizes);
+      s->shard_order_sizes = (size_t*)calloc(max_batch_C, sizeof(size_t));
+      CHECK(Fail, s->shard_order_sizes);
     }
   }
 
@@ -279,9 +279,9 @@ tile_stream_cpu_destroy(struct tile_stream_cpu* s)
         free(ss->shards[si].index);
       free(ss->shards);
     }
-    free(s->agg_perm[lv]);
+    free(s->chunk_to_shard_map[lv]);
     free(s->batch_gather[lv]);
-    free(s->batch_agg_perm[lv]);
+    free(s->batch_chunk_to_shard_map[lv]);
     free(s->morton_lut[lv]);
     free(s->lod_batch_offsets[lv]);
 
@@ -290,7 +290,7 @@ tile_stream_cpu_destroy(struct tile_stream_cpu* s)
     free(as->offsets);
     free(as->chunk_sizes);
   }
-  free(s->agg_permuted_sizes);
+  free(s->shard_order_sizes);
 
   free(s->chunk_pool);
   free(s->compressed);
@@ -524,15 +524,15 @@ flush_batch(struct tile_stream_cpu* s,
     if (active_count == 0)
       continue;
 
-    if (active_count == s->batch_agg_active_count[lv] &&
-        s->batch_agg_active_count[lv] > 1) {
+    if (active_count == s->batch_active_count[lv] &&
+        s->batch_active_count[lv] > 1) {
       // Batch aggregate.
       struct platform_clock clk = { 0 };
       platform_toc(&clk);
 
       struct aggregate_cpu_workspace ws = {
-        .perm = s->batch_agg_perm[lv],
-        .permuted_sizes = s->agg_permuted_sizes,
+        .perm = s->batch_chunk_to_shard_map[lv],
+        .permuted_sizes = s->shard_order_sizes,
         .data = s->agg_slots[lv].data,
         .data_capacity = s->agg_slots[lv].data_capacity,
         .offsets = s->agg_slots[lv].offsets,
@@ -582,8 +582,8 @@ flush_batch(struct tile_stream_cpu* s,
         const size_t* sizes_lv = s->comp_sizes + comp_base;
 
         struct aggregate_cpu_workspace ws = {
-          .perm = s->agg_perm[lv],
-          .permuted_sizes = s->agg_permuted_sizes,
+          .perm = s->chunk_to_shard_map[lv],
+          .permuted_sizes = s->shard_order_sizes,
           .data = s->agg_slots[lv].data,
           .data_capacity = s->agg_slots[lv].data_capacity,
           .offsets = s->agg_slots[lv].offsets,

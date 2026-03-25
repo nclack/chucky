@@ -137,3 +137,15 @@ bench_stream_main(int ac,
                   const uint8_t* chunk_ratios,
                   size_t default_chunk_bytes,
                   const uint64_t* shard_counts);
+
+// Two-stream variant: creates two GPU pipelines on the same CUDA context and
+// interleaves writer_append calls for balanced GPU utilisation.
+int
+bench_two_streams_main(int ac,
+                       char* av[],
+                       const char* label,
+                       struct dimension* dims,
+                       uint8_t rank,
+                       const uint8_t* chunk_ratios,
+                       size_t default_chunk_bytes,
+                       const uint64_t* shard_counts);

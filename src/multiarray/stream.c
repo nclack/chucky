@@ -5,6 +5,7 @@
 
 #include "cpu/compress.h"
 #include "cpu/transpose.h"
+#include "util/metric.h"
 #include "util/prelude.h"
 
 #include <stdlib.h>
@@ -36,7 +37,9 @@ struct multiarray_tile_stream_cpu
 {
   struct multiarray_writer writer;
   int n_arrays;
-  int active; // -1 = none
+  int active;              // -1 = none
+  int luts_computed_for;   // -1 = none, array index of last LUT computation
+  int metrics_enabled;
 
   struct array_descriptor* arrays;
 
@@ -95,7 +98,8 @@ struct multiarray_tile_stream_cpu*
 multiarray_tile_stream_cpu_create(
   int n_arrays,
   const struct tile_stream_configuration configs[],
-  struct shard_sink* sinks[])
+  struct shard_sink* sinks[],
+  int enable_metrics)
 {
   if (n_arrays <= 0 || !configs || !sinks)
     return NULL;
@@ -107,6 +111,7 @@ multiarray_tile_stream_cpu_create(
 
   ms->n_arrays = n_arrays;
   ms->active = -1;
+  ms->luts_computed_for = -1;
 
   ms->arrays =
     (struct array_descriptor*)calloc((size_t)n_arrays, sizeof(struct array_descriptor));
@@ -352,6 +357,23 @@ multiarray_tile_stream_cpu_create(
   ms->writer.update = update_impl;
   ms->writer.flush = flush_impl;
 
+  if (enable_metrics) {
+    ms->metrics_enabled = 1;
+    ms->metrics.scatter = mk_stream_metric("scatter");
+    ms->metrics.compress = mk_stream_metric("compress");
+    ms->metrics.aggregate = mk_stream_metric("aggregate");
+    ms->metrics.sink = mk_stream_metric("sink");
+    int any_multiscale = 0;
+    for (int i = 0; i < n_arrays; ++i)
+      any_multiscale |= ms->arrays[i].levels.enable_multiscale;
+    if (any_multiscale) {
+      ms->metrics.lod_gather = mk_stream_metric("lod_gather");
+      ms->metrics.lod_reduce = mk_stream_metric("lod_reduce");
+      ms->metrics.lod_dim0_fold = mk_stream_metric("lod_dim0_fold");
+      ms->metrics.lod_morton_chunk = mk_stream_metric("lod_morton");
+    }
+  }
+
   return ms;
 
 Fail:
@@ -410,6 +432,13 @@ multiarray_tile_stream_cpu_writer(struct multiarray_tile_stream_cpu* ms)
   return ms ? &ms->writer : NULL;
 }
 
+struct stream_metrics
+multiarray_tile_stream_cpu_get_metrics(
+  const struct multiarray_tile_stream_cpu* ms)
+{
+  return ms->metrics;
+}
+
 // ---- LUT recomputation ----
 
 static void
@@ -429,9 +458,18 @@ recompute_luts(struct multiarray_tile_stream_cpu* ms, int array_index)
   }
   cpu_pipeline_compute_luts(
     &d->cl, &d->levels, d->batch_active_count, d->agg_layout, &luts);
+  ms->luts_computed_for = array_index;
+}
+
+static void
+ensure_luts(struct multiarray_tile_stream_cpu* ms, int array_index)
+{
+  if (ms->luts_computed_for != array_index)
+    recompute_luts(ms, array_index);
 }
 
 // ---- Pipeline helpers ----
+// Keep in sync with cpu/stream.c::make_flush_params.
 
 static struct flush_batch_params
 make_flush_params(struct multiarray_tile_stream_cpu* ms,
@@ -451,7 +489,7 @@ make_flush_params(struct multiarray_tile_stream_cpu* ms,
     .shard_order_sizes = ms->shard_order_sizes,
     .sink = desc->sink,
     .shard_alignment = desc->config.shard_alignment,
-    .metrics = NULL, // multiarray skips timing
+    .metrics = ms->metrics_enabled ? &ms->metrics : NULL,
   };
   for (int lv = 0; lv < desc->levels.nlod; ++lv) {
     p.levels[lv] = (struct flush_level_view){
@@ -468,6 +506,7 @@ make_flush_params(struct multiarray_tile_stream_cpu* ms,
   return p;
 }
 
+// Keep in sync with cpu/stream.c::make_scatter_params.
 static struct scatter_epoch_params
 make_scatter_params(struct multiarray_tile_stream_cpu* ms,
                     struct array_descriptor* desc)
@@ -484,7 +523,7 @@ make_scatter_params(struct multiarray_tile_stream_cpu* ms,
     .scatter_batch_offsets = ms->scatter_batch_offsets,
     .dim0_accum = desc->dim0_accum,
     .dim0_counts = desc->dim0_counts,
-    .metrics = NULL, // multiarray skips timing
+    .metrics = ms->metrics_enabled ? &ms->metrics : NULL,
   };
   for (int lv = 0; lv < desc->levels.nlod; ++lv) {
     p.morton_lut[lv] = ms->morton_lut[lv];
@@ -536,7 +575,7 @@ update_impl(struct multiarray_writer* self, int array_index, struct slice data)
     }
 
     ms->active = array_index;
-    recompute_luts(ms, array_index);
+    ensure_luts(ms, array_index);
 
     // Zero chunk pool on array switch.
     memset(ms->chunk_pool, 0, ms->chunk_pool_bytes);
@@ -677,6 +716,16 @@ flush_impl(struct multiarray_writer* self)
   if (ms->active >= 0) {
     struct array_descriptor* desc = &ms->arrays[ms->active];
     if (desc->cursor % desc->layout.epoch_elements != 0) {
+      // If batch is full, flush it first before adding the partial epoch.
+      if (desc->batch_accumulated >= desc->cl.epochs_per_batch) {
+        struct flush_batch_params fp = make_flush_params(ms, desc);
+        if (cpu_pipeline_flush_batch(
+              &fp, desc->batch_accumulated, desc->batch_active_masks))
+          goto Error;
+        desc->batch_accumulated = 0;
+        memset(ms->chunk_pool, 0, ms->chunk_pool_bytes);
+      }
+
       uint32_t active_mask = 1;
       if (desc->levels.enable_multiscale) {
         struct scatter_epoch_params sp = make_scatter_params(ms, desc);
@@ -696,10 +745,9 @@ flush_impl(struct multiarray_writer* self)
     struct array_descriptor* desc = &ms->arrays[i];
     if (desc->batch_accumulated == 0)
       continue;
-    if (i != ms->active) {
+    if (i != ms->active)
       ms->active = i;
-      recompute_luts(ms, i);
-    }
+    ensure_luts(ms, i);
     struct flush_batch_params fp = make_flush_params(ms, desc);
     if (cpu_pipeline_flush_batch(
           &fp, desc->batch_accumulated, desc->batch_active_masks))
@@ -708,16 +756,18 @@ flush_impl(struct multiarray_writer* self)
   }
 
   // Drain partial dim0 accumulators (multiscale dim0 downsample).
+  // NOTE: lod_values is a shared buffer and may contain stale data from
+  // a previously active array. This is harmless because lod_cpu_dim0_emit
+  // writes into lod_values before any read (copying/averaging from the
+  // per-array dim0_accum), so stale data is overwritten before use.
   for (int i = 0; i < ms->n_arrays; ++i) {
     struct array_descriptor* desc = &ms->arrays[i];
     if (!desc->levels.dim0_downsample || !desc->dim0_accum)
       continue;
 
-    // Ensure LUTs are current for this array.
-    if (i != ms->active) {
+    if (i != ms->active)
       ms->active = i;
-      recompute_luts(ms, i);
-    }
+    ensure_luts(ms, i);
 
     struct dim0_drain_params dp = {
       .cl = &desc->cl,
@@ -727,7 +777,7 @@ flush_impl(struct multiarray_writer* self)
       .dim0_accum = desc->dim0_accum,
       .dim0_counts = desc->dim0_counts,
       .chunk_pool = ms->chunk_pool,
-      .metrics = NULL,
+      .metrics = ms->metrics_enabled ? &ms->metrics : NULL,
     };
     for (int lv = 0; lv < desc->levels.nlod; ++lv) {
       dp.morton_lut[lv] = ms->morton_lut[lv];

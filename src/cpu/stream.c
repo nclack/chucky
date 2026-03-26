@@ -450,6 +450,7 @@ tile_stream_cpu_advise_chunk_sizes(struct tile_stream_configuration* config,
 }
 
 // ---- Pipeline helpers ----
+// Keep in sync with multiarray/stream.c::make_flush_params.
 
 static struct flush_batch_params
 make_flush_params(struct tile_stream_cpu* s)
@@ -485,6 +486,7 @@ make_flush_params(struct tile_stream_cpu* s)
   return p;
 }
 
+// Keep in sync with multiarray/stream.c::make_scatter_params.
 static struct scatter_epoch_params
 make_scatter_params(struct tile_stream_cpu* s)
 {

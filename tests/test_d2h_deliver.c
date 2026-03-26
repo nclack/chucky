@@ -183,8 +183,8 @@ test_d2h_single_epoch_none(void)
 
   const uint64_t total_chunks = c.cl.levels.total_chunks;
   const uint64_t chunk_stride = c.cl.layouts[0].chunk_stride;
-  const size_t bpe = dtype_bpe(config.dtype);
-  const size_t chunk_bytes = chunk_stride * bpe;
+  const size_t bytes_per_element = dtype_bpe(config.dtype);
+  const size_t chunk_bytes = chunk_stride * bytes_per_element;
 
   log_info("  total_chunks=%lu chunk_stride=%lu chunk_bytes=%zu",
            (unsigned long)total_chunks,
@@ -194,7 +194,7 @@ test_d2h_single_epoch_none(void)
   // Fill pool with epoch 0 data
   CHECK(Fail,
         fill_pool_epoch(
-          c.d_pool, total_chunks, chunk_stride, bpe, fill_epoch0) == 0);
+          c.d_pool, total_chunks, chunk_stride, bytes_per_element, fill_epoch0) == 0);
 
   // Create and record epoch event
   CU(Fail, cuEventCreate(&c.epoch_events[0], CU_EVENT_DEFAULT));
@@ -251,19 +251,19 @@ test_d2h_batch_none(void)
 
   const uint64_t total_chunks = c.cl.levels.total_chunks;
   const uint64_t chunk_stride = c.cl.layouts[0].chunk_stride;
-  const size_t bpe = dtype_bpe(config.dtype);
-  const size_t chunk_bytes = chunk_stride * bpe;
+  const size_t bytes_per_element = dtype_bpe(config.dtype);
+  const size_t chunk_bytes = chunk_stride * bytes_per_element;
 
   // Fill pool: epoch 0 and epoch 1
-  size_t epoch_pool_bytes = total_chunks * chunk_stride * bpe;
+  size_t epoch_pool_bytes = total_chunks * chunk_stride * bytes_per_element;
   CHECK(Fail,
         fill_pool_epoch(
-          c.d_pool, total_chunks, chunk_stride, bpe, fill_epoch0) == 0);
+          c.d_pool, total_chunks, chunk_stride, bytes_per_element, fill_epoch0) == 0);
   CHECK(Fail,
         fill_pool_epoch(c.d_pool + epoch_pool_bytes,
                         total_chunks,
                         chunk_stride,
-                        bpe,
+                        bytes_per_element,
                         fill_epoch1) == 0);
 
   for (int i = 0; i < 2; ++i) {
@@ -392,12 +392,12 @@ test_d2h_zstd_single_epoch(void)
 
   const uint64_t total_chunks = c.cl.levels.total_chunks;
   const uint64_t chunk_stride = c.cl.layouts[0].chunk_stride;
-  const size_t bpe = dtype_bpe(config.dtype);
-  const size_t chunk_bytes = chunk_stride * bpe;
+  const size_t bytes_per_element = dtype_bpe(config.dtype);
+  const size_t chunk_bytes = chunk_stride * bytes_per_element;
 
   CHECK(Fail,
         fill_pool_epoch(
-          c.d_pool, total_chunks, chunk_stride, bpe, fill_epoch0) == 0);
+          c.d_pool, total_chunks, chunk_stride, bytes_per_element, fill_epoch0) == 0);
 
   CU(Fail, cuEventCreate(&c.epoch_events[0], CU_EVENT_DEFAULT));
   CU(Fail, cuEventRecord(c.epoch_events[0], c.compute));
@@ -490,14 +490,14 @@ test_d2h_double_buffer(void)
 
   const uint64_t total_chunks = c.cl.levels.total_chunks;
   const uint64_t chunk_stride = c.cl.layouts[0].chunk_stride;
-  const size_t bpe = dtype_bpe(config.dtype);
-  const size_t chunk_bytes = chunk_stride * bpe;
-  size_t epoch_pool_bytes = total_chunks * chunk_stride * bpe;
+  const size_t bytes_per_element = dtype_bpe(config.dtype);
+  const size_t chunk_bytes = chunk_stride * bytes_per_element;
+  size_t epoch_pool_bytes = total_chunks * chunk_stride * bytes_per_element;
 
   // Iteration 1: fc=0, fill with epoch0
   CHECK(Fail,
         fill_pool_epoch(
-          c.d_pool, total_chunks, chunk_stride, bpe, fill_epoch0) == 0);
+          c.d_pool, total_chunks, chunk_stride, bytes_per_element, fill_epoch0) == 0);
   CU(Fail, cuEventCreate(&c.epoch_events[0], CU_EVENT_DEFAULT));
   CU(Fail, cuEventRecord(c.epoch_events[0], c.compute));
 
@@ -515,7 +515,7 @@ test_d2h_double_buffer(void)
         fill_pool_epoch(c.d_pool + epoch_pool_bytes,
                         total_chunks,
                         chunk_stride,
-                        bpe,
+                        bytes_per_element,
                         fill_epoch1) == 0);
   CU(Fail, cuEventCreate(&c.epoch_events[1], CU_EVENT_DEFAULT));
   CU(Fail, cuEventRecord(c.epoch_events[1], c.compute));

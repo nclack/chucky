@@ -93,12 +93,12 @@ static int
 init_chunk_pools(struct pool_state* pools,
                  const struct level_geometry* levels,
                  uint64_t chunk_stride,
-                 size_t bpe,
+                 size_t bytes_per_element,
                  uint32_t epochs_per_batch,
                  CUstream compute)
 {
   const size_t pool_bytes =
-    (uint64_t)epochs_per_batch * levels->total_chunks * chunk_stride * bpe;
+    (uint64_t)epochs_per_batch * levels->total_chunks * chunk_stride * bytes_per_element;
 
   for (int i = 0; i < 2; ++i) {
     CU(Fail, cuMemAlloc(&pools->buf[i], pool_bytes));
@@ -315,7 +315,7 @@ tile_stream_gpu_memory_estimate(const struct tile_stream_configuration* config,
     return 1;
 
   const uint8_t rank = config->rank;
-  const size_t bpe = dtype_bpe(config->dtype);
+  const size_t bytes_per_element = dtype_bpe(config->dtype);
   const size_t buffer_capacity_bytes =
     (config->buffer_capacity_bytes + 4095) & ~(size_t)4095;
   const uint64_t chunk_stride = cl.layouts[0].chunk_stride;
@@ -325,7 +325,7 @@ tile_stream_gpu_memory_estimate(const struct tile_stream_configuration* config,
   const int nlod = cl.levels.nlod;
   const size_t max_output_size = cl.max_output_size;
 
-  const size_t chunk_bytes = chunk_stride * bpe;
+  const size_t chunk_bytes = chunk_stride * bytes_per_element;
   const uint64_t codec_batch = (uint64_t)K * total_chunks;
   const size_t nvcomp_temp =
     codec_temp_bytes(config->codec, chunk_bytes, codec_batch);
@@ -334,7 +334,7 @@ tile_stream_gpu_memory_estimate(const struct tile_stream_configuration* config,
   const size_t staging_host = 2 * buffer_capacity_bytes;
 
   const size_t chunk_pool_bytes =
-    2 * (uint64_t)K * total_chunks * chunk_stride * bpe;
+    2 * (uint64_t)K * total_chunks * chunk_stride * bytes_per_element;
 
   const size_t compressed_pool_bytes =
     2 * (uint64_t)K * total_chunks * max_output_size;
@@ -405,9 +405,9 @@ tile_stream_gpu_memory_estimate(const struct tile_stream_configuration* config,
   if (cl.levels.enable_multiscale) {
     const struct lod_plan* plan = &cl.plan;
 
-    lod_device += cl.layouts[0].epoch_elements * bpe;
+    lod_device += cl.layouts[0].epoch_elements * bytes_per_element;
     uint64_t total_lod_vals = plan->levels.ends[plan->nlod - 1];
-    lod_device += total_lod_vals * bpe;
+    lod_device += total_lod_vals * bytes_per_element;
 
     lod_device += rank * sizeof(uint64_t);
     if (plan->lod_ndim > 0)
@@ -474,13 +474,13 @@ tile_stream_gpu_advise_chunk_sizes(struct tile_stream_configuration* config,
                                    const uint8_t* ratios,
                                    size_t budget_bytes)
 {
-  const size_t bpe = dtype_bpe(config->dtype);
-  if (bpe == 0 || budget_bytes == 0)
+  const size_t bytes_per_element = dtype_bpe(config->dtype);
+  if (bytes_per_element == 0 || budget_bytes == 0)
     return 1;
 
-  for (size_t target = target_chunk_bytes; target >= bpe; target >>= 1) {
+  for (size_t target = target_chunk_bytes; target >= bytes_per_element; target >>= 1) {
     dims_budget_chunk_bytes(
-      config->dimensions, config->rank, target, bpe, ratios);
+      config->dimensions, config->rank, target, bytes_per_element, ratios);
     struct tile_stream_memory_info mem;
     if (tile_stream_gpu_memory_estimate(config, &mem))
       return 1;

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "stream/layouts.h"
 #include "stream/types.aggregate.h"
 #include "writer.h"
 #include <stddef.h>
@@ -22,6 +23,12 @@ struct shard_state
   uint64_t chunks_per_shard_0;     // tps[0]
   struct active_shard* shards;     // array[shard_inner_count]
 };
+
+// Initialize shard state from pre-computed level layout info.
+// Allocates the shards array and per-shard index buffers.
+int
+init_shard_state(struct shard_state* ss,
+                 const struct level_layout_info* li);
 
 // Finalize completed shards (write index block + finalize).
 // Best-effort: tries every shard even if one fails. Returns 0 on success.

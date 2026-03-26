@@ -39,10 +39,10 @@ make_compress_input(struct tile_stream_gpu* s, int fc, uint32_t n_epochs)
 static inline void*
 pool_epoch_ptr(struct tile_stream_gpu* s, uint32_t epoch_in_batch)
 {
-  const size_t bpe = dtype_bpe(s->config.dtype);
+  const size_t bytes_per_element = dtype_bpe(s->config.dtype);
   return (char*)s->pools.buf[s->pools.current] +
          (uint64_t)epoch_in_batch * s->levels.total_chunks *
-           s->layout.chunk_stride * bpe;
+           s->layout.chunk_stride * bytes_per_element;
 }
 
 // Run LOD pipeline for the current epoch, or handle non-multiscale case.
@@ -317,7 +317,7 @@ flush_partial_dim0(struct tile_stream_gpu* s)
     return writer_ok();
 
   const struct lod_plan* p = &s->lod.plan;
-  const size_t bpe = dtype_bpe(s->config.dtype);
+  const size_t bytes_per_element = dtype_bpe(s->config.dtype);
   const enum dtype dtype = s->config.dtype;
 
   // Check if any level has pending data
@@ -350,7 +350,7 @@ flush_partial_dim0(struct tile_stream_gpu* s)
     size_t accum_bpe = dtype_accum_bpe(dtype, s->config.dim0_reduce_method);
 
     struct lod_span lev = lod_spans_at(&p->levels, lv);
-    CUdeviceptr morton_lv = s->lod.d_morton + lev.beg * bpe;
+    CUdeviceptr morton_lv = s->lod.d_morton + lev.beg * bytes_per_element;
     CUdeviceptr accum_lv = s->lod.dim0.d_accum + accum_offset * accum_bpe;
 
     // Emit with actual count (not period) -- mean divides by actual count
@@ -368,9 +368,9 @@ flush_partial_dim0(struct tile_stream_gpu* s)
     // Zero and scatter to chunk pool (epoch 0 in current pool)
     CUdeviceptr dst =
       s->pools.buf[s->pools.current] +
-      s->levels.chunk_offset[lv] * s->layout.chunk_stride * bpe;
+      s->levels.chunk_offset[lv] * s->layout.chunk_stride * bytes_per_element;
     size_t lv_pool_bytes =
-      s->levels.chunk_count[lv] * s->layout.chunk_stride * bpe;
+      s->levels.chunk_count[lv] * s->layout.chunk_stride * bytes_per_element;
     CU(Error, cuMemsetD8Async(dst, 0, lv_pool_bytes, s->streams.compute));
 
     CHECK(Error,

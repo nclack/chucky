@@ -370,12 +370,12 @@ int
 lod_state_init_buffers(struct lod_state* lod,
                        enum dtype dtype)
 {
-  const size_t bpe = dtype_bpe(dtype);
-  size_t linear_bytes = lod->layouts[0].epoch_elements * bpe;
+  const size_t bytes_per_element = dtype_bpe(dtype);
+  size_t linear_bytes = lod->layouts[0].epoch_elements * bytes_per_element;
   CU(Fail, cuMemAlloc(&lod->d_linear, linear_bytes));
 
   uint64_t total_vals = lod->plan.levels.ends[lod->plan.nlod - 1];
-  size_t morton_bytes = total_vals * bpe;
+  size_t morton_bytes = total_vals * bytes_per_element;
   CU(Fail, cuMemAlloc(&lod->d_morton, morton_bytes));
 
   CU(Fail, cuEventCreate(&lod->t_start, CU_EVENT_DEFAULT));
@@ -513,7 +513,7 @@ run_dim0_fold_emit(struct lod_state* lod,
                    uint32_t* out_mask)
 {
   struct lod_plan* p = &lod->plan;
-  const size_t bpe = dtype_bpe(dtype);
+  const size_t bytes_per_element = dtype_bpe(dtype);
 
   // Upload current counts to device before fused kernel
   CU(Error,
@@ -523,7 +523,7 @@ run_dim0_fold_emit(struct lod_state* lod,
                        compute));
 
   // Single fused fold over all levels 1+
-  CUdeviceptr morton_1plus = lod->d_morton + lod->dim0.morton_offset * bpe;
+  CUdeviceptr morton_1plus = lod->d_morton + lod->dim0.morton_offset * bytes_per_element;
   CHECK(Error,
         lod_accum_fold_fused(lod->dim0.d_accum,
                              morton_1plus,
@@ -549,7 +549,7 @@ run_dim0_fold_emit(struct lod_state* lod,
 
       size_t accum_bpe = dtype_accum_bpe(dtype, dim0_reduce_method);
 
-      CUdeviceptr morton_lv = lod->d_morton + lev.beg * bpe;
+      CUdeviceptr morton_lv = lod->d_morton + lev.beg * bytes_per_element;
       CUdeviceptr accum_lv = lod->dim0.d_accum + accum_offset * accum_bpe;
 
       CHECK(Error,
@@ -582,7 +582,7 @@ scatter_morton_to_chunks(struct lod_state* lod,
                          CUstream compute)
 {
   struct lod_plan* p = &lod->plan;
-  const size_t bpe = dtype_bpe(dtype);
+  const size_t bytes_per_element = dtype_bpe(dtype);
   const uint64_t chunk_stride = lod->layouts[0].chunk_stride;
 
   for (int lv = 0; lv < p->nlod; ++lv) {
@@ -591,11 +591,11 @@ scatter_morton_to_chunks(struct lod_state* lod,
 
     struct lod_span lev = lod_spans_at(&p->levels, lv);
     CUdeviceptr dst = (CUdeviceptr)pool_epoch +
-                      levels->chunk_offset[lv] * chunk_stride * bpe;
+                      levels->chunk_offset[lv] * chunk_stride * bytes_per_element;
 
     CHECK(Error,
           lod_morton_to_chunks_lut(dst,
-                                   lod->d_morton + lev.beg * bpe,
+                                   lod->d_morton + lev.beg * bytes_per_element,
                                    lod->d_morton_chunk_lut[lv],
                                    lod->d_morton_batch_chunk_offsets[lv],
                                    dtype,

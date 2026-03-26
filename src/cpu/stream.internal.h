@@ -52,8 +52,8 @@ struct tile_stream_cpu
   void* dim0_accum;                    // accumulator for levels 1+
   uint32_t dim0_counts[LOD_MAX_LEVELS]; // per-level fold count
 
-  uint64_t cursor;
-  uint64_t max_cursor;   // precomputed: total elements across all dim0 chunks
+  uint64_t cursor_elements;
+  uint64_t max_cursor_elements; // precomputed: total elements across all dim0 chunks
   int pool_fully_covered; // 1 if scatter overwrites every pool position
 
   // Batch accumulation state (K = cl.epochs_per_batch).

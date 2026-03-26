@@ -8,10 +8,10 @@
 // Aggregate output slot (one per level).
 struct cpu_agg_slot
 {
-  void* data;           // aggregated compressed chunks in shard order
-  size_t data_capacity;
-  size_t* offsets;      // [C_lv + 1] exclusive prefix sum
-  size_t* chunk_sizes;  // [C_lv] pre-padding sizes for shard index
+  void* data;                // aggregated compressed chunks in shard order
+  size_t data_capacity_bytes;
+  size_t* offsets;           // [C_lv + 1] exclusive prefix sum
+  size_t* chunk_sizes;       // [C_lv] pre-padding sizes for shard index
 };
 
 // ---- flush_batch ----
@@ -35,14 +35,14 @@ struct flush_batch_params
   size_t chunk_stride_bytes;
   size_t chunk_bytes;
   void* compressed;
-  size_t max_output_size;
+  size_t max_output_size_bytes;
   size_t* comp_sizes;
   uint64_t total_chunks;
   int nlod;
   struct flush_level_view levels[LOD_MAX_LEVELS];
-  size_t* shard_order_sizes;
+  size_t* shard_order_sizes_bytes;
   struct shard_sink* sink;
-  size_t shard_alignment;
+  size_t shard_alignment_bytes;
   struct stream_metrics* metrics; // NULL to skip timing
 };
 

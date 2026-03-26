@@ -407,7 +407,7 @@ run_bench(const struct bench_config* cfg)
 
   // --- Chunk sizing ---
   if (cfg->chunk_ratios) {
-    size_t bpe = dtype_bpe(dtype);
+    size_t bytes_per_element = dtype_bpe(dtype);
     size_t target = cfg->target_chunk_bytes ? cfg->target_chunk_bytes : (1 << 20);
     size_t budget = cfg->memory_budget;
 
@@ -462,7 +462,7 @@ run_bench(const struct bench_config* cfg)
         uint64_t vol = 1;
         for (uint8_t d = 0; d < rank; ++d)
           vol *= dims[d].chunk_size;
-        print_report("  auto-fit: %zu bytes/chunk", (size_t)(vol * bpe));
+        print_report("  auto-fit: %zu bytes/chunk", (size_t)(vol * bytes_per_element));
       } else {
         print_report("  auto-fit: WARNING — no chunk size fits in budget");
       }
@@ -470,7 +470,7 @@ run_bench(const struct bench_config* cfg)
 
     // Fallback: just budget chunk sizes without memory constraint
     if (!fitted)
-      dims_budget_chunk_bytes(dims, rank, target, bpe, cfg->chunk_ratios);
+      dims_budget_chunk_bytes(dims, rank, target, bytes_per_element, cfg->chunk_ratios);
 
     // Set shard counts after chunk sizing
     if (cfg->shard_counts)

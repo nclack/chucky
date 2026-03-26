@@ -23,8 +23,8 @@ struct array_descriptor
   uint32_t batch_active_count[LOD_MAX_LEVELS];
   struct shard_state shard[LOD_MAX_LEVELS];
   struct shard_sink* sink;
-  uint64_t cursor;
-  uint64_t max_cursor;
+  uint64_t cursor_elements;
+  uint64_t max_cursor_elements;
   uint32_t batch_accumulated;
   uint32_t batch_active_masks[MAX_BATCH_EPOCHS];
   uint32_t dim0_counts[LOD_MAX_LEVELS];
@@ -47,9 +47,7 @@ struct multiarray_tile_stream_cpu
   void* chunk_pool;
   size_t chunk_pool_bytes;
   void* compressed;
-  size_t compressed_bytes;
   size_t* comp_sizes;
-  size_t comp_sizes_count;
 
   // Shared aggregate workspace.
   struct cpu_agg_slot agg_slots[LOD_MAX_LEVELS];
@@ -66,7 +64,6 @@ struct multiarray_tile_stream_cpu
 
   // Shared LOD buffers (multiscale only).
   void* linear;
-  size_t linear_bytes;
   void* lod_values;
   size_t lod_values_bytes;
 
@@ -80,9 +77,6 @@ update_impl(struct multiarray_writer* self, int array_index, struct slice data);
 static struct multiarray_writer_result
 flush_impl(struct multiarray_writer* self);
 
-static void
-recompute_luts(struct multiarray_tile_stream_cpu* ms, int array_index);
-
 // ---- Helpers ----
 
 static inline size_t
@@ -92,7 +86,7 @@ max_sz(size_t a, size_t b)
 }
 
 static inline struct multiarray_writer_result
-mw_fail_at(const void* beg, const void* end)
+multiarray_writer_fail_at(const void* beg, const void* end)
 {
   return (struct multiarray_writer_result){
     .error = multiarray_writer_fail,
@@ -103,140 +97,123 @@ mw_fail_at(const void* beg, const void* end)
 // Shared buffer sizes computed across all arrays (used by create).
 struct pool_maxima
 {
-  size_t chunk_pool;
-  size_t compressed;
-  size_t comp_sizes;
-  uint64_t batch_C;
-  size_t linear;
-  size_t lod_values;
-  size_t agg_data[LOD_MAX_LEVELS];
-  uint64_t agg_batch_C[LOD_MAX_LEVELS];
-  size_t chunk_to_shard_map[LOD_MAX_LEVELS];
-  size_t batch_gather[LOD_MAX_LEVELS];
-  size_t scatter_lut;
-  size_t scatter_batch_offsets;
-  size_t morton_lut[LOD_MAX_LEVELS];
-  size_t lod_batch_offsets[LOD_MAX_LEVELS];
+  size_t chunk_pool_bytes;
+  size_t compressed_bytes;
+  size_t comp_sizes_count;
+  uint64_t batch_covering_count;
+  size_t linear_bytes;
+  size_t lod_values_bytes;
+  size_t agg_data_bytes[LOD_MAX_LEVELS];
+  uint64_t agg_batch_C_count[LOD_MAX_LEVELS];
+  size_t chunk_to_shard_map_count[LOD_MAX_LEVELS];
+  size_t batch_gather_count[LOD_MAX_LEVELS];
+  size_t scatter_lut_count;
+  size_t scatter_batch_offsets_count;
+  size_t morton_lut_count[LOD_MAX_LEVELS];
+  size_t lod_batch_offsets_count[LOD_MAX_LEVELS];
 };
 
 // ---- Per-array init ----
 
 static int
-init_array_descriptor(struct array_descriptor* d,
+init_array_descriptor(struct array_descriptor* desc,
                       const struct tile_stream_configuration* config,
                       struct shard_sink* sink,
-                      struct pool_maxima* mx)
+                      struct pool_maxima* maxima)
 {
   if (config->dtype == dtype_f16)
     return 1;
 
-  d->config = *config;
-  d->sink = sink;
+  desc->config = *config;
+  desc->sink = sink;
 
   if (compute_stream_layouts(
-        config, 1, compress_cpu_max_output_size, &d->cl))
+        config, 1, compress_cpu_max_output_size, &desc->cl))
     return 1;
 
-  d->layout = d->cl.layouts[0];
-  d->levels = d->cl.levels;
+  desc->layout = desc->cl.layouts[0];
+  desc->levels = desc->cl.levels;
 
-  const uint32_t K = d->cl.epochs_per_batch;
-  const size_t bpe = dtype_bpe(config->dtype);
-  const uint64_t total_chunks = d->levels.total_chunks;
+  const uint32_t K = desc->cl.epochs_per_batch;
+  const size_t bytes_per_element = dtype_bpe(config->dtype);
+  const uint64_t total_chunks = desc->levels.total_chunks;
 
   // max_cursor
   const struct dimension* dims = config->dimensions;
-  d->max_cursor =
+  desc->max_cursor_elements =
     (dims[0].size > 0)
-      ? ceildiv(dims[0].size, dims[0].chunk_size) * d->layout.epoch_elements
+      ? ceildiv(dims[0].size, dims[0].chunk_size) * desc->layout.epoch_elements
       : 0;
 
   // Update pool maxima.
-  mx->chunk_pool =
-    max_sz(mx->chunk_pool, (size_t)K * total_chunks * d->layout.chunk_stride * bpe);
-  mx->compressed =
-    max_sz(mx->compressed, (size_t)K * total_chunks * d->cl.max_output_size);
-  mx->comp_sizes =
-    max_sz(mx->comp_sizes, (size_t)K * total_chunks);
+  maxima->chunk_pool_bytes =
+    max_sz(maxima->chunk_pool_bytes, (size_t)K * total_chunks * desc->layout.chunk_stride * bytes_per_element);
+  maxima->compressed_bytes =
+    max_sz(maxima->compressed_bytes, (size_t)K * total_chunks * desc->cl.max_output_size);
+  maxima->comp_sizes_count =
+    max_sz(maxima->comp_sizes_count, (size_t)K * total_chunks);
 
   // Per-level shard + aggregate state.
-  for (int lv = 0; lv < d->levels.nlod; ++lv) {
-    const struct level_layout_info* li = &d->cl.per_level[lv];
-    d->agg_layout[lv] = li->agg_layout;
+  for (int lv = 0; lv < desc->levels.nlod; ++lv) {
+    const struct level_layout_info* li = &desc->cl.per_level[lv];
+    desc->agg_layout[lv] = li->agg_layout;
 
-    const struct aggregate_layout* al = &d->agg_layout[lv];
+    const struct aggregate_layout* al = &desc->agg_layout[lv];
     uint32_t K_l = li->batch_active_count;
-    d->batch_active_count[lv] = K_l;
+    desc->batch_active_count[lv] = K_l;
     uint32_t slot_count = K_l > 0 ? K_l : 1;
     uint64_t C_lv = al->covering_count;
     uint64_t M_lv = al->chunks_per_epoch;
     uint64_t batch_C = (uint64_t)slot_count * C_lv;
 
-    if (batch_C > mx->batch_C)
-      mx->batch_C = batch_C;
-    mx->chunk_to_shard_map[lv] = max_sz(mx->chunk_to_shard_map[lv], M_lv);
-    if (batch_C > mx->agg_batch_C[lv])
-      mx->agg_batch_C[lv] = batch_C;
-    mx->agg_data[lv] = max_sz(
-      mx->agg_data[lv],
+    if (batch_C > maxima->batch_covering_count)
+      maxima->batch_covering_count = batch_C;
+    maxima->chunk_to_shard_map_count[lv] = max_sz(maxima->chunk_to_shard_map_count[lv], M_lv);
+    if (batch_C > maxima->agg_batch_C_count[lv])
+      maxima->agg_batch_C_count[lv] = batch_C;
+    maxima->agg_data_bytes[lv] = max_sz(
+      maxima->agg_data_bytes[lv],
       agg_pool_bytes(
         (uint64_t)slot_count * M_lv,
         al->max_comp_chunk_bytes, C_lv, al->cps_inner, al->page_size));
 
     if (K_l > 1)
-      mx->batch_gather[lv] =
-        max_sz(mx->batch_gather[lv], (uint64_t)K_l * M_lv);
+      maxima->batch_gather_count[lv] =
+        max_sz(maxima->batch_gather_count[lv], (uint64_t)K_l * M_lv);
 
-    // Init shard_state.
-    struct shard_state* ss = &d->shard[lv];
-    ss->chunks_per_shard_0 = li->chunks_per_shard_0;
-    ss->chunks_per_shard_inner = li->chunks_per_shard_inner;
-    ss->chunks_per_shard_total = li->chunks_per_shard_total;
-    ss->shard_inner_count = li->shard_inner_count;
-    ss->shards = (struct active_shard*)calloc(
-      li->shard_inner_count, sizeof(struct active_shard));
-    if (!ss->shards)
+    if (init_shard_state(&desc->shard[lv], li))
       return 1;
-    for (uint64_t si = 0; si < li->shard_inner_count; ++si) {
-      ss->shards[si].index = (uint64_t*)malloc(
-        li->chunks_per_shard_total * 2 * sizeof(uint64_t));
-      if (!ss->shards[si].index)
-        return 1;
-      memset(ss->shards[si].index,
-             0xFF,
-             li->chunks_per_shard_total * 2 * sizeof(uint64_t));
-    }
   }
 
   // LOD sizes.
-  if (d->levels.enable_multiscale) {
-    mx->linear = max_sz(mx->linear, d->layout.epoch_elements * bpe);
+  if (desc->levels.enable_multiscale) {
+    maxima->linear_bytes = max_sz(maxima->linear_bytes, desc->layout.epoch_elements * bytes_per_element);
 
     uint64_t total_lod_elements =
-      d->cl.plan.levels.ends[d->cl.plan.nlod - 1];
-    mx->lod_values = max_sz(mx->lod_values, total_lod_elements * bpe);
-    mx->scatter_lut = max_sz(mx->scatter_lut, d->cl.plan.lod_nelem[0]);
-    mx->scatter_batch_offsets =
-      max_sz(mx->scatter_batch_offsets, d->cl.plan.batch_count);
+      desc->cl.plan.levels.ends[desc->cl.plan.nlod - 1];
+    maxima->lod_values_bytes = max_sz(maxima->lod_values_bytes, total_lod_elements * bytes_per_element);
+    maxima->scatter_lut_count = max_sz(maxima->scatter_lut_count, desc->cl.plan.lod_nelem[0]);
+    maxima->scatter_batch_offsets_count =
+      max_sz(maxima->scatter_batch_offsets_count, desc->cl.plan.batch_count);
 
-    for (int lv = 0; lv < d->levels.nlod; ++lv) {
-      mx->morton_lut[lv] =
-        max_sz(mx->morton_lut[lv], d->cl.plan.lod_nelem[lv]);
-      mx->lod_batch_offsets[lv] =
-        max_sz(mx->lod_batch_offsets[lv], d->cl.plan.batch_count);
+    for (int lv = 0; lv < desc->levels.nlod; ++lv) {
+      maxima->morton_lut_count[lv] =
+        max_sz(maxima->morton_lut_count[lv], desc->cl.plan.lod_nelem[lv]);
+      maxima->lod_batch_offsets_count[lv] =
+        max_sz(maxima->lod_batch_offsets_count[lv], desc->cl.plan.batch_count);
     }
 
     // Dim0 accum: per-array, not shared.
-    if (d->levels.dim0_downsample) {
+    if (desc->levels.dim0_downsample) {
       uint64_t dim0_total = 0;
-      for (int lv = 1; lv < d->cl.plan.nlod; ++lv)
-        dim0_total += d->cl.plan.batch_count * d->cl.plan.lod_nelem[lv];
+      for (int lv = 1; lv < desc->cl.plan.nlod; ++lv)
+        dim0_total += desc->cl.plan.batch_count * desc->cl.plan.lod_nelem[lv];
       if (dim0_total > 0) {
-        d->dim0_accum = calloc(dim0_total, bpe);
-        if (!d->dim0_accum)
+        desc->dim0_accum = calloc(dim0_total, bytes_per_element);
+        if (!desc->dim0_accum)
           return 1;
       }
-      memset(d->dim0_counts, 0, sizeof(d->dim0_counts));
+      memset(desc->dim0_counts, 0, sizeof(desc->dim0_counts));
     }
   }
 
@@ -249,88 +226,81 @@ static int
 alloc_shared_buffers(struct multiarray_tile_stream_cpu* ms,
                      const struct pool_maxima* mx)
 {
-  if (mx->chunk_pool > 0) {
-    ms->chunk_pool = calloc(1, mx->chunk_pool);
+  if (mx->chunk_pool_bytes > 0) {
+    ms->chunk_pool = calloc(1, mx->chunk_pool_bytes);
     CHECK(Fail, ms->chunk_pool);
-    ms->chunk_pool_bytes = mx->chunk_pool;
+    ms->chunk_pool_bytes = mx->chunk_pool_bytes;
   }
-  if (mx->compressed > 0) {
-    ms->compressed = malloc(mx->compressed);
+  if (mx->compressed_bytes > 0) {
+    ms->compressed = malloc(mx->compressed_bytes);
     CHECK(Fail, ms->compressed);
-    ms->compressed_bytes = mx->compressed;
   }
-  if (mx->comp_sizes > 0) {
-    ms->comp_sizes = (size_t*)calloc(mx->comp_sizes, sizeof(size_t));
+  if (mx->comp_sizes_count > 0) {
+    ms->comp_sizes = (size_t*)calloc(mx->comp_sizes_count, sizeof(size_t));
     CHECK(Fail, ms->comp_sizes);
-    ms->comp_sizes_count = mx->comp_sizes;
   }
 
-  // Aggregate slots.
+  // Per-level aggregate slots + LUT storage.
   for (int lv = 0; lv < LOD_MAX_LEVELS; ++lv) {
     struct cpu_agg_slot* as = &ms->agg_slots[lv];
-    uint64_t batch_C = mx->agg_batch_C[lv];
+    uint64_t batch_C = mx->agg_batch_C_count[lv];
     if (batch_C > 0) {
       as->offsets = (size_t*)malloc((batch_C + 1) * sizeof(size_t));
       as->chunk_sizes = (size_t*)calloc(batch_C, sizeof(size_t));
       CHECK(Fail, as->offsets && as->chunk_sizes);
     }
-    if (mx->agg_data[lv] > 0) {
-      as->data = malloc(mx->agg_data[lv]);
-      as->data_capacity = mx->agg_data[lv];
+    if (mx->agg_data_bytes[lv] > 0) {
+      as->data = malloc(mx->agg_data_bytes[lv]);
+      as->data_capacity_bytes = mx->agg_data_bytes[lv];
       CHECK(Fail, as->data);
     }
-  }
-  if (mx->batch_C > 0) {
-    ms->shard_order_sizes = (size_t*)calloc(mx->batch_C, sizeof(size_t));
-    CHECK(Fail, ms->shard_order_sizes);
-  }
-
-  // LUT storage.
-  for (int lv = 0; lv < LOD_MAX_LEVELS; ++lv) {
-    if (mx->chunk_to_shard_map[lv] > 0) {
+    if (mx->chunk_to_shard_map_count[lv] > 0) {
       ms->chunk_to_shard_map[lv] =
-        (uint32_t*)malloc(mx->chunk_to_shard_map[lv] * sizeof(uint32_t));
+        (uint32_t*)malloc(mx->chunk_to_shard_map_count[lv] * sizeof(uint32_t));
       CHECK(Fail, ms->chunk_to_shard_map[lv]);
     }
-    if (mx->batch_gather[lv] > 0) {
+    if (mx->batch_gather_count[lv] > 0) {
       ms->batch_gather[lv] =
-        (uint32_t*)malloc(mx->batch_gather[lv] * sizeof(uint32_t));
+        (uint32_t*)malloc(mx->batch_gather_count[lv] * sizeof(uint32_t));
       ms->batch_chunk_to_shard_map[lv] =
-        (uint32_t*)malloc(mx->batch_gather[lv] * sizeof(uint32_t));
+        (uint32_t*)malloc(mx->batch_gather_count[lv] * sizeof(uint32_t));
       CHECK(Fail, ms->batch_gather[lv] && ms->batch_chunk_to_shard_map[lv]);
     }
-    if (mx->morton_lut[lv] > 0) {
+    if (mx->morton_lut_count[lv] > 0) {
       ms->morton_lut[lv] =
-        (uint32_t*)malloc(mx->morton_lut[lv] * sizeof(uint32_t));
+        (uint32_t*)malloc(mx->morton_lut_count[lv] * sizeof(uint32_t));
       CHECK(Fail, ms->morton_lut[lv]);
     }
-    if (mx->lod_batch_offsets[lv] > 0) {
+    if (mx->lod_batch_offsets_count[lv] > 0) {
       ms->lod_batch_offsets[lv] =
-        (uint64_t*)calloc(mx->lod_batch_offsets[lv], sizeof(uint64_t));
+        (uint64_t*)calloc(mx->lod_batch_offsets_count[lv], sizeof(uint64_t));
       CHECK(Fail, ms->lod_batch_offsets[lv]);
     }
   }
-  if (mx->scatter_lut > 0) {
+  if (mx->batch_covering_count > 0) {
+    ms->shard_order_sizes = (size_t*)calloc(mx->batch_covering_count, sizeof(size_t));
+    CHECK(Fail, ms->shard_order_sizes);
+  }
+  if (mx->scatter_lut_count > 0) {
     ms->scatter_lut =
-      (uint32_t*)malloc(mx->scatter_lut * sizeof(uint32_t));
+      (uint32_t*)malloc(mx->scatter_lut_count * sizeof(uint32_t));
     CHECK(Fail, ms->scatter_lut);
   }
-  if (mx->scatter_batch_offsets > 0) {
+  if (mx->scatter_batch_offsets_count > 0) {
     ms->scatter_batch_offsets =
-      (uint64_t*)calloc(mx->scatter_batch_offsets, sizeof(uint64_t));
+      (uint64_t*)calloc(mx->scatter_batch_offsets_count, sizeof(uint64_t));
     CHECK(Fail, ms->scatter_batch_offsets);
   }
 
   // LOD buffers.
-  if (mx->linear > 0) {
-    ms->linear = calloc(1, mx->linear);
+  if (mx->linear_bytes > 0) {
+    ms->linear = calloc(1, mx->linear_bytes);
     CHECK(Fail, ms->linear);
-    ms->linear_bytes = mx->linear;
   }
-  if (mx->lod_values > 0) {
-    ms->lod_values = calloc(1, mx->lod_values);
+  if (mx->lod_values_bytes > 0) {
+    ms->lod_values = calloc(1, mx->lod_values_bytes);
     CHECK(Fail, ms->lod_values);
-    ms->lod_values_bytes = mx->lod_values;
+    ms->lod_values_bytes = mx->lod_values_bytes;
   }
 
   return 0;
@@ -364,11 +334,11 @@ multiarray_tile_stream_cpu_create(
     (struct array_descriptor*)calloc((size_t)n_arrays, sizeof(struct array_descriptor));
   CHECK(Fail, ms->arrays);
 
-  struct pool_maxima mx = { 0 };
+  struct pool_maxima maxima = { 0 };
   for (int i = 0; i < n_arrays; ++i)
-    CHECK(Fail, init_array_descriptor(&ms->arrays[i], &configs[i], sinks[i], &mx) == 0);
+    CHECK(Fail, init_array_descriptor(&ms->arrays[i], &configs[i], sinks[i], &maxima) == 0);
 
-  CHECK(Fail, alloc_shared_buffers(ms, &mx) == 0);
+  CHECK(Fail, alloc_shared_buffers(ms, &maxima) == 0);
 
   ms->writer.update = update_impl;
   ms->writer.flush = flush_impl;
@@ -405,17 +375,17 @@ multiarray_tile_stream_cpu_destroy(struct multiarray_tile_stream_cpu* ms)
 
   if (ms->arrays) {
     for (int i = 0; i < ms->n_arrays; ++i) {
-      struct array_descriptor* d = &ms->arrays[i];
-      for (int lv = 0; lv < d->levels.nlod; ++lv) {
-        struct shard_state* ss = &d->shard[lv];
+      struct array_descriptor* desc = &ms->arrays[i];
+      for (int lv = 0; lv < desc->levels.nlod; ++lv) {
+        struct shard_state* ss = &desc->shard[lv];
         if (ss->shards) {
           for (uint64_t si = 0; si < ss->shard_inner_count; ++si)
             free(ss->shards[si].index);
           free(ss->shards);
         }
       }
-      free(d->dim0_accum);
-      computed_stream_layouts_free(&d->cl);
+      free(desc->dim0_accum);
+      computed_stream_layouts_free(&desc->cl);
     }
     free(ms->arrays);
   }
@@ -460,12 +430,12 @@ multiarray_tile_stream_cpu_get_metrics(
 static void
 recompute_luts(struct multiarray_tile_stream_cpu* ms, int array_index)
 {
-  struct array_descriptor* d = &ms->arrays[array_index];
+  struct array_descriptor* desc = &ms->arrays[array_index];
   struct lut_targets luts = {
     .scatter_lut = ms->scatter_lut,
     .scatter_batch_offsets = ms->scatter_batch_offsets,
   };
-  for (int lv = 0; lv < d->levels.nlod; ++lv) {
+  for (int lv = 0; lv < desc->levels.nlod; ++lv) {
     luts.chunk_to_shard_map[lv] = ms->chunk_to_shard_map[lv];
     luts.batch_gather[lv] = ms->batch_gather[lv];
     luts.batch_chunk_to_shard_map[lv] = ms->batch_chunk_to_shard_map[lv];
@@ -473,7 +443,7 @@ recompute_luts(struct multiarray_tile_stream_cpu* ms, int array_index)
     luts.lod_batch_offsets[lv] = ms->lod_batch_offsets[lv];
   }
   cpu_pipeline_compute_luts(
-    &d->cl, &d->levels, d->batch_active_count, d->agg_layout, &luts);
+    &desc->cl, &desc->levels, desc->batch_active_count, desc->agg_layout, &luts);
   ms->luts_computed_for = array_index;
 }
 
@@ -491,20 +461,20 @@ static struct flush_batch_params
 make_flush_params(struct multiarray_tile_stream_cpu* ms,
                   struct array_descriptor* desc)
 {
-  const size_t bpe = dtype_bpe(desc->config.dtype);
+  const size_t bytes_per_element = dtype_bpe(desc->config.dtype);
   struct flush_batch_params p = {
     .codec = desc->config.codec,
     .chunk_pool = ms->chunk_pool,
-    .chunk_stride_bytes = desc->layout.chunk_stride * bpe,
-    .chunk_bytes = desc->layout.chunk_elements * bpe,
+    .chunk_stride_bytes = desc->layout.chunk_stride * bytes_per_element,
+    .chunk_bytes = desc->layout.chunk_elements * bytes_per_element,
     .compressed = ms->compressed,
-    .max_output_size = desc->cl.max_output_size,
+    .max_output_size_bytes = desc->cl.max_output_size,
     .comp_sizes = ms->comp_sizes,
     .total_chunks = desc->levels.total_chunks,
     .nlod = desc->levels.nlod,
-    .shard_order_sizes = ms->shard_order_sizes,
+    .shard_order_sizes_bytes = ms->shard_order_sizes,
     .sink = desc->sink,
-    .shard_alignment = desc->config.shard_alignment,
+    .shard_alignment_bytes = desc->config.shard_alignment,
     .metrics = ms->metrics_enabled ? &ms->metrics : NULL,
   };
   for (int lv = 0; lv < desc->levels.nlod; ++lv) {
@@ -559,7 +529,7 @@ switch_to_array(struct multiarray_tile_stream_cpu* ms,
   if (ms->active >= 0) {
     struct array_descriptor* departing = &ms->arrays[ms->active];
 
-    if (departing->cursor % departing->layout.epoch_elements != 0)
+    if (departing->cursor_elements % departing->layout.epoch_elements != 0)
       return multiarray_writer_not_flushable;
 
     if (departing->batch_accumulated > 0) {
@@ -583,33 +553,39 @@ switch_to_array(struct multiarray_tile_stream_cpu* ms,
   return 0;
 }
 
-// Flush the current batch if full, then record the epoch mask.
-// Returns 0 on success.
+// Flush the current batch if full.  Returns 0 on success.
 static int
 flush_batch_if_full(struct multiarray_tile_stream_cpu* ms,
                     struct array_descriptor* desc,
-                    size_t bpe)
+                    size_t bytes_per_element)
 {
-  if (desc->batch_accumulated == desc->cl.epochs_per_batch) {
-    struct flush_batch_params fp = make_flush_params(ms, desc);
-    if (cpu_pipeline_flush_batch(
-          &fp, desc->batch_accumulated, desc->batch_active_masks))
-      return 1;
-    desc->batch_accumulated = 0;
+  if (desc->batch_accumulated != desc->cl.epochs_per_batch)
+    return 0;
 
-    memset(ms->chunk_pool,
-           0,
-           (uint64_t)desc->cl.epochs_per_batch *
-             desc->levels.total_chunks *
-             desc->layout.chunk_stride * bpe);
-  }
+  struct flush_batch_params fp = make_flush_params(ms, desc);
+  if (cpu_pipeline_flush_batch(
+        &fp, desc->batch_accumulated, desc->batch_active_masks))
+    return 1;
+  desc->batch_accumulated = 0;
 
+  memset(ms->chunk_pool,
+         0,
+         (uint64_t)desc->cl.epochs_per_batch *
+           desc->levels.total_chunks *
+           desc->layout.chunk_stride * bytes_per_element);
+  return 0;
+}
+
+static void
+clear_lod_values(struct multiarray_tile_stream_cpu* ms,
+                 const struct array_descriptor* desc,
+                 size_t bytes_per_element)
+{
   if (desc->levels.enable_multiscale && ms->lod_values) {
     size_t lod_bytes =
-      desc->cl.plan.levels.ends[desc->cl.plan.nlod - 1] * bpe;
+      desc->cl.plan.levels.ends[desc->cl.plan.nlod - 1] * bytes_per_element;
     memset(ms->lod_values, 0, lod_bytes);
   }
-  return 0;
 }
 
 // ---- Writer: update ----
@@ -621,7 +597,7 @@ update_impl(struct multiarray_writer* self, int array_index, struct slice data)
     container_of(self, struct multiarray_tile_stream_cpu, writer);
 
   if (array_index < 0 || array_index >= ms->n_arrays)
-    return mw_fail_at(data.beg, data.end);
+    return multiarray_writer_fail_at(data.beg, data.end);
 
   struct array_descriptor* desc = &ms->arrays[array_index];
 
@@ -632,19 +608,19 @@ update_impl(struct multiarray_writer* self, int array_index, struct slice data)
       return (struct multiarray_writer_result){ .error = err, .rest = data };
   }
 
-  const size_t bpe = dtype_bpe(desc->config.dtype);
+  const size_t bytes_per_element = dtype_bpe(desc->config.dtype);
   const uint8_t* src = (const uint8_t*)data.beg;
   const uint8_t* end = (const uint8_t*)data.end;
-  const uint64_t max_cursor = desc->max_cursor;
+  const uint64_t max_cursor = desc->max_cursor_elements;
 
   while (src < end) {
     // Finished: flush and return unconsumed data.
-    if (max_cursor > 0 && desc->cursor >= max_cursor) {
+    if (max_cursor > 0 && desc->cursor_elements >= max_cursor) {
       if (desc->batch_accumulated > 0) {
         struct flush_batch_params fp = make_flush_params(ms, desc);
         if (cpu_pipeline_flush_batch(
               &fp, desc->batch_accumulated, desc->batch_active_masks))
-          return mw_fail_at(src, end);
+          return multiarray_writer_fail_at(src, end);
         desc->batch_accumulated = 0;
       }
       return (struct multiarray_writer_result){
@@ -656,54 +632,55 @@ update_impl(struct multiarray_writer* self, int array_index, struct slice data)
     // How many elements to process this iteration.
     const uint64_t epoch_remaining =
       desc->layout.epoch_elements -
-      (desc->cursor % desc->layout.epoch_elements);
-    const uint64_t input_remaining = (uint64_t)(end - src) / bpe;
+      (desc->cursor_elements % desc->layout.epoch_elements);
+    const uint64_t input_remaining = (uint64_t)(end - src) / bytes_per_element;
     uint64_t elements =
       epoch_remaining < input_remaining ? epoch_remaining : input_remaining;
     if (max_cursor > 0) {
-      uint64_t cap = max_cursor - desc->cursor;
+      uint64_t cap = max_cursor - desc->cursor_elements;
       if (elements > cap)
         elements = cap;
     }
-    const uint64_t bytes = elements * bpe;
+    const uint64_t bytes = elements * bytes_per_element;
 
     // Scatter into pool (or LOD linear buffer for multiscale).
     if (desc->levels.enable_multiscale) {
-      uint64_t epoch_offset = desc->cursor % desc->layout.epoch_elements;
-      memcpy((char*)ms->linear + epoch_offset * bpe, src, bytes);
+      uint64_t epoch_offset = desc->cursor_elements % desc->layout.epoch_elements;
+      memcpy((char*)ms->linear + epoch_offset * bytes_per_element, src, bytes);
     } else {
       void* epoch_pool =
         (char*)ms->chunk_pool + (uint64_t)desc->batch_accumulated *
                                   desc->levels.total_chunks *
-                                  desc->layout.chunk_stride * bpe;
-      if (transpose_cpu(epoch_pool, src, bytes, (uint8_t)bpe, desc->cursor,
+                                  desc->layout.chunk_stride * bytes_per_element;
+      if (transpose_cpu(epoch_pool, src, bytes, (uint8_t)bytes_per_element, desc->cursor_elements,
                         desc->layout.lifted_rank,
                         desc->layout.lifted_shape,
                         desc->layout.lifted_strides))
-        return mw_fail_at(src, end);
+        return multiarray_writer_fail_at(src, end);
     }
 
-    desc->cursor += elements;
+    desc->cursor_elements += elements;
     src += bytes;
 
     // Epoch boundary: scatter LOD, record mask, maybe flush batch.
-    if (desc->cursor % desc->layout.epoch_elements == 0 &&
-        desc->cursor > 0) {
+    if (desc->cursor_elements % desc->layout.epoch_elements == 0 &&
+        desc->cursor_elements > 0) {
       uint32_t active_mask = 1;
       if (desc->levels.enable_multiscale) {
         struct scatter_epoch_params sp = make_scatter_params(ms, desc);
         if (cpu_pipeline_scatter_epoch(
               &sp, desc->batch_accumulated, &active_mask))
-          return mw_fail_at(src, end);
+          return multiarray_writer_fail_at(src, end);
       }
 
       if (desc->batch_accumulated >= MAX_BATCH_EPOCHS)
-        return mw_fail_at(src, end);
+        return multiarray_writer_fail_at(src, end);
       desc->batch_active_masks[desc->batch_accumulated] = active_mask;
       desc->batch_accumulated++;
 
-      if (flush_batch_if_full(ms, desc, bpe))
-        return mw_fail_at(src, end);
+      if (flush_batch_if_full(ms, desc, bytes_per_element))
+        return multiarray_writer_fail_at(src, end);
+      clear_lod_values(ms, desc, bytes_per_element);
     }
   }
 
@@ -723,7 +700,7 @@ flush_partial_epoch(struct multiarray_tile_stream_cpu* ms)
     return 0;
 
   struct array_descriptor* desc = &ms->arrays[ms->active];
-  if (desc->cursor % desc->layout.epoch_elements == 0)
+  if (desc->cursor_elements % desc->layout.epoch_elements == 0)
     return 0;
 
   // If batch is full, flush it before adding the partial epoch.
@@ -751,6 +728,8 @@ flush_partial_epoch(struct multiarray_tile_stream_cpu* ms)
 }
 
 // Flush all pending batches across all arrays.
+// Unlike switch_to_array, we do NOT zero the chunk pool here — the batch
+// data was written while the array was active and is still valid in the pool.
 static int
 flush_all_batches(struct multiarray_tile_stream_cpu* ms)
 {

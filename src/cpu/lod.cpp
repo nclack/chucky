@@ -492,8 +492,8 @@ lod_cpu_morton_to_chunks(const lod_plan* p,
 {
   const uint64_t lod_count = p->lod_nelem[lv];
   const lod_span lv_span = lod_spans_at(&p->levels, (uint64_t)lv);
-  const size_t bpe = dtype_bpe(dtype);
-  const char* lv_values = (const char*)values + lv_span.beg * bpe;
+  const size_t bytes_per_element = dtype_bpe(dtype);
+  const char* lv_values = (const char*)values + lv_span.beg * bytes_per_element;
 
   // Use provided LUT or build one (legacy/standalone path).
   uint32_t* chunk_lut_alloc = NULL;
@@ -524,14 +524,14 @@ lod_cpu_dim0_fold(const lod_plan* p,
                   enum dtype dtype,
                   lod_reduce_method method)
 {
-  const size_t bpe = dtype_bpe(dtype);
+  const size_t bytes_per_element = dtype_bpe(dtype);
   uint64_t accum_offset = 0;
 
   for (int lv = 1; lv < p->nlod; ++lv) {
     lod_span lev = lod_spans_at(&p->levels, (uint64_t)lv);
     uint64_t n = p->batch_count * p->lod_nelem[lv];
-    const char* src = (const char*)morton_values + lev.beg * bpe;
-    char* dst = (char*)accum + accum_offset * bpe;
+    const char* src = (const char*)morton_values + lev.beg * bytes_per_element;
+    char* dst = (char*)accum + accum_offset * bytes_per_element;
 
 #define DO(T)                                                                  \
   dim0_fold_typed((T*)dst, (const T*)src, n, counts[lv], lv, method)
@@ -553,7 +553,7 @@ lod_cpu_dim0_emit(const lod_plan* p,
                   enum dtype dtype,
                   lod_reduce_method method)
 {
-  const size_t bpe = dtype_bpe(dtype);
+  const size_t bytes_per_element = dtype_bpe(dtype);
   lod_span lev = lod_spans_at(&p->levels, (uint64_t)lv);
   uint64_t n = p->batch_count * p->lod_nelem[lv];
 
@@ -562,8 +562,8 @@ lod_cpu_dim0_emit(const lod_plan* p,
   for (int k = 1; k < lv; ++k)
     accum_offset += p->batch_count * p->lod_nelem[k];
 
-  char* dst = (char*)morton_values + lev.beg * bpe;
-  const char* src = (const char*)accum + accum_offset * bpe;
+  char* dst = (char*)morton_values + lev.beg * bytes_per_element;
+  const char* src = (const char*)accum + accum_offset * bytes_per_element;
 
 #define DO(T) dim0_emit_typed((T*)dst, (const T*)src, n, count, method)
   DISPATCH(dtype, DO);

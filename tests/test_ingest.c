@@ -47,7 +47,7 @@ test_ingest_single_epoch(void)
   const int rank = 3;
   const uint64_t dim_sizes[] = { 4, 4, 6 };
   const uint64_t chunk_sizes[] = { 2, 2, 3 };
-  const size_t bpe = 2;
+  const size_t bytes_per_element = 2;
 
   uint8_t lifted_rank;
   uint64_t lifted_shape[MAX_RANK];
@@ -66,8 +66,8 @@ test_ingest_single_epoch(void)
                       &chunks_per_epoch,
                       &epoch_elements);
 
-  const size_t src_bytes = epoch_elements * bpe;
-  const size_t pool_bytes = chunks_per_epoch * chunk_stride * bpe;
+  const size_t src_bytes = epoch_elements * bytes_per_element;
+  const size_t pool_bytes = chunks_per_epoch * chunk_stride * bytes_per_element;
 
   log_info("  epoch_elements=%lu chunks_per_epoch=%lu pool_bytes=%lu",
            (unsigned long)epoch_elements,
@@ -121,7 +121,7 @@ test_ingest_single_epoch(void)
                                   (void*)d_pool,
                                   pool_ready,
                                   &cursor,
-                                  bpe,
+                                  bytes_per_element,
                                   h2d,
                                   compute) == 0);
     CHECK(Fail, cursor == epoch_elements);
@@ -181,7 +181,7 @@ test_ingest_incremental(void)
   const int rank = 3;
   const uint64_t dim_sizes[] = { 4, 4, 6 };
   const uint64_t chunk_sizes[] = { 2, 2, 3 };
-  const size_t bpe = 2;
+  const size_t bytes_per_element = 2;
 
   uint8_t lifted_rank;
   uint64_t lifted_shape[MAX_RANK];
@@ -200,8 +200,8 @@ test_ingest_incremental(void)
                       &chunks_per_epoch,
                       &epoch_elements);
 
-  const size_t src_bytes = epoch_elements * bpe;
-  const size_t pool_bytes = chunks_per_epoch * chunk_stride * bpe;
+  const size_t src_bytes = epoch_elements * bytes_per_element;
+  const size_t pool_bytes = chunks_per_epoch * chunk_stride * bytes_per_element;
   const size_t half = src_bytes / 2;
 
   struct staging_state stage = { 0 };
@@ -251,7 +251,7 @@ test_ingest_incremental(void)
                                   (void*)d_pool,
                                   pool_ready,
                                   &cursor,
-                                  bpe,
+                                  bytes_per_element,
                                   h2d,
                                   compute) == 0);
     CHECK(Fail, cursor == epoch_elements / 2);
@@ -266,7 +266,7 @@ test_ingest_incremental(void)
                                   (void*)d_pool,
                                   pool_ready,
                                   &cursor,
-                                  bpe,
+                                  bytes_per_element,
                                   h2d,
                                   compute) == 0);
     CHECK(Fail, cursor == epoch_elements);
@@ -323,9 +323,9 @@ test_ingest_multiscale(void)
 {
   log_info("=== test_ingest_multiscale ===");
 
-  const size_t bpe = 2;
+  const size_t bytes_per_element = 2;
   const uint64_t epoch_elements = 48;
-  const size_t src_bytes = epoch_elements * bpe;
+  const size_t src_bytes = epoch_elements * bytes_per_element;
 
   struct staging_state stage = { 0 };
   CUstream h2d = 0, compute = 0;
@@ -353,7 +353,7 @@ test_ingest_multiscale(void)
     uint64_t cursor = 0;
     CHECK(Fail,
           ingest_dispatch_multiscale(
-            &stage, d_linear, epoch_elements, &cursor, bpe, h2d, compute) == 0);
+            &stage, d_linear, epoch_elements, &cursor, bytes_per_element, h2d, compute) == 0);
     CHECK(Fail, cursor == epoch_elements);
   }
 

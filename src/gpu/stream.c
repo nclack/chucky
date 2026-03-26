@@ -22,10 +22,10 @@ tile_stream_gpu_flush(struct writer* self);
 static inline void*
 current_pool_epoch(struct tile_stream_gpu* s, uint32_t epoch_in_batch)
 {
-  const size_t bpe = dtype_bpe(s->config.dtype);
+  const size_t bytes_per_element = dtype_bpe(s->config.dtype);
   return (char*)s->pools.buf[s->pools.current] + (uint64_t)epoch_in_batch *
                                                    s->levels.total_chunks *
-                                                   s->layout.chunk_stride * bpe;
+                                                   s->layout.chunk_stride * bytes_per_element;
 }
 
 // --- Ingest dispatch ---
@@ -65,7 +65,7 @@ tile_stream_gpu_append(struct writer* self, struct slice input)
 {
   struct tile_stream_gpu* s =
     container_of(self, struct tile_stream_gpu, writer);
-  const size_t bpe = dtype_bpe(s->config.dtype);
+  const size_t bytes_per_element = dtype_bpe(s->config.dtype);
   const size_t buffer_capacity = s->config.buffer_capacity_bytes;
   const uint8_t* src = (const uint8_t*)input.beg;
   const uint8_t* end = (const uint8_t*)input.end;
@@ -87,7 +87,7 @@ tile_stream_gpu_append(struct writer* self, struct slice input)
 
     const uint64_t epoch_remaining =
       s->layout.epoch_elements - (s->cursor % s->layout.epoch_elements);
-    const uint64_t input_remaining = (uint64_t)(end - src) / bpe;
+    const uint64_t input_remaining = (uint64_t)(end - src) / bytes_per_element;
     uint64_t elements_this_pass =
       epoch_remaining < input_remaining ? epoch_remaining : input_remaining;
 
@@ -98,7 +98,7 @@ tile_stream_gpu_append(struct writer* self, struct slice input)
         elements_this_pass = remaining_capacity;
     }
 
-    const uint64_t bytes_this_pass = elements_this_pass * bpe;
+    const uint64_t bytes_this_pass = elements_this_pass * bytes_per_element;
 
     {
       uint64_t written = 0;

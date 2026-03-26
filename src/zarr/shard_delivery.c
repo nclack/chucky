@@ -8,6 +8,32 @@
 #include <string.h>
 
 int
+init_shard_state(struct shard_state* ss,
+                 const struct level_layout_info* li)
+{
+  *ss = (struct shard_state){
+    .chunks_per_shard_0 = li->chunks_per_shard_0,
+    .chunks_per_shard_inner = li->chunks_per_shard_inner,
+    .chunks_per_shard_total = li->chunks_per_shard_total,
+    .shard_inner_count = li->shard_inner_count,
+  };
+  ss->shards = (struct active_shard*)calloc(
+    li->shard_inner_count, sizeof(struct active_shard));
+  if (!ss->shards)
+    return 1;
+  for (uint64_t si = 0; si < li->shard_inner_count; ++si) {
+    ss->shards[si].index = (uint64_t*)malloc(
+      li->chunks_per_shard_total * 2 * sizeof(uint64_t));
+    if (!ss->shards[si].index)
+      return 1;
+    memset(ss->shards[si].index,
+           0xFF,
+           li->chunks_per_shard_total * 2 * sizeof(uint64_t));
+  }
+  return 0;
+}
+
+int
 finalize_shards(struct shard_state* ss, size_t shard_alignment)
 {
   int err = 0;

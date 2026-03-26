@@ -79,7 +79,7 @@ resolve_storage_order(uint8_t rank,
 static int
 compute_level_layout(struct tile_stream_layout* layout,
                      uint8_t rank,
-                     size_t bpe,
+                     size_t bytes_per_element,
                      const struct dimension* dims,
                      const uint64_t* level_shape,
                      size_t alignment,
@@ -98,9 +98,9 @@ compute_level_layout(struct tile_stream_layout* layout,
   }
 
   {
-    size_t chunk_bytes = layout->chunk_elements * bpe;
+    size_t chunk_bytes = layout->chunk_elements * bytes_per_element;
     size_t padded_bytes = align_up(chunk_bytes, alignment);
-    layout->chunk_stride = padded_bytes / bpe;
+    layout->chunk_stride = padded_bytes / bytes_per_element;
   }
 
   {
@@ -121,7 +121,7 @@ compute_level_layout(struct tile_stream_layout* layout,
   layout->epoch_elements = layout->chunks_per_epoch * layout->chunk_elements;
   layout->lifted_strides[0] = 0; // collapse epoch dim
   layout->chunk_pool_bytes =
-    layout->chunks_per_epoch * layout->chunk_stride * bpe;
+    layout->chunks_per_epoch * layout->chunk_stride * bytes_per_element;
   return 0;
 Fail:
   return 1;
@@ -198,7 +198,7 @@ compute_stream_layouts(
   struct computed_stream_layouts* out)
 {
   const uint8_t rank = config->rank;
-  const size_t bpe = dtype_bpe(config->dtype);
+  const size_t bytes_per_element = dtype_bpe(config->dtype);
   const struct dimension* dims = config->dimensions;
 
   memset(out, 0, sizeof(*out));
@@ -220,7 +220,7 @@ compute_stream_layouts(
   // --- All level layouts ---
   for (int lv = 0; lv < out->levels.nlod; ++lv)
     CHECK(Fail,
-          compute_level_layout(&out->layouts[lv], rank, bpe, dims,
+          compute_level_layout(&out->layouts[lv], rank, bytes_per_element, dims,
                                out->plan.shapes[lv], codec_alignment,
                                storage_order) == 0);
 
@@ -238,7 +238,7 @@ compute_stream_layouts(
 
   // --- Codec-derived max_output_size ---
   {
-    const size_t chunk_bytes = out->layouts[0].chunk_stride * bpe;
+    const size_t chunk_bytes = out->layouts[0].chunk_stride * bytes_per_element;
     out->max_output_size = max_output_size_fn(config->codec, chunk_bytes);
     if (config->codec != CODEC_NONE && out->max_output_size == 0)
       goto Fail;

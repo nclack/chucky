@@ -29,8 +29,8 @@ s3_validate_part_count(uint8_t rank,
                        enum dtype data_type,
                        size_t part_size)
 {
-  size_t bpe = dtype_bpe(data_type);
-  if (bpe == 0)
+  size_t bytes_per_element = dtype_bpe(data_type);
+  if (bytes_per_element == 0)
     return 1;
 
   uint64_t shard_elements = 1;
@@ -45,7 +45,7 @@ s3_validate_part_count(uint8_t rank,
     shard_elements *= dimensions[d].chunk_size * cps;
   }
 
-  uint64_t shard_data_bytes = shard_elements * bpe;
+  uint64_t shard_data_bytes = shard_elements * bytes_per_element;
   uint64_t index_bytes = chunks_per_shard_total * 16 + 4;
   uint64_t max_shard_bytes = shard_data_bytes + index_bytes;
   uint64_t max_parts = ceildiv(max_shard_bytes, part_size);

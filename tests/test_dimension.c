@@ -306,7 +306,7 @@ test_dim_info_single_append(void)
   CHECK(Error, info.inner.end == &dims[3]);
   CHECK(Error, info.append_downsample == 0);
   CHECK(Error, info.lod_mask == 0);
-  CHECK(Error, info.inner_append_count == 1);
+  CHECK(Error, info.bounded_append_chunks == 1);
 
   ok = 1;
 Error:
@@ -345,8 +345,8 @@ test_dim_info_two_append(void)
   // LOD mask: dims 2,3 have downsample -> bits 2,3
   CHECK(Error, info.lod_mask == ((1u << 2) | (1u << 3)));
 
-  // inner_append_count = chunk_count for dim 1 = ceil(10/1) = 10
-  CHECK(Error, info.inner_append_count == 10);
+  // bounded_append_chunks = chunk_count for dim 1 = ceil(10/1) = 10
+  CHECK(Error, info.bounded_append_chunks == 10);
 
   // dim_index works
   CHECK(Error, dim_index(&info, &dims[0]) == 0);
@@ -385,8 +385,8 @@ test_dim_info_two_append_with_downsample(void)
   // dim 1 (z) is append, not in LOD mask
   CHECK(Error, info.lod_mask == ((1u << 3) | (1u << 4)));
 
-  // inner_append_count = chunk_count for dim 1 = ceil(10/1) = 10
-  CHECK(Error, info.inner_append_count == 10);
+  // bounded_append_chunks = chunk_count for dim 1 = ceil(10/1) = 10
+  CHECK(Error, info.bounded_append_chunks == 10);
 
   ok = 1;
 Error:
@@ -426,9 +426,9 @@ test_dim_info_three_append(void)
   // LOD mask: dims 3,4 (y,x) have downsample
   CHECK(Error, info.lod_mask == ((1u << 3) | (1u << 4)));
 
-  // inner_append_count = chunk_count[1] * chunk_count[2]
+  // bounded_append_chunks = chunk_count[1] * chunk_count[2]
   //   = ceil(8/1) * ceil(3/1) = 8 * 3 = 24
-  CHECK(Error, info.inner_append_count == 24);
+  CHECK(Error, info.bounded_append_chunks == 24);
 
   // dim_index works for all dims
   CHECK(Error, dim_index(&info, &dims[0]) == 0);

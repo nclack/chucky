@@ -204,7 +204,7 @@ struct zarr_fs_sink
   uint64_t chunk_count[MAX_ZARR_RANK];
   uint64_t chunks_per_shard[MAX_ZARR_RANK];
   uint64_t shard_count[MAX_ZARR_RANK];
-  uint64_t shard_inner_count; // prod(shard_count[d] for d > 0)
+  uint64_t shard_inner_count; // prod(shard_count[d] for d >= n_append)
 
   // Paths
   char array_dir[4096]; // "{store_path}/{array_name}"

@@ -46,8 +46,8 @@ test_two_append_basic(void)
   CHECK(Fail, dim_info_n_append(&info) == 2);
   CHECK(Fail, info.append_downsample == 0);
   CHECK(Fail, info.lod_mask == 0); // no downsample
-  // inner_append_count = chunk_count for z = ceil(4/1) = 4
-  CHECK(Fail, info.inner_append_count == 4);
+  // bounded_append_chunks = chunk_count for z = ceil(4/1) = 4
+  CHECK(Fail, info.bounded_append_chunks == 4);
 
   struct tile_stream_configuration config = {
     .buffer_capacity_bytes = 64 * 1024,

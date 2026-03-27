@@ -1,8 +1,6 @@
 #pragma once
 
 #include "dimension.h"
-#include "util/ceildiv.h"
-#include <assert.h>
 #include <stdint.h>
 
 // View into a contiguous range of dimensions (beg/end pointer pair).
@@ -36,7 +34,7 @@ struct dim_info
 
   int append_downsample;       // rightmost append dim has downsample
   uint32_t lod_mask;           // bitmask: inner dims with downsample=1
-  uint64_t inner_append_count; // prod(chunk_count[d] for d=1..n_append-1)
+  uint64_t bounded_append_chunks; // prod(chunk_count[d] for d=1..n_append-1)
 };
 
 static inline uint8_t
@@ -60,21 +58,13 @@ dim_index(const struct dim_info* info, const struct dimension* d)
 
 // Decompose a flat append-chunk count into per-dimension append sizes.
 // Fills append_sizes[0..n_append-1].
-static inline void
+//
+// Bounded append dims (1..n_append-1) always report their declared size.
+// Only dim 0 may grow, so its size is derived from the flat count.
+void
 dim_info_decompose_append_sizes(const struct dim_info* info,
                                 uint64_t total_append_chunks,
-                                uint64_t* append_sizes)
-{
-  uint8_t na = dim_info_n_append(info);
-  for (uint8_t i = 0; i < na; ++i)
-    append_sizes[i] = 0;
-  for (const struct dimension* d = info->append.beg + 1; d < info->append.end; ++d)
-    append_sizes[dim_index(info, d)] = d->size;
-  const uint64_t iac = info->inner_append_count;
-  assert(iac > 0 && "inner_append_count must be > 0 after valid dim_info_init");
-  append_sizes[0] =
-    ceildiv(total_append_chunks, iac) * info->append.beg[0].chunk_size;
-}
+                                uint64_t* append_sizes);
 
 // Partition dims into append/inner, validate constraints, precompute
 // derived values. Returns 0 on success.

@@ -340,7 +340,7 @@ zarr_fs_sink_update_append(struct shard_sink* self,
 {
   (void)level;
   struct zarr_fs_sink* zs = (struct zarr_fs_sink*)self;
-  if (n_append > zs->rank)
+  if (n_append == 0 || n_append > zs->rank)
     return 1;
 
   // Check if any append dim changed
@@ -609,7 +609,7 @@ zarr_multiscale_update_append(struct shard_sink* self,
   if (level >= ms->nlod)
     return 1;
 
-  // Skip if unchanged (only dim 0 can be unbounded)
+  // Skip if unchanged (only the outermost append dim can be unbounded)
   uint64_t old = ms->levels[level]->dimensions[0].size;
   if (zarr_fs_sink_update_append(
         &ms->levels[level]->base, level, n_append, append_sizes))

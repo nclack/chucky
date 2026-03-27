@@ -40,7 +40,7 @@ extern "C"
                                const uint64_t* batch_chunk_offsets,
                                enum dtype dtype);
 
-  // Dim0 fold: accumulate inner-reduced data (levels 1+) from the morton
+  // Append fold: accumulate inner-reduced data (levels 1+) from the morton
   // buffer into the accumulator. On first call (counts[lv]==0) copies;
   // subsequent calls reduce (mean/min/max).
   // accum: buffer sized to sum(batch_count * lod_nelem[lv]) for lv=1..nlod-1.
@@ -52,7 +52,7 @@ extern "C"
                         enum dtype dtype,
                         enum lod_reduce_method method);
 
-  // Dim0 emit: finalize accumulator for level lv back to morton buffer.
+  // Append emit: finalize accumulator for level lv back to morton buffer.
   // For float mean: divides by count. For int mean/min/max: copies.
   int lod_cpu_append_emit(const struct lod_plan* p,
                         void* morton_values,

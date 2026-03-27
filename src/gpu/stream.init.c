@@ -154,7 +154,7 @@ init_metrics(int enable_multiscale)
     .scatter = mk_stream_metric(enable_multiscale ? "Copy" : "Scatter"),
     .lod_gather = mk_stream_metric("LOD Gather"),
     .lod_reduce = mk_stream_metric("LOD Reduce"),
-    .lod_append_fold = mk_stream_metric("Dim0 Fold"),
+    .lod_append_fold = mk_stream_metric("Append Fold"),
     .lod_morton_chunk = mk_stream_metric("LOD to chunks"),
     .compress = mk_stream_metric("Compress"),
     .aggregate = mk_stream_metric("Aggregate"),

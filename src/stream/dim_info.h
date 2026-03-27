@@ -21,8 +21,10 @@ dim_slice_len(struct dim_slice s)
 // Resolved partition of dims into append and inner groups.
 // Constructed once by dim_info_init(); immutable after.
 //
-// Append dims: leftmost contiguous prefix with chunk_size == 1.
-// Inner dims: everything else.
+// Append dims: always includes dim 0. When additional dims also have
+// chunk_size == 1, they extend the prefix — truncated at the first dim
+// with downsample set (only the rightmost append dim may be downsampled).
+// Inner dims: everything after the append prefix.
 // The slices point into the original dimension array (no copies).
 //
 // Lifetime: slices point into the dimension array passed to dim_info_init().

@@ -6,7 +6,6 @@
 #include "stream/layouts.h"
 #include "stream.cpu.h"
 #include "test_shard_sink.h"
-#include "defs.limits.h"
 #include "types.lod.h"
 #include "util/prelude.h"
 

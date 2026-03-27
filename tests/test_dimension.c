@@ -1,7 +1,6 @@
 #include "dimension.h"
 #include "stream/dim_info.h"
 #include "util/prelude.h"
-#include "stream.gpu.h"
 
 #include <stdio.h>
 #include <string.h>

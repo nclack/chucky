@@ -2,6 +2,7 @@
 #include "zarr/io_queue.h"
 #include "zarr/zarr_metadata.h"
 #include "defs.limits.h"
+#include "dimension.h"
 #include "lod/lod_plan.h"
 #include "platform/platform.h"
 #include "platform/platform_io.h"
@@ -409,8 +410,9 @@ zarr_fs_sink_create(const struct zarr_config* cfg)
       cs[d] = cfg->dimensions[d].chunk_size;
       cps[d] = cfg->dimensions[d].chunks_per_shard;
     }
+    const uint8_t na = dims_n_append(cfg->dimensions, cfg->rank);
     struct shard_geometry g;
-    shard_geometry_compute(&g, cfg->rank, 1, shape, cs, cps);
+    shard_geometry_compute(&g, cfg->rank, na, shape, cs, cps);
     memcpy(zs->chunk_count, g.chunk_count, cfg->rank * sizeof(uint64_t));
     memcpy(zs->chunks_per_shard, g.chunks_per_shard, cfg->rank * sizeof(uint64_t));
     memcpy(zs->shard_count, g.shard_count, cfg->rank * sizeof(uint64_t));
@@ -425,13 +427,17 @@ zarr_fs_sink_create(const struct zarr_config* cfg)
            cfg->array_name);
 
   // Create directory tree: ensure shard directories exist.
-  // When dim 0 is unbounded (size=0), only pre-create inner dirs for
-  // shard_epoch=0; further dirs are created on-demand in zarr_fs_sink_open.
+  // shard_inner_count = prod(shard_count[d] for d >= n_append).
+  // Bounded append dims (1..n_append-1) are included; dim 0 is only
+  // included when bounded. When dim 0 is unbounded (size=0), only
+  // pre-create dirs for shard_epoch=0; further dirs are created on-demand.
   {
-    uint64_t total_shards =
-      zs->shard_inner_count; // just inner dims for epoch 0
+    const uint8_t na = dims_n_append(cfg->dimensions, cfg->rank);
+    uint64_t total_shards = zs->shard_inner_count;
+    for (int d = 1; d < na; ++d)
+      total_shards *= zs->shard_count[d];
     if (cfg->dimensions[0].size > 0)
-      total_shards *= zs->shard_count[0]; // bounded: create all
+      total_shards *= zs->shard_count[0];
 
     for (uint64_t flat = 0; flat < total_shards; ++flat) {
       char key[256];
@@ -609,7 +615,10 @@ zarr_multiscale_update_append(struct shard_sink* self,
   if (level >= ms->nlod)
     return 1;
 
-  // Skip if unchanged (only the outermost append dim can be unbounded)
+  // Skip if dim 0 is unchanged. Only dim 0 can be unbounded (invariant
+  // enforced by dims_n_append), so it is the only append dim whose size
+  // changes at runtime. Bounded append dims (1..n_append-1) keep their
+  // declared size from creation.
   uint64_t old = ms->levels[level]->dimensions[0].size;
   if (zarr_fs_sink_update_append(
         &ms->levels[level]->base, level, n_append, append_sizes))

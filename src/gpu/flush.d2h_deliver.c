@@ -1,8 +1,6 @@
 #include "gpu/flush.d2h_deliver.h"
 #include "gpu/flush.helpers.h"
 
-#include "dimension.h"
-#include "gpu/lod.h"
 #include "gpu/metric.cuda.h"
 #include "platform/platform.h"
 #include "gpu/prelude.cuda.h"

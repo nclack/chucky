@@ -42,10 +42,9 @@ extern "C"
     }                                                                          \
   } while (0)
 
-  static inline uint64_t ceildiv(uint64_t a, uint64_t b)
-  {
-    return (a + b - 1) / b;
-  }
+// ceildiv is in its own header so it can be used from other headers
+// without pulling in prelude.h (which is private to .c files).
+#include "util/ceildiv.h"
 
   static inline size_t align_up(size_t x, size_t alignment)
   {

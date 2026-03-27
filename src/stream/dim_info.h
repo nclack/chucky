@@ -1,7 +1,8 @@
 #pragma once
 
 #include "dimension.h"
-#include "util/prelude.h"
+#include "util/ceildiv.h"
+#include <assert.h>
 #include <stdint.h>
 
 // View into a contiguous range of dimensions (beg/end pointer pair).
@@ -68,17 +69,18 @@ dim_info_decompose_append_sizes(const struct dim_info* info,
   for (const struct dimension* d = info->append.beg + 1; d < info->append.end; ++d)
     append_sizes[dim_index(info, d)] = d->size;
   const uint64_t iac = info->inner_append_count;
-  append_sizes[0] = (iac > 0)
-    ? ceildiv(total_append_chunks, iac) * info->append.beg[0].chunk_size
-    : 0;
+  assert(iac > 0 && "inner_append_count must be > 0 after valid dim_info_init");
+  append_sizes[0] =
+    ceildiv(total_append_chunks, iac) * info->append.beg[0].chunk_size;
 }
 
 // Partition dims into append/inner, validate constraints, precompute
 // derived values. Returns 0 on success.
 //
-// Validates: chunk_size > 0, storage_position is valid permutation with
-// append dims pinned, only dim 0 may be unbounded, only rightmost
-// append dim may have downsample.
+// Validates via dims_validate(): chunk_size > 0, storage_position is a
+// valid permutation with append dims pinned, only dim 0 may be unbounded.
+// Note: downsample on a non-rightmost append dim is not rejected — it
+// causes dims_n_append to truncate the prefix there (see dims_n_append).
 int
 dim_info_init(struct dim_info* info,
               const struct dimension* dims,

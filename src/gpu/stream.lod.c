@@ -132,12 +132,13 @@ init_gather_lut(struct lod_state* lod,
       batch_offsets[bi] = (uint32_t)offset;
     }
 
-    CU(Fail,
-       cuMemAlloc(&lod->d_batch_offsets, p->batch_count * sizeof(uint32_t)));
-    CU(Fail,
-       cuMemcpyHtoD(lod->d_batch_offsets,
-                    batch_offsets,
-                    p->batch_count * sizeof(uint32_t)));
+    CUresult r1 = cuMemAlloc(&lod->d_batch_offsets,
+                             p->batch_count * sizeof(uint32_t));
+    if (r1 != CUDA_SUCCESS) { free(batch_offsets); goto Fail; }
+    CUresult r2 = cuMemcpyHtoD(lod->d_batch_offsets,
+                                batch_offsets,
+                                p->batch_count * sizeof(uint32_t));
+    if (r2 != CUDA_SUCCESS) { free(batch_offsets); goto Fail; }
     free(batch_offsets);
   }
 
@@ -302,13 +303,13 @@ build_morton_lut_for_level(struct lod_state* lod,
       batch_offsets[bi] = (uint32_t)offset;
     }
 
-    CU(Fail,
-       cuMemAlloc(&lod->d_morton_batch_chunk_offsets[lv],
-                  p->batch_count * sizeof(uint32_t)));
-    CU(Fail,
-       cuMemcpyHtoD(lod->d_morton_batch_chunk_offsets[lv],
-                    batch_offsets,
-                    p->batch_count * sizeof(uint32_t)));
+    CUresult r1 = cuMemAlloc(&lod->d_morton_batch_chunk_offsets[lv],
+                             p->batch_count * sizeof(uint32_t));
+    if (r1 != CUDA_SUCCESS) { free(batch_offsets); goto Fail; }
+    CUresult r2 = cuMemcpyHtoD(lod->d_morton_batch_chunk_offsets[lv],
+                                batch_offsets,
+                                p->batch_count * sizeof(uint32_t));
+    if (r2 != CUDA_SUCCESS) { free(batch_offsets); goto Fail; }
     free(batch_offsets);
   }
 

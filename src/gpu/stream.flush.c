@@ -341,6 +341,7 @@ flush_partial_append(struct tile_stream_gpu* s)
   const int fc = s->pools.current;
   struct flush_slot_gpu* fs = &s->flush.slot[fc];
   fs->active_levels_mask = active_levels_mask;
+  fs->batch_active_masks[0] = active_levels_mask;
   fs->batch_epoch_count = 1; // partial append flush is always 1 epoch
 
   // Zero LOD level regions of pool, emit partial accums, scatter to chunks

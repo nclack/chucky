@@ -140,11 +140,17 @@ init_array_descriptor(struct array_descriptor* desc,
   const uint64_t total_chunks = desc->levels.total_chunks;
 
   // max_cursor
-  const struct dimension* dims = config->dimensions;
-  desc->max_cursor_elements =
-    (dims[0].size > 0)
-      ? ceildiv(dims[0].size, dims[0].chunk_size) * desc->layout.epoch_elements
-      : 0;
+  {
+    const struct dimension* dims = config->dimensions;
+    const uint8_t na = dim_info_n_append(&desc->cl.dims);
+    if (dims[0].size > 0) {
+      desc->max_cursor_elements = desc->layout.epoch_elements;
+      for (int d = 0; d < na; ++d)
+        desc->max_cursor_elements *= ceildiv(dims[d].size, dims[d].chunk_size);
+    } else {
+      desc->max_cursor_elements = 0;
+    }
+  }
 
   // Update pool maxima.
   maxima->chunk_pool_bytes =

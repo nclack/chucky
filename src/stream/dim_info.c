@@ -1,6 +1,5 @@
 #include "stream/dim_info.h"
 
-#include "defs.limits.h"
 #include "util/prelude.h"
 
 #include <string.h>
@@ -11,8 +10,7 @@ dim_info_init(struct dim_info* info,
               uint8_t rank)
 {
   CHECK(Fail, info);
-  CHECK(Fail, dims);
-  CHECK(Fail, rank > 0 && rank <= HALF_MAX_RANK);
+  CHECK(Fail, dims_validate(dims, rank) == 0);
 
   memset(info, 0, sizeof(*info));
 
@@ -20,51 +18,6 @@ dim_info_init(struct dim_info* info,
 
   info->append = (struct dim_slice){ .beg = dims, .end = dims + na };
   info->inner = (struct dim_slice){ .beg = dims + na, .end = dims + rank };
-
-  // --- Validate constraints ---
-
-  // chunk_size > 0
-  for (int d = 0; d < rank; ++d) {
-    if (dims[d].chunk_size == 0) {
-      log_error("dims[%d].chunk_size must be > 0", d);
-      goto Fail;
-    }
-  }
-
-  // Only dim 0 may be unbounded
-  for (int d = 1; d < rank; ++d) {
-    if (dims[d].size == 0) {
-      log_error("dims[%d].size must be > 0 (only dim 0 may be unbounded)", d);
-      goto Fail;
-    }
-  }
-
-  // Unbounded dim 0 requires chunks_per_shard > 0
-  if (dims[0].size == 0 && dims[0].chunks_per_shard == 0) {
-    log_error("dims[0].size=0 (unbounded) requires chunks_per_shard > 0");
-    goto Fail;
-  }
-
-  // Append dims pinned to identity storage positions
-  for (int d = 0; d < na; ++d) {
-    if (dims[d].storage_position != d) {
-      log_error("dims[%d].storage_position must be %d (append dim)", d, d);
-      goto Fail;
-    }
-  }
-
-  // Valid permutation
-  {
-    uint32_t seen = 0;
-    for (int d = 0; d < rank; ++d) {
-      uint8_t j = dims[d].storage_position;
-      if (j >= rank || (seen & (1u << j))) {
-        log_error("invalid storage_position permutation at dims[%d]", d);
-        goto Fail;
-      }
-      seen |= (1u << j);
-    }
-  }
 
   // --- Precompute derived values ---
 

@@ -4,6 +4,7 @@
 #include "util/index.ops.h"
 #include "util/prelude.h"
 
+#include <assert.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -303,6 +304,7 @@ lod_plan_init_from_epoch_dims(struct lod_plan* p,
                                uint8_t n_append,
                                int max_levels)
 {
+  assert(n_append > 0 && n_append <= rank);
   uint64_t shape[LOD_MAX_NDIM];
   uint64_t chunk_shape[LOD_MAX_NDIM];
   uint32_t lod_mask;
@@ -331,6 +333,7 @@ shard_geometry_compute(struct shard_geometry* g,
                        const uint64_t* chunk_size,
                        const uint64_t* chunks_per_shard)
 {
+  assert(n_append > 0 && n_append <= rank);
   g->shard_inner_count = 1;
   for (int d = 0; d < rank; ++d) {
     g->chunk_count[d] =

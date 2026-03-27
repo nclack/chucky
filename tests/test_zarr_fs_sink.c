@@ -444,6 +444,106 @@ Fail:
   return 1;
 }
 
+// --- Test: metadata with n_append=2 ---
+
+static int
+test_metadata_two_append(const char* tmpdir)
+{
+  log_info("=== test_metadata_two_append ===");
+
+  // 4D: t=unbounded, z=4, y=64, x=64
+  // chunk (1,1,32,32) → n_append=2 (t and z both have chunk_size=1)
+  struct dimension dims[] = {
+    { .size = 0,
+      .chunk_size = 1,
+      .chunks_per_shard = 4,
+      .name = "t",
+      .storage_position = 0 },
+    { .size = 4,
+      .chunk_size = 1,
+      .chunks_per_shard = 4,
+      .name = "z",
+      .storage_position = 1 },
+    { .size = 64,
+      .chunk_size = 32,
+      .chunks_per_shard = 2,
+      .name = "y",
+      .storage_position = 2 },
+    { .size = 64,
+      .chunk_size = 32,
+      .chunks_per_shard = 2,
+      .name = "x",
+      .storage_position = 3 },
+  };
+
+  struct zarr_config cfg = {
+    .store_path = tmpdir,
+    .array_name = "0",
+    .data_type = dtype_u16,
+    .fill_value = 0,
+    .rank = 4,
+    .dimensions = dims,
+  };
+
+  struct zarr_fs_sink* zs = zarr_fs_sink_create(&cfg);
+  CHECK(Fail, zs);
+
+  // Check root zarr.json
+  {
+    char path[4096];
+    snprintf(path, sizeof(path), "%s/zarr.json", tmpdir);
+    CHECK(Fail2, test_file_exists(path));
+
+    uint8_t* data;
+    size_t len;
+    CHECK(Fail2, read_file_all(path, &data, &len) == 0);
+    data[len < 4095 ? len : 4095] = '\0';
+    CHECK(Fail2, strstr((char*)data, "\"zarr_format\":3"));
+    CHECK(Fail2, strstr((char*)data, "\"node_type\":\"group\""));
+    free(data);
+  }
+
+  // Check array zarr.json
+  {
+    char path[4096];
+    snprintf(path, sizeof(path), "%s/0/zarr.json", tmpdir);
+    CHECK(Fail2, test_file_exists(path));
+
+    uint8_t* data;
+    size_t len;
+    CHECK(Fail2, read_file_all(path, &data, &len) == 0);
+    data[len < 4095 ? len : 4095] = '\0';
+
+    CHECK(Fail2, strstr((char*)data, "\"zarr_format\":3"));
+    CHECK(Fail2, strstr((char*)data, "\"node_type\":\"array\""));
+    CHECK(Fail2, strstr((char*)data, "\"data_type\":\"uint16\""));
+    CHECK(Fail2, strstr((char*)data, "\"shape\":[0,4,64,64]"));
+    // chunk_shape (shard shape) = chunk_size * chunks_per_shard = [4,4,64,64]
+    CHECK(Fail2, strstr((char*)data, "\"chunk_shape\":[4,4,64,64]"));
+    CHECK(Fail2, strstr((char*)data, "\"sharding_indexed\""));
+    CHECK(Fail2,
+          strstr((char*)data, "\"dimension_names\":[\"t\",\"z\",\"y\",\"x\"]"));
+    free(data);
+  }
+
+  // Check that the shard chunk directory exists
+  {
+    char path[4096];
+    snprintf(path, sizeof(path), "%s/0/c", tmpdir);
+    CHECK(Fail2, test_file_exists(path));
+  }
+
+  zarr_fs_sink_destroy(zs);
+  log_info("  PASS");
+  return 0;
+
+Fail2:
+  zarr_fs_sink_destroy(zs);
+Fail:
+  log_error("  FAIL");
+  return 1;
+}
+
 // --- Test: unbounded dim0 metadata update ---
 
 static int
@@ -1704,6 +1804,14 @@ main(int ac, char* av[])
     snprintf(sub, sizeof(sub), "%s/meta", tmpdir);
     test_mkdir(sub);
     ecode |= test_metadata(sub);
+  }
+
+  // Metadata test with n_append=2 (no CUDA needed)
+  {
+    char sub[4200];
+    snprintf(sub, sizeof(sub), "%s/meta2app", tmpdir);
+    test_mkdir(sub);
+    ecode |= test_metadata_two_append(sub);
   }
 
   // Multiscale metadata test (no CUDA needed)

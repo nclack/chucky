@@ -15,12 +15,12 @@ struct active_shard
 
 struct shard_state
 {
-  uint64_t epoch_in_shard;         // 0..chunks_per_shard[0]-1
-  uint64_t shard_epoch;            // s_0 coordinate (0, 1, 2, ...)
+  uint64_t epoch_in_shard;         // 0..chunks_per_shard_append-1
+  uint64_t shard_epoch;            // flat append shard index (0, 1, 2, ...)
   uint64_t shard_inner_count;      // S_inner = prod(shard_count[d] for d>=n_append)
   uint64_t chunks_per_shard_inner; // prod(tps[d] for d>=n_append)
   uint64_t chunks_per_shard_total; // prod(tps[d] for all d)
-  uint64_t chunks_per_shard_append;     // tps[0]
+  uint64_t chunks_per_shard_append;     // prod(tps[d] for d < n_append)
   struct active_shard* shards;     // array[shard_inner_count]
 };
 

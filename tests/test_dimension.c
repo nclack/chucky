@@ -395,6 +395,53 @@ Error:
 }
 
 static int
+test_dim_info_three_append(void)
+{
+  // n_append=3: 5D "tzcyx", chunk (1,1,1,64,64)
+  int ok = 0;
+  struct dimension dims[5];
+  uint64_t sizes[] = { 0, 8, 3, 128, 128 };
+  dims_create(dims, "tzcyx", sizes);
+  uint64_t cs[] = { 1, 1, 1, 64, 64 };
+  dims_set_chunk_sizes(dims, 5, cs);
+  dims[0].chunks_per_shard = 4;
+  dims[1].chunks_per_shard = 8;
+  dims[2].chunks_per_shard = 3;
+  dims_set_downsample_by_name(dims, 5, "yx");
+
+  struct dim_info info;
+  CHECK(Error, dim_info_init(&info, dims, 5) == 0);
+  CHECK(Error, dim_info_n_append(&info) == 3);
+  CHECK(Error, dim_info_rank(&info) == 5);
+
+  // append = dims[0..3), inner = dims[3..5)
+  CHECK(Error, dim_slice_len(info.append) == 3);
+  CHECK(Error, dim_slice_len(info.inner) == 2);
+  CHECK(Error, info.append.beg == &dims[0]);
+  CHECK(Error, info.inner.beg == &dims[3]);
+
+  // No downsample on any append dim
+  CHECK(Error, info.append_downsample == 0);
+
+  // LOD mask: dims 3,4 (y,x) have downsample
+  CHECK(Error, info.lod_mask == ((1u << 3) | (1u << 4)));
+
+  // inner_append_count = chunk_count[1] * chunk_count[2]
+  //   = ceil(8/1) * ceil(3/1) = 8 * 3 = 24
+  CHECK(Error, info.inner_append_count == 24);
+
+  // dim_index works for all dims
+  CHECK(Error, dim_index(&info, &dims[0]) == 0);
+  CHECK(Error, dim_index(&info, &dims[2]) == 2);
+  CHECK(Error, dim_index(&info, &dims[4]) == 4);
+
+  ok = 1;
+Error:
+  REPORT_TEST(ok);
+  return !ok;
+}
+
+static int
 test_dim_info_rejects_unbounded_non_dim0(void)
 {
   int ok = 0;
@@ -436,6 +483,7 @@ main(void)
     { "dim_info_single_append", test_dim_info_single_append },
     { "dim_info_two_append", test_dim_info_two_append },
     { "dim_info_two_append_with_downsample", test_dim_info_two_append_with_downsample },
+    { "dim_info_three_append", test_dim_info_three_append },
     { "dim_info_rejects_unbounded_non_dim0", test_dim_info_rejects_unbounded_non_dim0 },
   };
   for (size_t i = 0; i < sizeof(tests) / sizeof(tests[0]); ++i) {

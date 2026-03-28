@@ -41,3 +41,7 @@ jobs:
 
       - name: Build and test (GPU)
         run: docker compose run --rm test
+
+      - name: Cleanup
+        if: always()
+        run: docker compose down

@@ -240,9 +240,9 @@ lod_plan_init_shapes(struct lod_plan* p,
     lod_chunk[k] = chunk_shape ? chunk_shape[p->lod_map[k]] : 1;
 
   p->nlod = 1;
-  while (
-    p->nlod < max_levels &&
-    !all_chunks_le_one(p->lod_ndim, p->lod_shapes[p->nlod - 1], lod_chunk)) {
+  while (p->nlod < max_levels &&
+         !all_chunks_le_one(p->lod_ndim, p->lod_shapes[p->nlod - 1],
+                            lod_chunk)) {
     for (int k = 0; k < p->lod_ndim; ++k)
       p->lod_shapes[p->nlod][k] = (p->lod_shapes[p->nlod - 1][k] + 1) / 2;
     memcpy(p->shapes[p->nlod],

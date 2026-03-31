@@ -69,6 +69,7 @@
             neocmakelsp
             ninja
             nixd
+            llvmPackages.llvm   # llvm-profdata, llvm-cov for coverage
             perf
             pkg-config
             tokei

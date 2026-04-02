@@ -149,7 +149,7 @@ test_pipeline(const char* tmpdir)
     .fill_value = 0,
     .rank = 3,
     .dimensions = dims,
-    .codec = CODEC_ZSTD,
+    .codec = { .id = CODEC_ZSTD },
   };
 
   struct zarr_fs_sink* zs = zarr_fs_sink_create(&zcfg);
@@ -160,7 +160,7 @@ test_pipeline(const char* tmpdir)
     .dtype = dtype_u16,
     .rank = 3,
     .dimensions = dims,
-    .codec = CODEC_ZSTD,
+    .codec = { .id = CODEC_ZSTD },
   };
 
   struct tile_stream_cpu* s =
@@ -274,7 +274,7 @@ test_streaming_append(const char* tmpdir)
     .fill_value = 0,
     .rank = 3,
     .dimensions = dims,
-    .codec = CODEC_ZSTD,
+    .codec = { .id = CODEC_ZSTD },
   };
 
   struct zarr_fs_sink* zs = zarr_fs_sink_create(&zcfg);
@@ -285,7 +285,7 @@ test_streaming_append(const char* tmpdir)
     .dtype = dtype_u16,
     .rank = 3,
     .dimensions = dims,
-    .codec = CODEC_ZSTD,
+    .codec = { .id = CODEC_ZSTD },
   };
 
   struct tile_stream_cpu* s =
@@ -406,7 +406,7 @@ test_batch_readback_impl(const char* tmpdir, int epochs_per_batch)
     .fill_value = 0,
     .rank = 3,
     .dimensions = dims,
-    .codec = CODEC_ZSTD,
+    .codec = { .id = CODEC_ZSTD },
   };
 
   struct zarr_fs_sink* zs = zarr_fs_sink_create(&zcfg);
@@ -417,7 +417,7 @@ test_batch_readback_impl(const char* tmpdir, int epochs_per_batch)
     .dtype = dtype_u16,
     .rank = 3,
     .dimensions = dims,
-    .codec = CODEC_ZSTD,
+    .codec = { .id = CODEC_ZSTD },
     .epochs_per_batch = (uint8_t)epochs_per_batch,
   };
 

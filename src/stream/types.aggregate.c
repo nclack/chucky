@@ -36,6 +36,14 @@ aggregate_batch_luts(const struct aggregate_layout* agg,
   const uint64_t total_chunks = levels->total_chunks;
   const uint64_t M_lv = agg->chunks_per_epoch;
   const uint32_t cps_inner = (uint32_t)agg->cps_inner;
+  const uint32_t num_shards = (uint32_t)(agg->covering_count / cps_inner);
+
+  // Output perm maps (epoch, chunk) → position in shard-major order:
+  //   [num_shards, active_count, cps_inner]
+  // ravel through lifted strides gives shard-grouped position,
+  // second ravel inserts the epoch dimension.
+  const uint64_t shard_shape[2] = { num_shards, cps_inner };
+  const int64_t shard_strides[2] = { (int64_t)active_count * cps_inner, 1 };
 
   for (uint32_t a = 0; a < active_count; ++a) {
     uint32_t pool_epoch = pool_epochs[a];
@@ -44,11 +52,11 @@ aggregate_batch_luts(const struct aggregate_layout* agg,
       out_gather[idx] =
         (uint32_t)(pool_epoch * total_chunks + levels->chunk_offset[lv] + j);
 
-      uint32_t perm_pos = (uint32_t)ravel(
-        agg->lifted_rank, agg->lifted_shape, agg->lifted_strides, j);
-      uint32_t si = perm_pos / cps_inner;
-      uint32_t c = perm_pos % cps_inner;
-      out_perm[idx] = si * active_count * cps_inner + a * cps_inner + c;
+      uint64_t perm_pos =
+        ravel(agg->lifted_rank, agg->lifted_shape, agg->lifted_strides, j);
+      out_perm[idx] =
+        (uint32_t)(ravel(2, shard_shape, shard_strides, perm_pos) +
+                   a * cps_inner);
     }
   }
 }
@@ -87,6 +95,8 @@ aggregate_layout_compute(struct aggregate_layout* layout,
   // Build lifted shape and strides for dims n_append..D-1
   // lifted_shape[2*k]   = shard_count[d]
   // lifted_shape[2*k+1] = eff_cps[d]
+  // Product of shard_count * cps per inner dim. Cannot overflow uint64_t:
+  // rank <= HALF_MAX_RANK (8) and each factor is at most ~2^32.
   layout->covering_count = 1;
   for (int d = n_append; d < D; ++d) {
     eff_cps[d] = chunks_per_shard[d];
@@ -96,6 +106,7 @@ aggregate_layout_compute(struct aggregate_layout* layout,
     layout->lifted_shape[2 * k + 1] = eff_cps[d];
     layout->covering_count *= shard_count[d] * eff_cps[d];
   }
+  CHECK(Error, layout->covering_count <= UINT32_MAX);
 
   // cps_inner = prod(eff_cps[d] for d=n_append..D-1)
   for (int d = n_append; d < D; ++d)

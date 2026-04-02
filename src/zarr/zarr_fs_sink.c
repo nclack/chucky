@@ -217,7 +217,7 @@ struct zarr_fs_sink
   struct dimension dimensions[MAX_ZARR_RANK];
   enum dtype data_type;
   double fill_value;
-  enum compression_codec codec;
+  struct codec_config codec;
 };
 
 // --- shard_sink fence ---
@@ -319,7 +319,7 @@ write_array_metadata_file(const char* array_dir,
                           enum dtype data_type,
                           double fill_value,
                           const uint64_t* chunks_per_shard,
-                          enum compression_codec codec)
+                          struct codec_config codec)
 {
   char path[4096];
   snprintf(path, sizeof(path), "%s/zarr.json", array_dir);

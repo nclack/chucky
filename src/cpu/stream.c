@@ -2,6 +2,7 @@
 #include "stream/config.h"
 
 #include "cpu/compress.h"
+#include "cpu/compress_blosc.h"
 #include "cpu/transpose.h"
 #include "platform/platform.h"
 #include "util/metric.h"
@@ -28,6 +29,9 @@ tile_stream_cpu_create(const struct tile_stream_configuration* config,
   if (!config || !sink)
     return NULL;
   if (config->dtype == dtype_f16)
+    return NULL;
+  if (codec_is_blosc(config->codec.id) &&
+      compress_blosc_validate(config->codec))
     return NULL;
 
   struct tile_stream_cpu* s = (struct tile_stream_cpu*)calloc(1, sizeof(*s));
@@ -444,6 +448,7 @@ make_flush_params(struct tile_stream_cpu* s)
   const size_t bytes_per_element = dtype_bpe(s->config.dtype);
   struct flush_batch_params p = {
     .codec = s->config.codec,
+    .bytes_per_element = bytes_per_element,
     .chunk_pool = s->chunk_pool,
     .chunk_stride_bytes = s->layout.chunk_stride * bytes_per_element,
     .chunk_bytes = s->layout.chunk_elements * bytes_per_element,

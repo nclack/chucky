@@ -178,6 +178,16 @@ validate_config(const struct tile_stream_configuration* config,
     goto Fail;
   }
 
+  if (config->max_nlod < 0) {
+    log_error("max_nlod must be >= 0 (got %d)", config->max_nlod);
+    goto Fail;
+  }
+  if (config->max_nlod > LOD_MAX_LEVELS) {
+    log_error(
+      "max_nlod %d exceeds limit (%d)", config->max_nlod, LOD_MAX_LEVELS);
+    goto Fail;
+  }
+
   {
     uint8_t na = dim_info_n_append(di);
     if (resolve_storage_order(config->rank, na, config->dimensions, NULL)) {
@@ -234,9 +244,14 @@ compute_stream_layouts(const struct tile_stream_configuration* config,
   CHECK(Fail, resolve_storage_order(rank, na, dims, storage_order) == 0);
 
   // --- LOD plan (always runs) ---
+  int max_levels;
+  if (config->max_nlod == 0)
+    max_levels = LOD_MAX_LEVELS;
+  else
+    max_levels = config->max_nlod;
   CHECK(Fail,
-        lod_plan_init_from_epoch_dims(
-          &out->plan, dims, rank, na, LOD_MAX_LEVELS) == 0);
+        lod_plan_init_from_epoch_dims(&out->plan, dims, rank, na, max_levels) ==
+          0);
   int enable_multiscale = out->plan.lod_mask != 0;
   out->levels.enable_multiscale = enable_multiscale;
   out->levels.nlod = enable_multiscale ? out->plan.nlod : 1;

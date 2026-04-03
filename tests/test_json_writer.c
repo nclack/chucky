@@ -219,11 +219,40 @@ test_zarr_array_json_lz4(void)
 
   int len =
     zarr_array_json(buf, sizeof(buf), 3, dims, dtype_u16, 0.0, cps, codec);
-  CHECK(Fail, len > 0);
+  CHECK(Fail, len > 0 && (size_t)len < sizeof(buf));
   buf[len] = '\0';
 
   // The codec name in zarr metadata must be "lz4" (not "lz4_raw")
   CHECK(Fail, strstr(buf, "\"name\":\"lz4\""));
+
+  return 0;
+
+Fail:
+  log_error("  got: %.*s", (int)sizeof(buf), buf);
+  return 1;
+}
+
+static int
+test_zarr_array_json_zstd(void)
+{
+  char buf[4096];
+  struct dimension dims[3] = {
+    { .size = 0, .chunk_size = 1, .chunks_per_shard = 2, .name = "t" },
+    { .size = 64, .chunk_size = 32, .chunks_per_shard = 1, .name = "y" },
+    { .size = 64, .chunk_size = 32, .chunks_per_shard = 1, .name = "x" },
+  };
+  uint64_t cps[3] = { 2, 1, 1 };
+  struct codec_config codec = { .id = CODEC_ZSTD, .level = 3 };
+
+  int len =
+    zarr_array_json(buf, sizeof(buf), 3, dims, dtype_u16, 0.0, cps, codec);
+  CHECK(Fail, len > 0 && (size_t)len < sizeof(buf));
+  buf[len] = '\0';
+
+  CHECK(Fail,
+        strstr(buf,
+               "\"name\":\"zstd\",\"configuration\":"
+               "{\"level\":3,\"checksum\":false}"));
 
   return 0;
 
@@ -249,6 +278,7 @@ main(void)
     { "uint", test_uint },
     { "zarr_metadata", test_zarr_metadata },
     { "zarr_array_json_lz4", test_zarr_array_json_lz4 },
+    { "zarr_array_json_zstd", test_zarr_array_json_zstd },
   };
   for (size_t i = 0; i < sizeof(tests) / sizeof(tests[0]); ++i) {
     int r = tests[i].fn();

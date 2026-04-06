@@ -1,7 +1,10 @@
-#include "hcs/hcs.h"
+#include "hcs.h"
 #include "defs.limits.h"
 #include "hcs/hcs_metadata.h"
+#include "lod/lod_plan.h"
+#include "ngff/ngff_multiscale.h"
 #include "util/prelude.h"
+#include "zarr/store.h"
 #include "zarr/zarr_group.h"
 
 #include <stdio.h>
@@ -11,7 +14,7 @@
 struct hcs_plate
 {
   struct store* store;
-  struct shard_pool* pool;
+  struct shard_pool* pool; // owned
   int rows, cols, field_count;
   int* well_mask; // rows*cols, owned
 
@@ -39,21 +42,42 @@ fov_index(const struct hcs_plate* p, int row, int col, int fov)
 }
 
 struct hcs_plate*
-hcs_plate_create(struct store* store,
-                 struct shard_pool* pool,
-                 const struct hcs_plate_config* cfg)
+hcs_plate_create(struct store* store, const struct hcs_plate_config* cfg)
 {
   CHECK(Fail, store);
-  CHECK(Fail, pool);
   CHECK(Fail, cfg);
   CHECK(Fail, cfg->name);
   CHECK(Fail, cfg->rows > 0);
   CHECK(Fail, cfg->rows <= 26 || cfg->row_names);
   CHECK(Fail, cfg->cols > 0);
   CHECK(Fail, cfg->field_count > 0);
+  CHECK(Fail, cfg->fov.dimensions);
+  CHECK(Fail, cfg->fov.rank > 0 && cfg->fov.rank <= MAX_ZARR_RANK);
+
+  // Compute pool size: max shard_inner_count across all LOD levels
+  struct lod_plan plan = { 0 };
+  int max_lev = cfg->fov.nlod > 0 ? cfg->fov.nlod : LOD_MAX_LEVELS;
+  CHECK(Fail,
+        lod_plan_init_from_dims(
+          &plan, cfg->fov.dimensions, cfg->fov.rank, max_lev) == 0);
+
+  uint8_t na = dims_n_append(cfg->fov.dimensions, cfg->fov.rank);
+  uint64_t max_sic = 0;
+  for (int lv = 0; lv < plan.levels.nlod; ++lv) {
+    uint64_t sic = 1;
+    for (int d = na; d < cfg->fov.rank; ++d)
+      sic *= plan.levels.level[lv].dim[d].shard_count;
+    if (sic > max_sic)
+      max_sic = sic;
+  }
+  lod_plan_free(&plan);
+  CHECK(Fail, max_sic > 0);
+
+  struct shard_pool* pool = store->create_pool(store, max_sic);
+  CHECK(Fail, pool);
 
   struct hcs_plate* p = (struct hcs_plate*)calloc(1, sizeof(*p));
-  CHECK(Fail, p);
+  CHECK(Fail_pool, p);
 
   p->store = store;
   p->pool = pool;
@@ -145,7 +169,7 @@ hcs_plate_create(struct store* store,
 
         int idx = fov_index(p, r, c, f);
         p->fovs[idx] =
-          ngff_multiscale_create(store, pool, fov_prefix, &cfg->fov);
+          ngff_multiscale_create_with_pool(store, pool, fov_prefix, &cfg->fov);
         CHECK(Fail_fovs, p->fovs[idx]);
       }
     }
@@ -163,6 +187,8 @@ Fail_mask:
   free(p->well_mask);
 Fail_alloc:
   free(p);
+Fail_pool:
+  pool->destroy(pool);
 Fail:
   return NULL;
 }
@@ -178,7 +204,10 @@ hcs_plate_destroy(struct hcs_plate* p)
   }
   free(p->fovs);
   free(p->well_mask);
+  struct shard_pool* pool = p->pool;
   free(p);
+  if (pool)
+    pool->destroy(pool);
 }
 
 struct shard_sink*

@@ -1,9 +1,23 @@
 #pragma once
 
 #include "defs.limits.h"
+
 #include <stdint.h>
 
 struct dimension;
+
+// --- Internal dimension utilities (defined in dimension.c) ---
+
+uint8_t
+dims_n_append(const struct dimension* dims, uint8_t rank);
+
+int
+dims_validate(const struct dimension* dims, uint8_t rank);
+
+void
+dims_print(const struct dimension* dims, uint8_t rank);
+
+// --- LOD types ---
 
 struct lod_span
 {

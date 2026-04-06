@@ -1,5 +1,6 @@
 #include "zarr/zarr_array.h"
 #include "defs.limits.h"
+#include "lod/lod_plan.h"
 #include "util/prelude.h"
 #include "zarr/zarr_metadata.h"
 
@@ -11,7 +12,8 @@ struct zarr_array
 {
   struct shard_sink base;
   struct store* store;     // borrowed
-  struct shard_pool* pool; // borrowed
+  struct shard_pool* pool; // borrowed or owned (see owns_pool)
+  int owns_pool;
   char prefix[4096];
 
   uint8_t rank;
@@ -127,30 +129,25 @@ zarr_array_wait_fence_fn(struct shard_sink* self,
   a->pool->wait_fence(a->pool, ev);
 }
 
-// --- Public API ---
+// --- Core init (geometry already computed) ---
 
-struct zarr_array*
-zarr_array_create(struct store* store,
-                  struct shard_pool* pool,
-                  const char* prefix,
-                  const struct zarr_array_config* cfg)
+static struct zarr_array*
+zarr_array_init(struct store* store,
+                struct shard_pool* pool,
+                const char* prefix,
+                const struct zarr_array_config* cfg,
+                const uint64_t* shard_counts,
+                const uint64_t* chunks_per_shard,
+                uint64_t shard_inner_count)
 {
-  CHECK(Fail, store);
-  CHECK(Fail, pool);
-  CHECK(Fail, cfg);
-  CHECK(Fail, cfg->rank > 0 && cfg->rank <= MAX_ZARR_RANK);
-  CHECK(Fail, cfg->dimensions);
-  CHECK(Fail, cfg->shard_counts);
-  CHECK(Fail, cfg->chunks_per_shard);
-  CHECK(Fail, cfg->shard_inner_count > 0);
-
   struct zarr_array* a = (struct zarr_array*)calloc(1, sizeof(*a));
   CHECK(Fail, a);
 
   a->store = store;
   a->pool = pool;
+  a->owns_pool = 0;
   a->rank = cfg->rank;
-  a->shard_inner_count = cfg->shard_inner_count;
+  a->shard_inner_count = shard_inner_count;
   a->data_type = cfg->data_type;
   a->fill_value = cfg->fill_value;
   a->codec = cfg->codec;
@@ -160,8 +157,8 @@ zarr_array_create(struct store* store,
 
   for (int d = 0; d < cfg->rank; ++d) {
     a->dimensions[d] = cfg->dimensions[d];
-    a->shard_counts[d] = cfg->shard_counts[d];
-    a->chunks_per_shard[d] = cfg->chunks_per_shard[d];
+    a->shard_counts[d] = shard_counts[d];
+    a->chunks_per_shard[d] = chunks_per_shard[d];
   }
 
   a->base.open = zarr_array_open;
@@ -180,10 +177,73 @@ Fail:
   return NULL;
 }
 
+// --- Private API ---
+
+struct zarr_array*
+zarr_array_create_with_pool(struct store* store,
+                            struct shard_pool* pool,
+                            const char* prefix,
+                            const struct zarr_array_config* cfg)
+{
+  CHECK(Fail, store);
+  CHECK(Fail, pool);
+  CHECK(Fail, cfg);
+  CHECK(Fail, cfg->rank > 0 && cfg->rank <= MAX_ZARR_RANK);
+  CHECK(Fail, cfg->dimensions);
+
+  uint64_t sc[MAX_ZARR_RANK], cps[MAX_ZARR_RANK];
+  uint64_t sic =
+    dims_compute_shard_geometry(cfg->dimensions, cfg->rank, sc, cps);
+  CHECK(Fail, sic > 0);
+
+  return zarr_array_init(store, pool, prefix, cfg, sc, cps, sic);
+
+Fail:
+  return NULL;
+}
+
+// --- Public API ---
+
+struct zarr_array*
+zarr_array_create(struct store* store,
+                  const char* prefix,
+                  const struct zarr_array_config* cfg)
+{
+  CHECK(Fail, store);
+  CHECK(Fail, cfg);
+  CHECK(Fail, cfg->rank > 0 && cfg->rank <= MAX_ZARR_RANK);
+  CHECK(Fail, cfg->dimensions);
+
+  uint64_t sc[MAX_ZARR_RANK], cps[MAX_ZARR_RANK];
+  uint64_t sic =
+    dims_compute_shard_geometry(cfg->dimensions, cfg->rank, sc, cps);
+  CHECK(Fail, sic > 0);
+
+  struct shard_pool* pool = store->create_pool(store, sic);
+  CHECK(Fail, pool);
+
+  struct zarr_array* a =
+    zarr_array_init(store, pool, prefix, cfg, sc, cps, sic);
+  if (!a) {
+    pool->destroy(pool);
+    return NULL;
+  }
+  a->owns_pool = 1;
+  return a;
+
+Fail:
+  return NULL;
+}
+
 void
 zarr_array_destroy(struct zarr_array* a)
 {
+  if (!a)
+    return;
+  struct shard_pool* pool = a->owns_pool ? a->pool : NULL;
   free(a);
+  if (pool)
+    pool->destroy(pool);
 }
 
 struct shard_sink*
@@ -202,6 +262,12 @@ int
 zarr_array_has_error(const struct zarr_array* a)
 {
   return a ? a->pool->has_error(a->pool) : 0;
+}
+
+size_t
+zarr_array_pending_bytes(const struct zarr_array* a)
+{
+  return a ? a->pool->pending_bytes(a->pool) : 0;
 }
 
 const struct dimension*

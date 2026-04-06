@@ -1,13 +1,11 @@
-// OME-NGFF v0.5 HCS (High-Content Screening) plate sink.
-// Creates plate → row → well → FOV hierarchy with per-level metadata.
+// Public OME-NGFF v0.5 HCS (High-Content Screening) plate interface.
+// Creates plate -> row -> well -> FOV hierarchy with per-level metadata.
 // Each FOV is an ngff_multiscale.
 #pragma once
 
-#include "ngff/ngff_multiscale.h"
-#include "writer.h"
-#include "zarr/shard_pool.h"
-#include "zarr/store.h"
+#include "ngff.h"
 
+#include <stddef.h>
 #include <stdint.h>
 
 struct hcs_plate_config
@@ -30,9 +28,7 @@ struct hcs_plate;
 // row groups, well groups (with OME well attrs), and per-FOV multiscale sinks.
 // Returns NULL on error.
 struct hcs_plate*
-hcs_plate_create(struct store* store,
-                 struct shard_pool* pool,
-                 const struct hcs_plate_config* cfg);
+hcs_plate_create(struct store* store, const struct hcs_plate_config* cfg);
 
 void
 hcs_plate_destroy(struct hcs_plate* p);

@@ -2,6 +2,7 @@
 
 #include "morton.util.h"
 
+#include "dtype.h"
 #include "gpu/lod.h"
 #include "gpu/metric.cuda.h"
 #include "gpu/prelude.cuda.h"
@@ -168,8 +169,8 @@ lod_compute_gpu(const struct lod_plan* p,
   CUdeviceptr d_src = 0, d_values = 0;
   CUdeviceptr d_lod_shape = 0, d_lod_strides = 0;
   CUdeviceptr d_gather_lut = 0, d_batch_offsets = 0;
-  CUdeviceptr d_ends = 0;
-  CUdeviceptr d_child_shape = 0, d_parent_shape = 0;
+  CUdeviceptr d_csr_starts[MAX_LOD] = { 0 };
+  CUdeviceptr d_csr_indices[MAX_LOD] = { 0 };
 
   uint64_t n_elements = lod_span_len(lod_spans_at(&p->level_spans, 0));
   uint64_t total_vals = p->level_spans.ends[p->levels.nlod - 1];
@@ -190,6 +191,21 @@ lod_compute_gpu(const struct lod_plan* p,
                      &d_batch_offsets,
                      stream));
 
+  // Upload CSR reduce LUTs.
+  for (int l = 0; l < p->levels.nlod - 1; ++l) {
+    const struct reduce_csr* csr = &p->reduce[l];
+    if (csr->starts && csr->indices) {
+      CHECK(Fail,
+            upload(&d_csr_starts[l],
+                   csr->starts,
+                   (csr->dst_segment_size + 1) * sizeof(uint64_t)));
+      CHECK(Fail,
+            upload(&d_csr_indices[l],
+                   csr->indices,
+                   csr->src_lod_count * sizeof(uint64_t)));
+    }
+  }
+
   CU(Fail, cuEventRecord(ev_start, stream));
 
   lod_gather_lut(d_values,
@@ -204,50 +220,21 @@ lod_compute_gpu(const struct lod_plan* p,
   CU(Fail, cuEventRecord(ev_scatter, stream));
 
   for (int l = 0; l < p->levels.nlod - 1; ++l) {
-    struct lod_span seg = lod_segment(p, l);
-    uint64_t n_parents = lod_span_len(seg);
-
-    cuMemFree(d_child_shape);
-    cuMemFree(d_parent_shape);
-    d_child_shape = 0;
-    d_parent_shape = 0;
-
-    uint64_t child_lod[MAX_NDIM], parent_lod[MAX_NDIM];
-    lod_plan_fill_lod_shapes(p, l, child_lod);
-    lod_plan_fill_lod_shapes(p, l + 1, parent_lod);
-
-    CHECK(Fail,
-          upload(&d_child_shape, child_lod, p->lod_ndim * sizeof(uint64_t)));
-    CHECK(Fail,
-          upload(&d_parent_shape, parent_lod, p->lod_ndim * sizeof(uint64_t)));
-
-    cuMemFree(d_ends);
-    d_ends = 0;
-    CU(Fail, cuMemAlloc(&d_ends, n_parents * sizeof(uint64_t)));
-
-    CHECK(Fail,
-          lod_fill_ends_gpu(d_ends,
-                            p->lod_ndim,
-                            d_child_shape,
-                            d_parent_shape,
-                            child_lod,
-                            parent_lod,
-                            n_parents,
-                            stream) == 0);
-
+    const struct reduce_csr* csr = &p->reduce[l];
     struct lod_span src_level = lod_spans_at(&p->level_spans, l);
     struct lod_span dst_level = lod_spans_at(&p->level_spans, l + 1);
 
-    lod_reduce(d_values,
-               d_ends,
-               dtype_f32,
-               method,
-               src_level.beg,
-               dst_level.beg,
-               p->levels.level[l].lod_nelem,
-               p->levels.level[l + 1].lod_nelem,
-               p->fixed_dims_count,
-               stream);
+    lod_reduce_csr(d_values,
+                   d_csr_starts[l],
+                   d_csr_indices[l],
+                   dtype_f32,
+                   method,
+                   src_level.beg,
+                   dst_level.beg,
+                   csr->src_lod_count,
+                   csr->dst_segment_size,
+                   csr->batch_count,
+                   stream);
   }
 
   CU(Fail, cuEventRecord(ev_done, stream));
@@ -273,9 +260,10 @@ Fail:
   cuMemFree(d_lod_strides);
   cuMemFree(d_gather_lut);
   cuMemFree(d_batch_offsets);
-  cuMemFree(d_ends);
-  cuMemFree(d_child_shape);
-  cuMemFree(d_parent_shape);
+  for (int i = 0; i < MAX_LOD; ++i) {
+    cuMemFree(d_csr_starts[i]);
+    cuMemFree(d_csr_indices[i]);
+  }
   cuEventDestroy(ev_start);
   cuEventDestroy(ev_scatter);
   cuEventDestroy(ev_done);
@@ -307,7 +295,8 @@ test_lod_gpu_method(const char* label,
   for (uint64_t i = 0; i < n; ++i)
     src[i] = (float)(i + 1);
 
-  CHECK(Fail, lod_plan_init(&plan, ndim, shape, NULL, lod_mask, MAX_LOD) == 0);
+  CHECK(Fail,
+        lod_plan_init(&plan, ndim, shape, NULL, lod_mask, MAX_LOD, 0) == 0);
   log_info("  lod_mask=0x%x  lod_ndim=%d  fixed_dims_ndim=%d  "
            "fixed_dims_count=%llu  nlod=%d",
            lod_mask,
@@ -326,6 +315,65 @@ test_lod_gpu_method(const char* label,
     CHECK(Fail, gpu_values);
   }
   test_lod_metrics_report(&metrics);
+
+  {
+    uint64_t total = plan.level_spans.ends[plan.levels.nlod - 1];
+    for (uint64_t i = 0; i < total; ++i) {
+      if (fabsf(gpu_values[i] - cpu_values[i]) > 1e-5f) {
+        log_error("  FAIL at i=%llu: gpu=%f cpu=%f",
+                  (unsigned long long)i,
+                  gpu_values[i],
+                  cpu_values[i]);
+        goto Fail;
+      }
+    }
+  }
+
+  log_info("  PASS");
+  ok = 1;
+Fail:
+  free(src);
+  free(cpu_values);
+  free(gpu_values);
+  lod_plan_free(&plan);
+  return ok ? 0 : 1;
+}
+
+static int
+test_lod_gpu_chunked(const char* label,
+                     int ndim,
+                     const uint64_t* shape,
+                     const uint64_t* chunk_shape,
+                     uint32_t lod_mask,
+                     enum lod_reduce_method method)
+{
+  log_info("=== %s ===", label);
+  int ok = 0;
+  float* src = NULL;
+  float* cpu_values = NULL;
+  float* gpu_values = NULL;
+  struct lod_plan plan = { 0 };
+
+  uint64_t n = 1;
+  for (int d = 0; d < ndim; ++d)
+    n *= shape[d];
+
+  src = (float*)malloc(n * sizeof(float));
+  CHECK(Fail, src);
+  for (uint64_t i = 0; i < n; ++i)
+    src[i] = (float)(i + 1);
+
+  CHECK(Fail,
+        lod_plan_init(&plan, ndim, shape, chunk_shape, lod_mask, MAX_LOD, 0) ==
+          0);
+  log_info("  nlod=%d  dropped_mask at L0->L1: 0x%x",
+           plan.levels.nlod,
+           plan.levels.level[0].lod_mask & ~plan.levels.level[1].lod_mask);
+
+  CHECK(Fail, lod_compute(&plan, src, &cpu_values, method));
+
+  gpu_values = lod_compute_gpu(&plan, src, NULL, method);
+  CHECK(Fail, gpu_values);
 
   {
     uint64_t total = plan.level_spans.ends[plan.levels.nlod - 1];
@@ -375,8 +423,8 @@ lod_compute_gpu_u16(const struct lod_plan* p,
   CUdeviceptr d_src = 0, d_values = 0;
   CUdeviceptr d_lod_shape = 0, d_lod_strides = 0;
   CUdeviceptr d_gather_lut = 0, d_batch_offsets = 0;
-  CUdeviceptr d_ends = 0;
-  CUdeviceptr d_child_shape = 0, d_parent_shape = 0;
+  CUdeviceptr d_csr_starts[MAX_LOD] = { 0 };
+  CUdeviceptr d_csr_indices[MAX_LOD] = { 0 };
 
   uint64_t n_elements = lod_span_len(lod_spans_at(&p->level_spans, 0));
   uint64_t total_vals = p->level_spans.ends[p->levels.nlod - 1];
@@ -397,6 +445,20 @@ lod_compute_gpu_u16(const struct lod_plan* p,
                      &d_batch_offsets,
                      stream));
 
+  for (int l = 0; l < p->levels.nlod - 1; ++l) {
+    const struct reduce_csr* csr = &p->reduce[l];
+    if (csr->starts && csr->indices) {
+      CHECK(Fail,
+            upload(&d_csr_starts[l],
+                   csr->starts,
+                   (csr->dst_segment_size + 1) * sizeof(uint64_t)));
+      CHECK(Fail,
+            upload(&d_csr_indices[l],
+                   csr->indices,
+                   csr->src_lod_count * sizeof(uint64_t)));
+    }
+  }
+
   CU(Fail, cuEventRecord(ev_start, stream));
 
   lod_gather_lut(d_values,
@@ -411,50 +473,21 @@ lod_compute_gpu_u16(const struct lod_plan* p,
   CU(Fail, cuEventRecord(ev_scatter, stream));
 
   for (int l = 0; l < p->levels.nlod - 1; ++l) {
-    struct lod_span seg = lod_segment(p, l);
-    uint64_t n_parents = lod_span_len(seg);
-
-    cuMemFree(d_child_shape);
-    cuMemFree(d_parent_shape);
-    d_child_shape = 0;
-    d_parent_shape = 0;
-
-    uint64_t child_lod[MAX_NDIM], parent_lod[MAX_NDIM];
-    lod_plan_fill_lod_shapes(p, l, child_lod);
-    lod_plan_fill_lod_shapes(p, l + 1, parent_lod);
-
-    CHECK(Fail,
-          upload(&d_child_shape, child_lod, p->lod_ndim * sizeof(uint64_t)));
-    CHECK(Fail,
-          upload(&d_parent_shape, parent_lod, p->lod_ndim * sizeof(uint64_t)));
-
-    cuMemFree(d_ends);
-    d_ends = 0;
-    CU(Fail, cuMemAlloc(&d_ends, n_parents * sizeof(uint64_t)));
-
-    CHECK(Fail,
-          lod_fill_ends_gpu(d_ends,
-                            p->lod_ndim,
-                            d_child_shape,
-                            d_parent_shape,
-                            child_lod,
-                            parent_lod,
-                            n_parents,
-                            stream) == 0);
-
+    const struct reduce_csr* csr = &p->reduce[l];
     struct lod_span src_level = lod_spans_at(&p->level_spans, l);
     struct lod_span dst_level = lod_spans_at(&p->level_spans, l + 1);
 
-    lod_reduce(d_values,
-               d_ends,
-               dtype_u16,
-               method,
-               src_level.beg,
-               dst_level.beg,
-               p->levels.level[l].lod_nelem,
-               p->levels.level[l + 1].lod_nelem,
-               p->fixed_dims_count,
-               stream);
+    lod_reduce_csr(d_values,
+                   d_csr_starts[l],
+                   d_csr_indices[l],
+                   dtype_u16,
+                   method,
+                   src_level.beg,
+                   dst_level.beg,
+                   csr->src_lod_count,
+                   csr->dst_segment_size,
+                   csr->batch_count,
+                   stream);
   }
 
   CU(Fail, cuEventRecord(ev_done, stream));
@@ -480,9 +513,10 @@ Fail:
   cuMemFree(d_lod_strides);
   cuMemFree(d_gather_lut);
   cuMemFree(d_batch_offsets);
-  cuMemFree(d_ends);
-  cuMemFree(d_child_shape);
-  cuMemFree(d_parent_shape);
+  for (int i = 0; i < MAX_LOD; ++i) {
+    cuMemFree(d_csr_starts[i]);
+    cuMemFree(d_csr_indices[i]);
+  }
   cuEventDestroy(ev_start);
   cuEventDestroy(ev_scatter);
   cuEventDestroy(ev_done);
@@ -514,7 +548,8 @@ test_lod_gpu_u16_method(const char* label,
   for (uint64_t i = 0; i < n; ++i)
     src[i] = (uint16_t)((i + 1) & 0xFFFF);
 
-  CHECK(Fail, lod_plan_init(&plan, ndim, shape, NULL, lod_mask, MAX_LOD) == 0);
+  CHECK(Fail,
+        lod_plan_init(&plan, ndim, shape, NULL, lod_mask, MAX_LOD, 0) == 0);
   log_info("  lod_mask=0x%x  lod_ndim=%d  fixed_dims_ndim=%d  "
            "fixed_dims_count=%llu  nlod=%d",
            lod_mask,
@@ -1059,6 +1094,59 @@ main(void)
     nfail += test_lod_gpu_u16_method(
       "reduce_max_u16_3d_d02", 3, shape, mask, 1, lod_reduce_max);
   }
+
+  // --- Per-level dimension dropping (chunk_shape forces dropped_mask != 0) ---
+  // 2D: shape 16x4, chunk 4x4, mask 0x3.
+  // dim1 reaches chunk_size (4) before dim0 → dim1 drops at some level.
+  nfail += test_lod_gpu_chunked("gpu_drop_2d_mean",
+                                2,
+                                (uint64_t[]){ 16, 4 },
+                                (uint64_t[]){ 4, 4 },
+                                0x3,
+                                lod_reduce_mean);
+  nfail += test_lod_gpu_chunked("gpu_drop_2d_min",
+                                2,
+                                (uint64_t[]){ 16, 4 },
+                                (uint64_t[]){ 4, 4 },
+                                0x3,
+                                lod_reduce_min);
+  // 3D: shape 32x8x4, chunk 4x4x4, mask 0x7.
+  // dim2 drops first (4→4, 1 chunk), dim1 drops next (8→4, 1 chunk).
+  nfail += test_lod_gpu_chunked("gpu_drop_3d_mean",
+                                3,
+                                (uint64_t[]){ 32, 8, 4 },
+                                (uint64_t[]){ 4, 4, 4 },
+                                0x7,
+                                lod_reduce_mean);
+  nfail += test_lod_gpu_chunked("gpu_drop_3d_max",
+                                3,
+                                (uint64_t[]){ 32, 8, 4 },
+                                (uint64_t[]){ 4, 4, 4 },
+                                0x7,
+                                lod_reduce_max);
+  // 2D: asymmetric chunk sizes.
+  // shape 64x16, chunk 8x16, mask 0x3 → dim1 drops immediately.
+  nfail += test_lod_gpu_chunked("gpu_drop_2d_asym",
+                                2,
+                                (uint64_t[]){ 64, 16 },
+                                (uint64_t[]){ 8, 16 },
+                                0x3,
+                                lod_reduce_mean);
+  // 2D: shape not a multiple of chunk for the dropping dim.
+  // shape 5x16, chunk 4x4 → dim0 drops at L0→L1 with src_size=5.
+  // Without halving drop coords, src_coord=4 would OOB.
+  nfail += test_lod_gpu_chunked("gpu_drop_2d_nonmult",
+                                2,
+                                (uint64_t[]){ 5, 16 },
+                                (uint64_t[]){ 4, 4 },
+                                0x3,
+                                lod_reduce_mean);
+  nfail += test_lod_gpu_chunked("gpu_drop_2d_nonmult_min",
+                                2,
+                                (uint64_t[]){ 5, 16 },
+                                (uint64_t[]){ 4, 4 },
+                                0x3,
+                                lod_reduce_min);
 
   // --- Dim0 accumulator tests ---
   nfail += test_accum_fold_u16("accum_mean_u16_4ep", lod_reduce_mean, 4);

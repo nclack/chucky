@@ -156,6 +156,10 @@ cpu_pipeline_flush_batch(const struct flush_batch_params* p,
     if (p->sink->wait_fence)
       p->sink->wait_fence(p->sink, (uint8_t)lv, *lvl->io_done);
 
+    // Fail fast if async IO encountered an error.
+    if (p->sink->has_error && p->sink->has_error(p->sink))
+      return 1;
+
     // Recompute batch LUTs if active_count differs from pre-computed.
     if (active_count != lvl->batch_active_count) {
       // LUT buffers are sized for max(batch_active_count, 1) * M entries.
@@ -291,7 +295,7 @@ cpu_pipeline_scatter_epoch(const struct scatter_epoch_params* p,
       float append_ms = (float)(platform_toc(&append_clk) * 1000.0);
       size_t append_bytes = 0;
       for (int lv = 1; lv < p->cl->plan.levels.nlod; ++lv)
-        append_bytes += p->cl->plan.fixed_dims_count *
+        append_bytes += p->cl->plan.levels.level[lv].fixed_dims_count *
                         p->cl->plan.levels.level[lv].lod_nelem *
                         bytes_per_element;
       accumulate_metric_ms(
@@ -376,24 +380,26 @@ cpu_pipeline_compute_luts(
         plan, lv, layout_lv, out->morton_lut[lv], nthreads);
 
       // Convert flat batch index → lifted-space chunk pool offset.
-      // Decomposes bi into per-dimension coordinates, then maps each
-      // coordinate to (chunk_index, within-chunk) in lifted space.
-      for (uint64_t bi = 0; bi < plan->fixed_dims_count; ++bi) {
-        uint64_t remainder = bi;
-        int64_t offset = 0;
-        for (int k = plan->fixed_dims_ndim - 1; k >= 0; --k) {
-          uint64_t coord = remainder % plan->fixed_dims_shape[k];
-          remainder /= plan->fixed_dims_shape[k];
-          int d = plan->fixed_dim_to_dim[k];
-          uint64_t cs = layout_lv->lifted_shape[2 * d + 1];
-          uint64_t ci = coord / cs;
-          uint64_t wi = coord % cs;
-          offset += (int64_t)ci * layout_lv->lifted_strides[2 * d];
-          offset += (int64_t)wi * layout_lv->lifted_strides[2 * d + 1];
+      {
+        const struct level_dims* ld = &plan->levels.level[lv];
+
+        for (uint64_t bi = 0; bi < ld->fixed_dims_count; ++bi) {
+          uint64_t remainder = bi;
+          int64_t offset = 0;
+          for (int k = ld->fixed_dims_ndim - 1; k >= 0; --k) {
+            uint64_t coord = remainder % ld->fixed_dims_shape[k];
+            remainder /= ld->fixed_dims_shape[k];
+            int d = ld->fixed_dim_to_dim[k];
+            uint64_t cs = layout_lv->lifted_shape[2 * d + 1];
+            uint64_t ci = coord / cs;
+            uint64_t wi = coord % cs;
+            offset += (int64_t)ci * layout_lv->lifted_strides[2 * d];
+            offset += (int64_t)wi * layout_lv->lifted_strides[2 * d + 1];
+          }
+          out->lod_fixed_dims_offsets[lv][bi] =
+            (uint64_t)offset +
+            levels->level[lv].chunk_offset * layout_lv->chunk_stride;
         }
-        out->lod_fixed_dims_offsets[lv][bi] =
-          (uint64_t)offset +
-          levels->level[lv].chunk_offset * layout_lv->chunk_stride;
       }
     }
   }
@@ -446,7 +452,7 @@ cpu_pipeline_append_drain(const struct append_drain_params* p,
     float append_ms = (float)(platform_toc(&append_clk) * 1000.0);
     size_t append_bytes = 0;
     for (int lv = 1; lv < plan->levels.nlod; ++lv)
-      append_bytes += plan->fixed_dims_count *
+      append_bytes += plan->levels.level[lv].fixed_dims_count *
                       plan->levels.level[lv].lod_nelem * bytes_per_element;
     accumulate_metric_ms(
       &p->metrics->lod_append_fold, append_ms, append_bytes, 0);

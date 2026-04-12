@@ -131,12 +131,14 @@ seed_events(const struct pool_state* pools,
   CU(Fail, cuEventRecord(pools->ready[0], compute));
   CU(Fail, cuEventRecord(pools->ready[1], compute));
 
-  if (lod->t_start) {
-    CU(Fail, cuEventRecord(lod->t_start, compute));
-    CU(Fail, cuEventRecord(lod->t_scatter_end, compute));
-    CU(Fail, cuEventRecord(lod->t_reduce_end, compute));
-    CU(Fail, cuEventRecord(lod->t_append_end, compute));
-    CU(Fail, cuEventRecord(lod->t_end, compute));
+  for (int fc = 0; fc < 2; ++fc) {
+    if (lod->timing[fc].t_start) {
+      CU(Fail, cuEventRecord(lod->timing[fc].t_start, compute));
+      CU(Fail, cuEventRecord(lod->timing[fc].t_scatter_end, compute));
+      CU(Fail, cuEventRecord(lod->timing[fc].t_reduce_end, compute));
+      CU(Fail, cuEventRecord(lod->timing[fc].t_append_end, compute));
+      CU(Fail, cuEventRecord(lod->timing[fc].t_end, compute));
+    }
   }
 
   return 0;
@@ -437,12 +439,10 @@ tile_stream_gpu_memory_estimate(const struct tile_stream_configuration* config,
     }
 
     for (int l = 0; l < plan->levels.nlod - 1; ++l) {
-      lod_device += plan->lod_ndim * sizeof(uint64_t);
-      lod_device += plan->lod_ndim * sizeof(uint64_t);
-
-      struct lod_span seg = lod_segment(plan, l);
-      uint64_t n_parents = lod_span_len(seg);
-      lod_device += n_parents * sizeof(uint64_t);
+      // CSR reduce LUTs
+      const struct reduce_csr* csr = &plan->reduce[l];
+      lod_device += (csr->dst_segment_size + 1) * sizeof(uint64_t);
+      lod_device += csr->src_lod_count * sizeof(uint64_t);
     }
 
     for (int lv = 1; lv < plan->levels.nlod; ++lv) {
@@ -454,8 +454,8 @@ tile_stream_gpu_memory_estimate(const struct tile_stream_configuration* config,
       size_t accum_bpe = dtype_bpe(config->dtype);
       uint64_t total_elems = 0;
       for (int lv = 1; lv < plan->levels.nlod; ++lv)
-        total_elems +=
-          plan->fixed_dims_count * plan->levels.level[lv].lod_nelem;
+        total_elems += plan->levels.level[lv].fixed_dims_count *
+                       plan->levels.level[lv].lod_nelem;
       lod_device += total_elems * accum_bpe;
       lod_device += total_elems;
       lod_device += (uint64_t)plan->levels.nlod * sizeof(uint32_t);

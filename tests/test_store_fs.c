@@ -1,6 +1,8 @@
+#include "platform/platform.h"
 #include "test_platform.h"
 #include "util/prelude.h"
 #include "zarr/shard_pool.h"
+#include "zarr/shard_pool_fs.h"
 #include "zarr/store.h"
 #include "zarr/store_fs.h"
 
@@ -237,7 +239,7 @@ test_shard_pool_unbuffered(void)
   // Write enough data to be meaningful (must be page-aligned for O_DIRECT)
   // Use a 4096-byte aligned buffer
   size_t page = 4096;
-  char* data = (char*)aligned_alloc(page, page);
+  char* data = (char*)platform_aligned_alloc(page, page);
   CHECK(Fail3, data);
   memset(data, 0xAB, page);
   CHECK(Fail4, w->write(w, 0, data, data + page) == 0);
@@ -256,18 +258,48 @@ test_shard_pool_unbuffered(void)
   snprintf(path, sizeof(path), "%s/unbuf/shard0.bin", tmpdir);
   CHECK(Fail4, test_file_exists(path));
 
-  free(data);
+  platform_aligned_free(data);
   pool->destroy(pool);
   s->destroy(s);
   log_info("  PASS");
   return 0;
 
 Fail4:
-  free(data);
+  platform_aligned_free(data);
 Fail3:
   pool->destroy(pool);
 Fail2:
   s->destroy(s);
+Fail:
+  log_error("  FAIL");
+  return 1;
+}
+
+static int
+test_shard_pool_error_propagation(void)
+{
+  log_info("=== test_shard_pool_error_propagation ===");
+
+  // Use a buffered pool — the error path under test is filesystem-independent,
+  // driven by a test-only failing-job injector rather than by O_DIRECT
+  // alignment enforcement (which varies across filesystems).
+  struct shard_pool* pool = shard_pool_fs_create(tmpdir, 1, 0);
+  CHECK(Fail, pool);
+
+  // Inject a job that deliberately reports a write failure.
+  CHECK(Fail2, shard_pool_fs_inject_failing_job(pool) == 0);
+
+  // Flush waits for all async IO and returns the error flag.
+  int flush_err = pool->flush(pool);
+  CHECK(Fail2, flush_err != 0);
+  CHECK(Fail2, pool->has_error(pool) != 0);
+
+  pool->destroy(pool);
+  log_info("  PASS");
+  return 0;
+
+Fail2:
+  pool->destroy(pool);
 Fail:
   log_error("  FAIL");
   return 1;
@@ -287,6 +319,7 @@ main(void)
   err |= test_shard_pool_fence();
   err |= test_shard_pool_on_demand_mkdir();
   err |= test_shard_pool_unbuffered();
+  err |= test_shard_pool_error_propagation();
 
   // Cleanup
   test_tmpdir_remove(tmpdir);

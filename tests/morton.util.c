@@ -162,21 +162,28 @@ lod_reduce_cpu(const struct lod_plan* p,
                enum lod_reduce_method method)
 {
   for (int l = 0; l < p->levels.nlod - 1; ++l) {
-    struct lod_span seg = lod_segment(p, l);
-    uint64_t src_ds = p->levels.level[l].lod_nelem;
-    uint64_t dst_ds = p->levels.level[l + 1].lod_nelem;
+    const struct reduce_csr* csr = &p->reduce[l];
     struct lod_span src_level = lod_spans_at(&p->level_spans, l);
     struct lod_span dst_level = lod_spans_at(&p->level_spans, l + 1);
 
-    for (uint64_t b = 0; b < p->fixed_dims_count; ++b) {
-      uint64_t src_base = src_level.beg + b * src_ds;
-      uint64_t dst_base = dst_level.beg + b * dst_ds;
+    for (uint64_t b = 0; b < csr->batch_count; ++b) {
+      float* src = values + src_level.beg + b * csr->src_lod_count;
+      uint64_t dst_base = dst_level.beg + b * csr->dst_segment_size;
 
-      for (uint64_t i = 0; i < dst_ds; ++i) {
-        uint64_t start = (i > 0) ? p->ends[seg.beg + i - 1] : 0;
-        uint64_t end = p->ends[seg.beg + i];
+      for (uint64_t i = 0; i < csr->dst_segment_size; ++i) {
+        // Gather CSR window into a contiguous buffer, then reduce.
+        uint64_t start = csr->starts[i];
+        uint64_t end = csr->starts[i + 1];
+        if (start >= end) {
+          values[dst_base + i] = 0;
+          continue;
+        }
+        uint64_t len = end - start;
+        float buf[16];
+        for (uint64_t j = 0; j < len && j < 16; ++j)
+          buf[j] = src[csr->indices[start + j]];
         values[dst_base + i] =
-          reduce_window_f32(values + src_base, start, end, method);
+          reduce_window_f32(buf, 0, len < 16 ? len : 16, method);
       }
     }
   }
@@ -241,6 +248,7 @@ lod_scatter_cpu_u16(const struct lod_plan* p,
 
 uint16_t
 reduce_window_u16(const uint16_t* src,
+                  const uint64_t* indices,
                   uint64_t start,
                   uint64_t end,
                   enum lod_reduce_method method)
@@ -250,28 +258,28 @@ reduce_window_u16(const uint16_t* src,
     case lod_reduce_mean: {
       uint32_t sum = 0;
       for (uint64_t j = start; j < end; ++j)
-        sum += src[j];
+        sum += src[indices[j]];
       return (uint16_t)(sum / (uint32_t)len);
     }
     case lod_reduce_min: {
-      uint16_t best = src[start];
+      uint16_t best = src[indices[start]];
       for (uint64_t j = start + 1; j < end; ++j)
-        if (src[j] < best)
-          best = src[j];
+        if (src[indices[j]] < best)
+          best = src[indices[j]];
       return best;
     }
     case lod_reduce_max: {
-      uint16_t best = src[start];
+      uint16_t best = src[indices[start]];
       for (uint64_t j = start + 1; j < end; ++j)
-        if (src[j] > best)
-          best = src[j];
+        if (src[indices[j]] > best)
+          best = src[indices[j]];
       return best;
     }
     case lod_reduce_median: {
       uint16_t buf[16];
       uint64_t n = (len <= 16) ? len : 16;
       for (uint64_t j = 0; j < n; ++j)
-        buf[j] = src[start + j];
+        buf[j] = src[indices[start + j]];
       for (uint64_t i = 1; i < n; ++i) {
         uint16_t key = buf[i];
         uint64_t k = i;
@@ -284,9 +292,9 @@ reduce_window_u16(const uint16_t* src,
       return buf[n / 2];
     }
     case lod_reduce_max_suppressed: {
-      uint16_t top1 = src[start], top2 = src[start];
+      uint16_t top1 = src[indices[start]], top2 = src[indices[start]];
       if (len > 1) {
-        uint16_t v = src[start + 1];
+        uint16_t v = src[indices[start + 1]];
         if (v >= top1) {
           top2 = top1;
           top1 = v;
@@ -294,7 +302,7 @@ reduce_window_u16(const uint16_t* src,
           top2 = v;
         }
         for (uint64_t j = start + 2; j < end; ++j) {
-          v = src[j];
+          v = src[indices[j]];
           if (v >= top1) {
             top2 = top1;
             top1 = v;
@@ -306,9 +314,9 @@ reduce_window_u16(const uint16_t* src,
       return top2;
     }
     case lod_reduce_min_suppressed: {
-      uint16_t bot1 = src[start], bot2 = src[start];
+      uint16_t bot1 = src[indices[start]], bot2 = src[indices[start]];
       if (len > 1) {
-        uint16_t v = src[start + 1];
+        uint16_t v = src[indices[start + 1]];
         if (v <= bot1) {
           bot2 = bot1;
           bot1 = v;
@@ -316,7 +324,7 @@ reduce_window_u16(const uint16_t* src,
           bot2 = v;
         }
         for (uint64_t j = start + 2; j < end; ++j) {
-          v = src[j];
+          v = src[indices[j]];
           if (v <= bot1) {
             bot2 = bot1;
             bot1 = v;
@@ -337,21 +345,23 @@ lod_reduce_cpu_u16(const struct lod_plan* p,
                    enum lod_reduce_method method)
 {
   for (int l = 0; l < p->levels.nlod - 1; ++l) {
-    struct lod_span seg = lod_segment(p, l);
-    uint64_t src_lod = p->levels.level[l].lod_nelem;
-    uint64_t dst_lod = p->levels.level[l + 1].lod_nelem;
+    const struct reduce_csr* csr = &p->reduce[l];
     struct lod_span src_level = lod_spans_at(&p->level_spans, l);
     struct lod_span dst_level = lod_spans_at(&p->level_spans, l + 1);
 
-    for (uint64_t b = 0; b < p->fixed_dims_count; ++b) {
-      uint64_t src_base = src_level.beg + b * src_lod;
-      uint64_t dst_base = dst_level.beg + b * dst_lod;
+    for (uint64_t b = 0; b < csr->batch_count; ++b) {
+      uint16_t* src = values + src_level.beg + b * csr->src_lod_count;
+      uint64_t dst_base = dst_level.beg + b * csr->dst_segment_size;
 
-      for (uint64_t i = 0; i < dst_lod; ++i) {
-        uint64_t start = (i > 0) ? p->ends[seg.beg + i - 1] : 0;
-        uint64_t end = p->ends[seg.beg + i];
+      for (uint64_t i = 0; i < csr->dst_segment_size; ++i) {
+        uint64_t start = csr->starts[i];
+        uint64_t end = csr->starts[i + 1];
+        if (start >= end) {
+          values[dst_base + i] = 0;
+          continue;
+        }
         values[dst_base + i] =
-          reduce_window_u16(values + src_base, start, end, method);
+          reduce_window_u16(src, csr->indices, start, end, method);
       }
     }
   }
@@ -381,4 +391,149 @@ Error:
     *out_values = NULL;
   }
   return ok;
+}
+
+// --- Brute-force LOD reduce (no CSR) ---
+
+// For each level transition, iterate all source elements, compute destination
+// by halving coordinates, gather into temp buffers, reduce.
+void
+lod_reduce_bruteforce(const struct lod_plan* p,
+                      float* values,
+                      enum lod_reduce_method method)
+{
+  for (int l = 0; l < p->levels.nlod - 1; ++l) {
+    const struct level_dims* src_ld = &p->levels.level[l];
+    const struct level_dims* dst_ld = &p->levels.level[l + 1];
+    struct lod_span src_span = lod_spans_at(&p->level_spans, l);
+    struct lod_span dst_span = lod_spans_at(&p->level_spans, l + 1);
+    uint32_t dropped_mask = src_ld->lod_mask & ~dst_ld->lod_mask;
+
+    uint64_t dst_count = dst_ld->fixed_dims_count * dst_ld->lod_nelem;
+
+    uint64_t src_lod_shape[MAX_NDIM];
+    for (int k = 0; k < src_ld->lod_ndim; ++k)
+      src_lod_shape[k] = src_ld->dim[src_ld->lod_to_dim[k]].size;
+
+    uint64_t dst_lod_shape[MAX_NDIM];
+    for (int k = 0; k < dst_ld->lod_ndim; ++k)
+      dst_lod_shape[k] = dst_ld->dim[dst_ld->lod_to_dim[k]].size;
+
+    // Gather: for each dst element, collect contributing src values.
+    uint64_t* counts = (uint64_t*)calloc(dst_count, sizeof(uint64_t));
+    float** bufs = (float**)calloc(dst_count, sizeof(float*));
+    if (!counts || !bufs)
+      goto CleanupLevel;
+
+    // Pass 1: count contributions per destination.
+    for (uint64_t src_batch = 0; src_batch < src_ld->fixed_dims_count;
+         ++src_batch) {
+      uint64_t fixed_coords[MAX_NDIM];
+      memset(fixed_coords, 0, sizeof(fixed_coords));
+      {
+        uint64_t rem = src_batch;
+        for (int k = src_ld->fixed_dims_ndim - 1; k >= 0; --k) {
+          fixed_coords[src_ld->fixed_dim_to_dim[k]] =
+            rem % src_ld->fixed_dims_shape[k];
+          rem /= src_ld->fixed_dims_shape[k];
+        }
+      }
+
+      for (uint64_t se = 0; se < src_ld->lod_nelem; ++se) {
+        uint64_t sc[MAX_NDIM];
+        unravel(src_ld->lod_ndim, src_lod_shape, se, sc);
+
+        uint64_t dst_fc[MAX_NDIM];
+        memcpy(dst_fc, fixed_coords, sizeof(dst_fc));
+        uint64_t dlc[MAX_NDIM];
+        int si = 0;
+        for (int k = 0; k < src_ld->lod_ndim; ++k) {
+          int d = src_ld->lod_to_dim[k];
+          if (dropped_mask & (1u << d))
+            dst_fc[d] = sc[k] / 2;
+          else
+            dlc[si++] = sc[k] / 2;
+        }
+        uint64_t dm = (dst_ld->lod_ndim > 0)
+                        ? morton_rank(dst_ld->lod_ndim, dst_lod_shape, dlc, 0)
+                        : 0;
+        uint64_t dst_bi = 0;
+        for (int k = 0; k < dst_ld->fixed_dims_ndim; ++k)
+          dst_bi = dst_bi * dst_ld->fixed_dims_shape[k] +
+                   dst_fc[dst_ld->fixed_dim_to_dim[k]];
+        counts[dst_bi * dst_ld->lod_nelem + dm]++;
+      }
+    }
+
+    // Allocate per-dst gather buffers.
+    for (uint64_t i = 0; i < dst_count; ++i) {
+      if (counts[i] > 0) {
+        bufs[i] = (float*)malloc(counts[i] * sizeof(float));
+        if (!bufs[i])
+          goto CleanupLevel;
+      }
+    }
+    memset(counts, 0, dst_count * sizeof(uint64_t));
+
+    // Pass 2: gather values.
+    for (uint64_t src_batch = 0; src_batch < src_ld->fixed_dims_count;
+         ++src_batch) {
+      uint64_t fixed_coords[MAX_NDIM];
+      memset(fixed_coords, 0, sizeof(fixed_coords));
+      {
+        uint64_t rem = src_batch;
+        for (int k = src_ld->fixed_dims_ndim - 1; k >= 0; --k) {
+          fixed_coords[src_ld->fixed_dim_to_dim[k]] =
+            rem % src_ld->fixed_dims_shape[k];
+          rem /= src_ld->fixed_dims_shape[k];
+        }
+      }
+
+      for (uint64_t se = 0; se < src_ld->lod_nelem; ++se) {
+        uint64_t sc[MAX_NDIM];
+        unravel(src_ld->lod_ndim, src_lod_shape, se, sc);
+
+        uint64_t dst_fc[MAX_NDIM];
+        memcpy(dst_fc, fixed_coords, sizeof(dst_fc));
+        uint64_t dlc[MAX_NDIM];
+        int si = 0;
+        for (int k = 0; k < src_ld->lod_ndim; ++k) {
+          int d = src_ld->lod_to_dim[k];
+          if (dropped_mask & (1u << d))
+            dst_fc[d] = sc[k] / 2;
+          else
+            dlc[si++] = sc[k] / 2;
+        }
+        uint64_t dm = (dst_ld->lod_ndim > 0)
+                        ? morton_rank(dst_ld->lod_ndim, dst_lod_shape, dlc, 0)
+                        : 0;
+        uint64_t dst_bi = 0;
+        for (int k = 0; k < dst_ld->fixed_dims_ndim; ++k)
+          dst_bi = dst_bi * dst_ld->fixed_dims_shape[k] +
+                   dst_fc[dst_ld->fixed_dim_to_dim[k]];
+        uint64_t di = dst_bi * dst_ld->lod_nelem + dm;
+
+        uint64_t src_morton =
+          morton_rank(src_ld->lod_ndim, src_lod_shape, sc, 0);
+        uint64_t src_pos =
+          src_span.beg + src_batch * src_ld->lod_nelem + src_morton;
+        bufs[di][counts[di]++] = values[src_pos];
+      }
+    }
+
+    // Pass 3: reduce and write to destination.
+    for (uint64_t i = 0; i < dst_count; ++i) {
+      if (counts[i] > 0)
+        values[dst_span.beg + i] =
+          reduce_window_f32(bufs[i], 0, counts[i], method);
+      else
+        values[dst_span.beg + i] = 0;
+    }
+
+  CleanupLevel:
+    for (uint64_t i = 0; i < dst_count; ++i)
+      free(bufs[i]);
+    free(bufs);
+    free(counts);
+  }
 }

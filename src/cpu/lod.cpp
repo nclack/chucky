@@ -126,6 +126,24 @@ reduce_window(const T* src,
   return T{};
 }
 
+// CSR reduce: gather indirect window into a stack buffer, delegate to
+// reduce_window. Window sizes are typically 2–8 (2^lod_ndim).
+template<typename T>
+static T
+reduce_window_csr(const T* src,
+                  const uint64_t* indices,
+                  uint64_t start,
+                  uint64_t end,
+                  lod_reduce_method method)
+{
+  T buf[16];
+  uint64_t len = end - start;
+  uint64_t n = len < 16 ? len : 16;
+  for (uint64_t j = 0; j < n; ++j)
+    buf[j] = src[indices[start + j]];
+  return reduce_window(buf, 0, n, method);
+}
+
 // ---- Scatter helpers ----
 
 static uint64_t
@@ -272,25 +290,28 @@ static void
 reduce_typed(const lod_plan* p, T* values, lod_reduce_method method, int nt)
 {
   for (int l = 0; l < p->levels.nlod - 1; ++l) {
-    lod_span seg = lod_segment(p, l);
-    uint64_t src_ds = p->levels.level[l].lod_nelem;
-    uint64_t dst_ds = p->levels.level[l + 1].lod_nelem;
+    const reduce_csr* csr = &p->reduce[l];
+    uint64_t src_seg = csr->src_lod_count;
+    uint64_t dst_seg = csr->dst_segment_size;
     lod_span src_lv = lod_spans_at(&p->level_spans, l);
     lod_span dst_lv = lod_spans_at(&p->level_spans, l + 1);
 
-    // Fixed-dims batches and destination elements within a level are
-    // independent.
-    uint64_t total_work = p->fixed_dims_count * dst_ds;
+    // Batch loop over fixed dims; CSR handles LOD + dropped dims.
+    uint64_t total_work = csr->batch_count * dst_seg;
 #pragma omp parallel for schedule(static) if (total_work > 1024) num_threads(nt)
     for (uint64_t wi = 0; wi < total_work; ++wi) {
-      uint64_t b = wi / dst_ds;
-      uint64_t i = wi % dst_ds;
-      uint64_t src_base = src_lv.beg + b * src_ds;
-      uint64_t dst_base = dst_lv.beg + b * dst_ds;
-      uint64_t start = (i > 0) ? p->ends[seg.beg + i - 1] : 0;
-      uint64_t end = p->ends[seg.beg + i];
+      uint64_t b = wi / dst_seg;
+      uint64_t i = wi % dst_seg;
+      const T* src = values + src_lv.beg + b * src_seg;
+      uint64_t dst_base = dst_lv.beg + b * dst_seg;
+      uint64_t start = csr->starts[i];
+      uint64_t end = csr->starts[i + 1];
+      if (start >= end) {
+        values[dst_base + i] = T{};
+        continue;
+      }
       values[dst_base + i] =
-        reduce_window(values + src_base, start, end, method);
+        reduce_window_csr(src, csr->indices, start, end, method);
     }
   }
 }
@@ -330,8 +351,9 @@ build_chunk_lut(const lod_plan* p,
 {
   uint64_t lod_shape[LOD_MAX_NDIM];
   lod_plan_fill_lod_shapes(p, lv, lod_shape);
-  const uint64_t lod_count = p->levels.level[lv].lod_nelem;
-  const int lod_ndim = p->lod_ndim;
+  const level_dims* ld = &p->levels.level[lv];
+  const uint64_t lod_count = ld->lod_nelem;
+  const int lod_ndim = ld->lod_ndim;
 
 #pragma omp parallel for schedule(static) if (lod_count > 1024)                \
   num_threads(nthreads)
@@ -344,13 +366,12 @@ build_chunk_lut(const lod_plan* p,
       rest /= lod_shape[d];
       coords[d] = coord;
 
-      // LOD dim d maps to full dim p->lod_to_dim[d] in the layout.
-      int ld = p->lod_to_dim[d];
-      uint64_t chunk_size_d = layout->lifted_shape[2 * ld + 1];
+      int full_d = ld->lod_to_dim[d];
+      uint64_t chunk_size_d = layout->lifted_shape[2 * full_d + 1];
       uint64_t chunk_idx = coord / chunk_size_d;
       uint64_t within = coord % chunk_size_d;
-      offset += (int64_t)chunk_idx * layout->lifted_strides[2 * ld];
-      offset += (int64_t)within * layout->lifted_strides[2 * ld + 1];
+      offset += (int64_t)chunk_idx * layout->lifted_strides[2 * full_d];
+      offset += (int64_t)within * layout->lifted_strides[2 * full_d + 1];
     }
 
     uint64_t morton_pos = morton_rank(lod_ndim, lod_shape, coords, 0);
@@ -533,7 +554,7 @@ lod_cpu_morton_to_chunks(const lod_plan* p,
                          chunk_lut,                                            \
                          fixed_dims_chunk_offsets,                             \
                          lod_count,                                            \
-                         p->fixed_dims_count,                                  \
+                         p->levels.level[lv].fixed_dims_count,                 \
                          nthreads)
   DISPATCH(dtype, DO);
 #undef DO
@@ -556,7 +577,8 @@ lod_cpu_append_fold(const lod_plan* p,
 
   for (int lv = 1; lv < p->levels.nlod; ++lv) {
     lod_span lev = lod_spans_at(&p->level_spans, (uint64_t)lv);
-    uint64_t n = p->fixed_dims_count * p->levels.level[lv].lod_nelem;
+    uint64_t n =
+      p->levels.level[lv].fixed_dims_count * p->levels.level[lv].lod_nelem;
     const char* src = (const char*)morton_values + lev.beg * bytes_per_element;
     char* dst = (char*)accum + accum_offset * bytes_per_element;
 
@@ -583,12 +605,14 @@ lod_cpu_append_emit(const lod_plan* p,
 {
   const size_t bytes_per_element = dtype_bpe(dtype);
   lod_span lev = lod_spans_at(&p->level_spans, (uint64_t)lv);
-  uint64_t n = p->fixed_dims_count * p->levels.level[lv].lod_nelem;
+  uint64_t n =
+    p->levels.level[lv].fixed_dims_count * p->levels.level[lv].lod_nelem;
 
   // Compute accum offset for this level
   uint64_t accum_offset = 0;
   for (int k = 1; k < lv; ++k)
-    accum_offset += p->fixed_dims_count * p->levels.level[k].lod_nelem;
+    accum_offset +=
+      p->levels.level[k].fixed_dims_count * p->levels.level[k].lod_nelem;
 
   char* dst = (char*)morton_values + lev.beg * bytes_per_element;
   const char* src = (const char*)accum + accum_offset * bytes_per_element;

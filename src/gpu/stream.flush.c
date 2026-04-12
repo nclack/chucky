@@ -23,8 +23,9 @@ make_compress_input(struct tile_stream_gpu* s, int fc, uint32_t n_epochs)
     .active_levels_mask = fs->active_levels_mask,
     .epochs_per_batch = s->batch.epochs_per_batch,
     .pool_buf = s->pools.buf[fc],
-    .lod_done =
-      (s->levels.enable_multiscale && s->lod.t_end) ? s->lod.t_end : NULL,
+    .lod_done = (s->levels.enable_multiscale && s->lod.timing[fc].t_end)
+                  ? s->lod.timing[fc].t_end
+                  : NULL,
   };
   memcpy(
     in.batch_active_masks, fs->batch_active_masks, n_epochs * sizeof(uint32_t));
@@ -58,6 +59,7 @@ flush_run_epoch_lod(struct tile_stream_gpu* s)
   } else {
     CHECK(Error,
           lod_run_epoch(&s->lod,
+                        s->pools.current,
                         &s->levels,
                         pool_epoch_ptr(s, s->batch.accumulated),
                         s->config.dtype,
@@ -192,8 +194,9 @@ kick_and_deliver_one_epoch(struct tile_stream_gpu* s,
     .n_epochs = 1,
     .active_levels_mask = active_mask,
     .epochs_per_batch = s->batch.epochs_per_batch,
-    .lod_done =
-      (s->levels.enable_multiscale && s->lod.t_end) ? s->lod.t_end : NULL,
+    .lod_done = (s->levels.enable_multiscale && s->lod.timing[fc].t_end)
+                  ? s->lod.timing[fc].t_end
+                  : NULL,
   };
   in.batch_active_masks[0] = active_mask;
   in.epoch_events[0] = s->batch.pool_events[epoch_in_batch];
@@ -344,12 +347,14 @@ flush_partial_append(struct tile_stream_gpu* s)
     if (!(active_levels_mask & (1u << lv)))
       continue;
 
-    uint64_t n_elements = p->fixed_dims_count * p->levels.level[lv].lod_nelem;
+    uint64_t n_elements =
+      p->levels.level[lv].fixed_dims_count * p->levels.level[lv].lod_nelem;
 
     // Compute offset of this level within the packed accumulator
     uint64_t accum_offset = 0;
     for (int k = 1; k < lv; ++k)
-      accum_offset += p->fixed_dims_count * p->levels.level[k].lod_nelem;
+      accum_offset +=
+        p->levels.level[k].fixed_dims_count * p->levels.level[k].lod_nelem;
 
     size_t accum_bpe = dtype_bpe(dtype);
 
@@ -385,13 +390,13 @@ flush_partial_append(struct tile_stream_gpu* s)
                                    s->lod.d_morton_fixed_dims_chunk_offsets[lv],
                                    dtype,
                                    p->levels.level[lv].lod_nelem,
-                                   p->fixed_dims_count,
+                                   p->levels.level[lv].fixed_dims_count,
                                    s->streams.compute) == 0);
   }
 
   CU(Error, cuEventRecord(s->pools.ready[fc], s->streams.compute));
-  if (s->lod.t_end)
-    CU(Error, cuEventRecord(s->lod.t_end, s->streams.compute));
+  if (s->lod.timing[fc].t_end)
+    CU(Error, cuEventRecord(s->lod.timing[fc].t_end, s->streams.compute));
 
   CU(Error, cuEventRecord(s->batch.pool_events[0], s->streams.compute));
   if (flush_kick_batch(s, fc, 1))

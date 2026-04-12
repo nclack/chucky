@@ -59,21 +59,20 @@ hcs_plate_create(struct store* store, const struct hcs_plate_config* cfg)
   int max_lev = cfg->fov.nlod > 0 ? cfg->fov.nlod : LOD_MAX_LEVELS;
   CHECK(Fail,
         lod_plan_init_from_dims(
-          &plan, cfg->fov.dimensions, cfg->fov.rank, max_lev) == 0);
+          &plan, cfg->fov.dimensions, cfg->fov.rank, max_lev, 0) == 0);
 
   uint8_t na = dims_n_append(cfg->fov.dimensions, cfg->fov.rank);
-  uint64_t max_sic = 0;
+  uint64_t total_slots = 0;
   for (int lv = 0; lv < plan.levels.nlod; ++lv) {
     uint64_t sic = 1;
     for (int d = na; d < cfg->fov.rank; ++d)
       sic *= plan.levels.level[lv].dim[d].shard_count;
-    if (sic > max_sic)
-      max_sic = sic;
+    total_slots += sic;
   }
   lod_plan_free(&plan);
-  CHECK(Fail, max_sic > 0);
+  CHECK(Fail, total_slots > 0);
 
-  struct shard_pool* pool = store->create_pool(store, max_sic);
+  struct shard_pool* pool = store->create_pool(store, total_slots);
   CHECK(Fail, pool);
 
   struct hcs_plate* p = (struct hcs_plate*)calloc(1, sizeof(*p));

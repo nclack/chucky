@@ -66,9 +66,9 @@ struct lod_state
   CUdeviceptr d_gather_lut;         // u32, lod_nelem[0] entries
   CUdeviceptr d_fixed_dims_offsets; // u32, fixed_dims_count entries
 
-  CUdeviceptr d_child_shapes[LOD_MAX_LEVELS];
-  CUdeviceptr d_parent_shapes[LOD_MAX_LEVELS];
-  CUdeviceptr d_level_ends[LOD_MAX_LEVELS];
+  // CSR reduce LUTs (precomputed, one per level transition)
+  CUdeviceptr d_csr_starts[LOD_MAX_LEVELS];  // u64, [dst_segment_size + 1]
+  CUdeviceptr d_csr_indices[LOD_MAX_LEVELS]; // u64, [src_lod_count]
 
   // Per-level chunk layouts [0..nlod-1]
   struct tile_stream_layout layouts[LOD_MAX_LEVELS];
@@ -79,11 +79,16 @@ struct lod_state
   CUdeviceptr
     d_morton_fixed_dims_chunk_offsets[LOD_MAX_LEVELS]; // u32, fixed_dims_count
 
-  CUevent t_start;
-  CUevent t_scatter_end;
-  CUevent t_reduce_end;
-  CUevent t_append_end;
-  CUevent t_end;
+  // Per-frame-counter timing events (double-buffered so drain reads the
+  // correct batch's events even when the next batch's LOD has already run).
+  struct lod_timing
+  {
+    CUevent t_start;
+    CUevent t_scatter_end;
+    CUevent t_reduce_end;
+    CUevent t_append_end;
+    CUevent t_end;
+  } timing[2];
 
   // Append-dim LOD accumulation state.
   struct

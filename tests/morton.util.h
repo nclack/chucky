@@ -30,9 +30,10 @@ lod_scatter_cpu_u16(const struct lod_plan* p,
                     const uint16_t* src,
                     uint16_t* dst);
 
-// CPU reference: reduce a single window (u16).
+// CPU reference: reduce a single window (u16) with CSR indirect indexing.
 uint16_t
 reduce_window_u16(const uint16_t* src,
+                  const uint64_t* indices,
                   uint64_t start,
                   uint64_t end,
                   enum lod_reduce_method method);
@@ -50,5 +51,12 @@ lod_compute_u16(const struct lod_plan* p,
                 const uint16_t* src,
                 uint16_t** out_values,
                 enum lod_reduce_method method);
+
+// CPU brute-force: reduce WITHOUT using CSR, directly from coordinates.
+// Independent reference for validating CSR construction correctness.
+void
+lod_reduce_bruteforce(const struct lod_plan* p,
+                      float* values,
+                      enum lod_reduce_method method);
 
 #endif // MORTON_UTIL_H

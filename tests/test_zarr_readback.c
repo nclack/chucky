@@ -77,7 +77,12 @@ Fail:
 int
 main(void)
 {
-  if (system("uv --version > /dev/null 2>&1") != 0) {
+#ifdef _WIN32
+#define NULL_DEV "NUL"
+#else
+#define NULL_DEV "/dev/null"
+#endif
+  if (system("uv --version > " NULL_DEV " 2>&1") != 0) {
     log_error("uv not found — install it: https://docs.astral.sh/uv/");
     return 77; // CTest SKIP_RETURN_CODE
   }

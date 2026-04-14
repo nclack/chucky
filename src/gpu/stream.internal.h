@@ -151,6 +151,7 @@ struct d2h_deliver_stage
 
   struct level_flush_state* levels; // borrowed
   int nlod;
+  size_t shard_alignment;         // from sink; 0 = no alignment
   struct stream_metrics* metrics; // borrowed, for stall-time accumulation
   CUstream d2h_stream; // set by kick, consumed by drain (always paired)
 };
@@ -184,6 +185,7 @@ struct tile_stream_gpu
   uint64_t max_cursor_elements; // 0 = unbounded
   int flushed;                  // 1 after flush; append after flush returns
                                 // finished
+  size_t shard_alignment;       // from sink; 0 = no alignment
   struct stream_metrics metrics;
   struct platform_clock metadata_update_clock;
 };

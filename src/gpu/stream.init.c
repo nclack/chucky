@@ -187,6 +187,7 @@ tile_stream_gpu_create(const struct tile_stream_configuration* config,
         compute_stream_layouts(config,
                                codec_alignment(config->codec.id),
                                codec_max_output_size,
+                               shard_sink_required_shard_alignment(sink),
                                &cl) == 0);
 
   // Phase 2: Allocate and initialize tile_stream_gpu.
@@ -196,6 +197,7 @@ tile_stream_gpu_create(const struct tile_stream_configuration* config,
 
   out->config = *config;
   out->shard_sink = sink;
+  out->shard_alignment = shard_sink_required_shard_alignment(sink);
   out->levels = cl.levels;
   out->dims = cl.dims;
   tile_stream_gpu_init_writer(out);
@@ -241,6 +243,7 @@ tile_stream_gpu_create(const struct tile_stream_configuration* config,
         d2h_deliver_init(&out->d2h_deliver,
                          out->compress_agg.levels,
                          out->levels.nlod,
+                         out->shard_alignment,
                          out->streams.compute) == 0);
 
   CHECK(FailPhase2, init_batch_events(&out->batch, out->streams.compute) == 0);
@@ -326,6 +329,7 @@ tile_stream_gpu_status(const struct tile_stream_gpu* s)
 
 int
 tile_stream_gpu_memory_estimate(const struct tile_stream_configuration* config,
+                                size_t shard_alignment,
                                 struct tile_stream_memory_info* info)
 {
   if (!info)
@@ -334,8 +338,11 @@ tile_stream_gpu_memory_estimate(const struct tile_stream_configuration* config,
   memset(info, 0, sizeof(*info));
 
   struct computed_stream_layouts cl;
-  if (compute_stream_layouts(
-        config, codec_alignment(config->codec.id), codec_max_output_size, &cl))
+  if (compute_stream_layouts(config,
+                             codec_alignment(config->codec.id),
+                             codec_max_output_size,
+                             shard_alignment,
+                             &cl))
     return 1;
 
   const uint8_t rank = config->rank;
@@ -389,7 +396,7 @@ tile_stream_gpu_memory_estimate(const struct tile_stream_configuration* config,
                                             max_output_size,
                                             covering_count,
                                             cps_inner_lv,
-                                            config->shard_alignment);
+                                            shard_alignment);
 
     size_t agg_layout_dev =
       2 * (rank - 1) * sizeof(uint64_t) + 2 * (rank - 1) * sizeof(int64_t);
@@ -456,8 +463,8 @@ tile_stream_gpu_memory_estimate(const struct tile_stream_configuration* config,
       lod_device += src_total * sizeof(uint64_t);
     }
 
-    for (int lv = 0; lv < plan->levels.nlod; ++lv) {
-      // Per-level morton scatter LUTs
+    for (int lv = 1; lv < plan->levels.nlod; ++lv) {
+      // Per-level morton scatter LUTs (level 0 already counted above)
       lod_device += plan->levels.level[lv].lod_nelem * sizeof(uint32_t);
       lod_device += plan->levels.level[lv].fixed_dims_count * sizeof(uint32_t);
     }
@@ -507,7 +514,8 @@ int
 tile_stream_gpu_advise_chunk_sizes(struct tile_stream_configuration* config,
                                    size_t target_chunk_bytes,
                                    const uint8_t* ratios,
-                                   size_t budget_bytes)
+                                   size_t budget_bytes,
+                                   size_t shard_alignment)
 {
   const size_t bytes_per_element = dtype_bpe(config->dtype);
   if (bytes_per_element == 0 || budget_bytes == 0)
@@ -518,7 +526,7 @@ tile_stream_gpu_advise_chunk_sizes(struct tile_stream_configuration* config,
     dims_budget_chunk_bytes(
       config->dimensions, config->rank, target, bytes_per_element, ratios);
     struct tile_stream_memory_info mem;
-    if (tile_stream_gpu_memory_estimate(config, &mem))
+    if (tile_stream_gpu_memory_estimate(config, shard_alignment, &mem))
       return 1;
     if (mem.device_bytes <= budget_bytes)
       return 0;

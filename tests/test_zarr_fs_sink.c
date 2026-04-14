@@ -1097,7 +1097,6 @@ test_unbuffered_pipeline(const char* tmpdir)
     .dimensions = dims,
     .codec = { .id = CODEC_ZSTD },
     .epochs_per_batch = 1,
-    .shard_alignment = platform_page_size(),
   };
 
   struct tile_stream_gpu* s = NULL;
@@ -1298,7 +1297,6 @@ test_unbuffered_pipeline_multishard(const char* tmpdir)
     .rank = 3,
     .dimensions = dims,
     .codec = { .id = CODEC_ZSTD },
-    .shard_alignment = platform_page_size(),
   };
 
   struct tile_stream_gpu* s = NULL;
@@ -1488,7 +1486,7 @@ test_storage_order_validation(const char* tmpdir)
       .rank = 3,
       .dimensions = bad_dims,
     };
-    CHECK(Fail, tile_stream_gpu_memory_estimate(&config, &info) != 0);
+    CHECK(Fail, tile_stream_gpu_memory_estimate(&config, 0, &info) != 0);
     log_info("  storage_position[0]!=0 rejected OK");
   }
 
@@ -1518,7 +1516,7 @@ test_storage_order_validation(const char* tmpdir)
       .rank = 3,
       .dimensions = bad_dims,
     };
-    CHECK(Fail, tile_stream_gpu_memory_estimate(&config, &info) != 0);
+    CHECK(Fail, tile_stream_gpu_memory_estimate(&config, 0, &info) != 0);
     log_info("  duplicate values rejected OK");
   }
 
@@ -1548,7 +1546,7 @@ test_storage_order_validation(const char* tmpdir)
       .rank = 3,
       .dimensions = bad_dims,
     };
-    CHECK(Fail, tile_stream_gpu_memory_estimate(&config, &info) != 0);
+    CHECK(Fail, tile_stream_gpu_memory_estimate(&config, 0, &info) != 0);
     log_info("  out-of-range rejected OK");
   }
 
@@ -1561,7 +1559,7 @@ test_storage_order_validation(const char* tmpdir)
       .rank = 3,
       .dimensions = dims,
     };
-    CHECK(Fail, tile_stream_gpu_memory_estimate(&config, &info) != 0);
+    CHECK(Fail, tile_stream_gpu_memory_estimate(&config, 0, &info) != 0);
     log_info("  all-zero rejected OK");
   }
 
@@ -1591,7 +1589,7 @@ test_storage_order_validation(const char* tmpdir)
       .rank = 3,
       .dimensions = id_dims,
     };
-    CHECK(Fail, tile_stream_gpu_memory_estimate(&config, &info) == 0);
+    CHECK(Fail, tile_stream_gpu_memory_estimate(&config, 0, &info) == 0);
     log_info("  explicit identity accepted OK");
   }
 
@@ -1621,7 +1619,7 @@ test_storage_order_validation(const char* tmpdir)
       .rank = 3,
       .dimensions = perm_dims,
     };
-    CHECK(Fail, tile_stream_gpu_memory_estimate(&config, &info) == 0);
+    CHECK(Fail, tile_stream_gpu_memory_estimate(&config, 0, &info) == 0);
     log_info("  valid {0,2,1} accepted OK");
   }
 

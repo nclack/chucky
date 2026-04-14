@@ -60,6 +60,7 @@ ca_ctx_setup(struct ca_test_ctx* c,
         compute_stream_layouts(&c->config,
                                codec_alignment(c->config.codec.id),
                                codec_max_output_size,
+                               platform_page_alignment(),
                                &c->cl) == 0);
 
   CU(Fail, cuStreamCreate(&c->compute, CU_STREAM_NON_BLOCKING));
@@ -186,9 +187,10 @@ verify_tiles_none(const struct flush_handoff* handoff,
       cpu_perm(t, al->lifted_rank, al->lifted_shape, al->lifted_strides);
     size_t off = agg->h_offsets[pi];
     size_t sz = agg->h_offsets[pi + 1] - off;
-    if (sz != chunk_bytes) {
+    // Last chunk per shard may include alignment padding; check >= instead.
+    if (sz < chunk_bytes) {
       if (errors < 5)
-        log_error("  chunk %lu: size=%zu expected=%zu",
+        log_error("  chunk %lu: size=%zu expected>=%zu",
                   (unsigned long)t,
                   sz,
                   chunk_bytes);
@@ -251,8 +253,14 @@ test_compress_agg_single_epoch(void)
   CHECK(Fail, ca_ctx_fetch_agg(&handoff, C, &h_agg) == 0);
   CHECK(Fail, verify_offsets_monotonic(handoff.agg[0]->h_offsets, C) == 0);
 
-  size_t expected_total = c.cl.levels.total_chunks * chunk_bytes;
-  CHECK(Fail, handoff.agg[0]->h_offsets[C] == expected_total);
+  {
+    // Expected total includes shard-boundary padding.
+    const struct aggregate_layout* al = handoff.agg_layout[0];
+    uint64_t num_shards = C / al->cps_inner;
+    size_t expected_total =
+      num_shards * align_up(al->cps_inner * chunk_bytes, al->page_size);
+    CHECK(Fail, handoff.agg[0]->h_offsets[C] == expected_total);
+  }
   CHECK(Fail, verify_tiles_none(&handoff, &c, h_agg, fill_epoch0) == 0);
 
   ok = 1;
@@ -303,8 +311,14 @@ test_compress_agg_batch(void)
         verify_offsets_monotonic(handoff.agg[0]->h_offsets, batch_covering) ==
           0);
 
-  size_t expected_total = 2 * c.cl.levels.total_chunks * chunk_bytes;
-  CHECK(Fail, handoff.agg[0]->h_offsets[batch_covering] == expected_total);
+  {
+    // In batch mode, padding groups are (batch_count * cps_inner) per shard.
+    uint64_t num_shards = C / al->cps_inner;
+    uint64_t tps_group = batch_covering / num_shards;
+    size_t expected_total =
+      num_shards * align_up(tps_group * chunk_bytes, al->page_size);
+    CHECK(Fail, handoff.agg[0]->h_offsets[batch_covering] == expected_total);
+  }
 
   // Verify data per epoch
   uint64_t chunks_lv = c.cl.levels.level[0].chunk_count;
@@ -322,9 +336,10 @@ test_compress_agg_batch(void)
         ravel(2, shard_shape, shard_strides, perm_pos) + a * cps_inner;
       size_t off = handoff.agg[0]->h_offsets[out_idx];
       size_t sz = handoff.agg[0]->h_offsets[out_idx + 1] - off;
-      if (sz != chunk_bytes) {
+      // Last chunk per shard may include alignment padding.
+      if (sz < chunk_bytes) {
         if (errors < 5)
-          log_error("  epoch %u chunk %lu: size=%zu expected=%zu",
+          log_error("  epoch %u chunk %lu: size=%zu expected>=%zu",
                     a,
                     (unsigned long)j,
                     sz,
@@ -389,8 +404,13 @@ test_compress_agg_partial_batch(void)
   CHECK(Fail, ca_ctx_fetch_agg(&handoff, C, &h_agg) == 0);
   CHECK(Fail, verify_offsets_monotonic(handoff.agg[0]->h_offsets, C) == 0);
 
-  size_t expected_total = c.cl.levels.total_chunks * chunk_bytes;
-  CHECK(Fail, handoff.agg[0]->h_offsets[C] == expected_total);
+  {
+    const struct aggregate_layout* al = handoff.agg_layout[0];
+    uint64_t num_shards = C / al->cps_inner;
+    size_t expected_total =
+      num_shards * align_up(al->cps_inner * chunk_bytes, al->page_size);
+    CHECK(Fail, handoff.agg[0]->h_offsets[C] == expected_total);
+  }
   CHECK(Fail, verify_tiles_none(&handoff, &c, h_agg, fill_epoch0) == 0);
 
   ok = 1;
@@ -440,9 +460,10 @@ test_compress_agg_zstd_single_epoch(void)
     uint32_t pi =
       cpu_perm(t, al->lifted_rank, al->lifted_shape, al->lifted_strides);
     size_t off = handoff.agg[0]->h_offsets[pi];
-    size_t comp_sz = handoff.agg[0]->h_offsets[pi + 1] - off;
+    size_t comp_sz = handoff.agg[0]->h_permuted_sizes[pi];
     CHECK(Fail, comp_sz > 0);
-    CHECK(Fail, comp_sz <= handoff.max_output_size);
+    // Last chunk per shard may include alignment padding.
+    CHECK(Fail, comp_sz <= handoff.max_output_size + al->page_size);
 
     size_t result =
       ZSTD_decompress(decomp_buf, chunk_bytes, (char*)h_agg + off, comp_sz);
@@ -534,9 +555,13 @@ test_compress_agg_zstd_batch(void)
       uint64_t out_idx =
         ravel(2, shard_shape, shard_strides, perm_pos) + a * cps_inner;
       size_t off = handoff.agg[0]->h_offsets[out_idx];
-      size_t comp_sz = handoff.agg[0]->h_offsets[out_idx + 1] - off;
+      size_t slot_sz = handoff.agg[0]->h_offsets[out_idx + 1] - off;
+      CHECK(Fail, slot_sz > 0);
 
-      CHECK(Fail, comp_sz > 0);
+      // Slot may include shard-boundary padding; find the actual frame size.
+      size_t comp_sz =
+        ZSTD_findFrameCompressedSize((char*)h_agg + off, slot_sz);
+      CHECK(Fail, !ZSTD_isError(comp_sz));
       CHECK(Fail, comp_sz <= handoff.max_output_size);
 
       size_t result =

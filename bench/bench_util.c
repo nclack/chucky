@@ -148,16 +148,14 @@ run_bench(const struct bench_config* cfg)
         .reduce_method = cfg->reduce_method,
         .append_reduce_method = cfg->append_reduce_method,
         .target_batch_chunks = 2048,
-        .shard_alignment =
-          (output_path || cfg->s3_bucket) ? platform_page_size() : 0,
       };
       int advise_ok;
       if (cfg->backend == BENCH_GPU) {
         advise_ok = tile_stream_gpu_advise_chunk_sizes(
-          &fit_config, target, cfg->chunk_ratios, budget);
+          &fit_config, target, cfg->chunk_ratios, budget, 0);
       } else {
         advise_ok = tile_stream_cpu_advise_chunk_sizes(
-          &fit_config, target, cfg->chunk_ratios, budget);
+          &fit_config, target, cfg->chunk_ratios, budget, 0);
       }
       if (advise_ok == 0) {
         fitted = 1;
@@ -243,8 +241,6 @@ run_bench(const struct bench_config* cfg)
     .reduce_method = cfg->reduce_method,
     .append_reduce_method = cfg->append_reduce_method,
     .target_batch_chunks = 2048,
-    .shard_alignment =
-      (output_path || cfg->s3_bucket) ? platform_page_size() : 0,
     .backpressure_bytes = cfg->backpressure_bytes,
   };
 
@@ -252,7 +248,7 @@ run_bench(const struct bench_config* cfg)
 
   if (cfg->backend == BENCH_GPU) {
     struct tile_stream_memory_info mem;
-    if (tile_stream_gpu_memory_estimate(&config, &mem) == 0) {
+    if (tile_stream_gpu_memory_estimate(&config, 0, &mem) == 0) {
       est_total_chunks = mem.total_chunks;
       print_report("  GPU memory:  %.2f GiB device, %.2f GiB pinned",
                    (double)mem.device_bytes / (1024.0 * 1024.0 * 1024.0),
@@ -278,7 +274,7 @@ run_bench(const struct bench_config* cfg)
 
   if (cfg->backend == BENCH_CPU) {
     struct tile_stream_cpu_memory_info mem;
-    if (tile_stream_cpu_memory_estimate(&config, &mem) == 0) {
+    if (tile_stream_cpu_memory_estimate(&config, 0, &mem) == 0) {
       est_total_chunks = mem.total_chunks;
       print_report("  CPU memory:  %.2f GiB heap",
                    (double)mem.heap_bytes / (1024.0 * 1024.0 * 1024.0));
@@ -806,7 +802,7 @@ run_bench_two_streams(const struct bench_config* cfg)
     int fitted = 0;
     if (budget > 0) {
       fitted = tile_stream_gpu_advise_chunk_sizes(
-                 &fit_config, target, cfg->chunk_ratios, budget) == 0;
+                 &fit_config, target, cfg->chunk_ratios, budget, 0) == 0;
       if (fitted) {
         uint64_t vol = 1;
         for (uint8_t d = 0; d < rank; ++d)
@@ -884,14 +880,13 @@ run_bench_two_streams(const struct bench_config* cfg)
     .reduce_method = cfg->reduce_method,
     .append_reduce_method = cfg->append_reduce_method,
     .target_batch_chunks = 2048,
-    .shard_alignment = output_path ? platform_page_size() : 0,
     .backpressure_bytes = cfg->backpressure_bytes,
   };
 
   // Memory estimates
   {
     struct tile_stream_memory_info mem;
-    if (tile_stream_gpu_memory_estimate(&config, &mem) == 0) {
+    if (tile_stream_gpu_memory_estimate(&config, 0, &mem) == 0) {
       print_report(
         "  GPU memory (per stream): %.2f GiB device, %.2f GiB pinned",
         (double)mem.device_bytes / (1024.0 * 1024.0 * 1024.0),

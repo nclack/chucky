@@ -118,13 +118,18 @@ while concurrent_shards · 2 ≤ max_concurrent_shards:
 # Append cadence from byte floor.
 cps_append = max(1, ceildiv(min_shard_bytes, append_row_bytes))
 
+# If min_shard_bytes < chunk_bytes at this target, Phase 2 rejects. The outer
+# loop halves `target` and retries; this naturally recovers once chunk_bytes
+# drops below min_shard_bytes. If the loop exhausts `floor`, the solver
+# returns reason = ADVISE_MIN_SHARD_TOO_SMALL.
+
 # --- Cross-phase check: backend parts limit ---
 if max_parts_per_shard > 0 and chunks_per_shard_total > max_parts_per_shard:
     # Two remedies: shrink chunks (cheapest — lowers append_row_bytes and
     # relaxes the product), or raise max_concurrent_shards (caller policy).
     halve target, restart Phase 1
-    # If already at min_chunk_bytes: ERROR with a message indicating both
-    # min_chunk_bytes and max_concurrent_shards should be revisited.
+    # If already at min_chunk_bytes: ERROR with reason
+    # ADVISE_PARTS_LIMIT_EXCEEDED.
 ```
 
 ## Worked example
@@ -201,6 +206,11 @@ shard_size_bytes   ≈ 1.03 GiB
   interpreted as an append-accumulator case, see `dims_n_append` in
   `src/lod/lod_plan.c`). Callers who don't want this should set
   `min_chunk_bytes` high enough to prevent the shrink.
+- **Pinning a dim with `chunk_ratios[d] == -1`** — bounded dims pin at
+  `size[d]`; unbounded dim 0 (`size == 0`) falls back to weight-1 so it
+  absorbs the remaining bit budget. Mixed example: `{1, -1, -1}` on
+  `(t=16M, y=16, x=16)` pins y/x at 16 each and lets t soak the chunk
+  byte budget.
 
 ## Entry points
 
@@ -215,8 +225,13 @@ shard_size_bytes   ≈ 1.03 GiB
 - `tile_stream_gpu_advise_layout` (`src/stream.gpu.h`) /
   `tile_stream_cpu_advise_layout` (`src/stream.cpu.h`) — combined solve
   with auto-fit loop, memory budget, and cross-phase parts check. Halves
-  the chunk target until all constraints are met; bails below
-  `min_chunk_bytes`.
+  `epochs_per_batch` (K) before shrinking chunks when the memory budget
+  binds; halves the chunk target when either K at floor=1 still overshoots
+  or a cross-phase constraint fails; bails below `min_chunk_bytes`. On
+  failure, fills an optional `struct advise_layout_diagnostic` with a
+  reason code (`ADVISE_BUDGET_EXCEEDED`, `ADVISE_PARTS_LIMIT_EXCEEDED`,
+  `ADVISE_MIN_SHARD_TOO_SMALL`, `ADVISE_INVALID_CONFIG`) and the relevant
+  last-iteration context.
 - Backend constants (`src/defs.limits.h`) — `MAX_PARTS_PER_SHARD` and
   `MAX_BYTES_PER_PART`, applied uniformly across sinks.
 - `run_bench` in `bench/bench_util.c` — wires these into the benchmark

@@ -671,80 +671,100 @@ Cleanup:
 
 // --- CLI driver ---
 
-int
-bench_stream_main(int ac, char* av[], struct bench_spec spec)
+struct bench_cli_args
 {
-  const char* label = spec.label;
-  struct dimension* dims = spec.dims;
-  uint8_t rank = spec.rank;
-  const int* chunk_ratios = spec.chunk_ratios;
-  size_t default_chunk_bytes = spec.default_chunk_bytes;
-  size_t min_chunk_bytes = spec.min_chunk_bytes;
-  size_t min_shard_bytes = spec.min_shard_bytes;
-  uint32_t max_concurrent_shards = spec.max_concurrent_shards;
+  fill_fn fill;
+  struct codec_config codec;
+  enum lod_reduce_method reduce;
+  enum bench_backend backend;
+  enum dtype dtype;
+  size_t target_chunk_bytes;
+  size_t memory_budget;
+  uint64_t frames;
+  int json_output;
+  const char* output_path;
+  const char* s3_bucket;
+  const char* s3_prefix;
+  const char* s3_region;
+  const char* s3_endpoint;
+  double s3_throughput_gbps;
+  uint64_t io_bw_mbps;
+  uint64_t io_latency_us;
+  size_t backpressure_bytes;
+};
 
-  fill_fn fill = fill_xor;
-  struct codec_config codec = { .id = CODEC_ZSTD };
-  enum lod_reduce_method reduce = lod_reduce_mean;
-  const char* output_path = NULL;
-  const char* s3_bucket = NULL;
-  const char* s3_prefix = NULL;
-  const char* s3_region = NULL;
-  const char* s3_endpoint = NULL;
-  double s3_throughput_gbps = 0;
-  enum bench_backend backend = BENCH_GPU;
-  enum dtype dtype = dtype_u16;
-  size_t target_chunk_bytes = 0;
-  size_t memory_budget = 0;
-  uint64_t frames = 0;
-  int json_output = 0;
-  uint64_t io_bw_mbps = 0;
-  uint64_t io_latency_us = 0;
-  size_t backpressure_bytes = 0;
+// Parse the shared bench CLI flags into out. Unknown options print a usage
+// string and return 1. Flags accepted:
+//   --fill --codec --reduce --backend --dtype --frames --json --chunk-bytes
+//   --memory-budget -o --s3-bucket --s3-prefix --s3-region --s3-endpoint
+//   --s3-throughput-gbps --io-bw-mbps --io-latency-us --backpressure.
+// Drivers that don't honor a given flag (e.g. two-streams ignores --backend)
+// just don't read the corresponding field afterward.
+static int
+parse_bench_cli_args(int ac, char* av[], struct bench_cli_args* out)
+{
+  out->fill = fill_xor;
+  out->codec = (struct codec_config){ .id = CODEC_ZSTD };
+  out->reduce = lod_reduce_mean;
+  out->backend = BENCH_GPU;
+  out->dtype = dtype_u16;
+  out->target_chunk_bytes = 0;
+  out->memory_budget = 0;
+  out->frames = 0;
+  out->json_output = 0;
+  out->output_path = NULL;
+  out->s3_bucket = NULL;
+  out->s3_prefix = NULL;
+  out->s3_region = NULL;
+  out->s3_endpoint = NULL;
+  out->s3_throughput_gbps = 0;
+  out->io_bw_mbps = 0;
+  out->io_latency_us = 0;
+  out->backpressure_bytes = 0;
 
   for (int i = 1; i < ac; ++i) {
     if (strcmp(av[i], "--fill") == 0 && i + 1 < ac) {
-      fill = parse_fill(av[++i]);
-      if (!fill)
+      out->fill = parse_fill(av[++i]);
+      if (!out->fill)
         return 1;
     } else if (strcmp(av[i], "--codec") == 0 && i + 1 < ac) {
-      if (!parse_codec(av[++i], &codec))
+      if (!parse_codec(av[++i], &out->codec))
         return 1;
     } else if (strcmp(av[i], "--reduce") == 0 && i + 1 < ac) {
-      if (!parse_reduce(av[++i], &reduce))
+      if (!parse_reduce(av[++i], &out->reduce))
         return 1;
     } else if (strcmp(av[i], "--backend") == 0 && i + 1 < ac) {
-      if (!parse_backend(av[++i], &backend))
+      if (!parse_backend(av[++i], &out->backend))
         return 1;
     } else if (strcmp(av[i], "--dtype") == 0 && i + 1 < ac) {
-      if (!parse_dtype(av[++i], &dtype))
+      if (!parse_dtype(av[++i], &out->dtype))
         return 1;
     } else if (strcmp(av[i], "--frames") == 0 && i + 1 < ac) {
-      frames = (uint64_t)strtoull(av[++i], NULL, 10);
+      out->frames = (uint64_t)strtoull(av[++i], NULL, 10);
     } else if (strcmp(av[i], "--json") == 0) {
-      json_output = 1;
+      out->json_output = 1;
     } else if (strcmp(av[i], "--chunk-bytes") == 0 && i + 1 < ac) {
-      target_chunk_bytes = parse_bytes(av[++i]);
+      out->target_chunk_bytes = parse_bytes(av[++i]);
     } else if (strcmp(av[i], "--memory-budget") == 0 && i + 1 < ac) {
-      memory_budget = parse_bytes(av[++i]);
+      out->memory_budget = parse_bytes(av[++i]);
     } else if (strcmp(av[i], "-o") == 0 && i + 1 < ac) {
-      output_path = av[++i];
+      out->output_path = av[++i];
     } else if (strcmp(av[i], "--s3-bucket") == 0 && i + 1 < ac) {
-      s3_bucket = av[++i];
+      out->s3_bucket = av[++i];
     } else if (strcmp(av[i], "--s3-prefix") == 0 && i + 1 < ac) {
-      s3_prefix = av[++i];
+      out->s3_prefix = av[++i];
     } else if (strcmp(av[i], "--s3-region") == 0 && i + 1 < ac) {
-      s3_region = av[++i];
+      out->s3_region = av[++i];
     } else if (strcmp(av[i], "--s3-endpoint") == 0 && i + 1 < ac) {
-      s3_endpoint = av[++i];
+      out->s3_endpoint = av[++i];
     } else if (strcmp(av[i], "--s3-throughput-gbps") == 0 && i + 1 < ac) {
-      s3_throughput_gbps = strtod(av[++i], NULL);
+      out->s3_throughput_gbps = strtod(av[++i], NULL);
     } else if (strcmp(av[i], "--io-bw-mbps") == 0 && i + 1 < ac) {
-      io_bw_mbps = strtoull(av[++i], NULL, 10);
+      out->io_bw_mbps = strtoull(av[++i], NULL, 10);
     } else if (strcmp(av[i], "--io-latency-us") == 0 && i + 1 < ac) {
-      io_latency_us = strtoull(av[++i], NULL, 10);
+      out->io_latency_us = strtoull(av[++i], NULL, 10);
     } else if (strcmp(av[i], "--backpressure") == 0 && i + 1 < ac) {
-      backpressure_bytes = parse_bytes(av[++i]);
+      out->backpressure_bytes = parse_bytes(av[++i]);
     } else {
       fprintf(stderr, "Unknown option: %s\n", av[i]);
       fprintf(stderr,
@@ -760,15 +780,24 @@ bench_stream_main(int ac, char* av[], struct bench_spec spec)
       return 1;
     }
   }
+  return 0;
+}
 
-  // Override frame count (dim 0 size) if requested
-  if (frames > 0)
-    dims[0].size = frames;
+int
+bench_stream_main(int ac, char* av[], struct bench_spec spec)
+{
+  struct bench_cli_args a;
+  if (parse_bench_cli_args(ac, av, &a))
+    return 1;
+
+  struct dimension* dims = spec.dims;
+  if (a.frames > 0)
+    dims[0].size = a.frames;
 
   int ecode = 0;
   CUcontext ctx = 0;
 
-  if (backend == BENCH_GPU) {
+  if (a.backend == BENCH_GPU) {
     CUdevice dev;
     CU(Fail, cuInit(0));
     CU(Fail, cuDeviceGet(&dev, 0));
@@ -776,44 +805,44 @@ bench_stream_main(int ac, char* av[], struct bench_spec spec)
   }
 
   struct bench_config cfg = {
-    .label = label,
+    .label = spec.label,
     .dims = dims,
-    .rank = rank,
-    .fill = fill,
-    .output_path = output_path,
-    .array_name = label,
-    .s3_bucket = s3_bucket,
-    .s3_prefix = s3_prefix,
-    .s3_region = s3_region,
-    .s3_endpoint = s3_endpoint,
-    .s3_throughput_gbps = s3_throughput_gbps,
-    .codec = codec,
-    .reduce_method = reduce,
+    .rank = spec.rank,
+    .fill = a.fill,
+    .output_path = a.output_path,
+    .array_name = spec.label,
+    .s3_bucket = a.s3_bucket,
+    .s3_prefix = a.s3_prefix,
+    .s3_region = a.s3_region,
+    .s3_endpoint = a.s3_endpoint,
+    .s3_throughput_gbps = a.s3_throughput_gbps,
+    .codec = a.codec,
+    .reduce_method = a.reduce,
     .append_reduce_method =
-      reduce == lod_reduce_median ? lod_reduce_max : reduce,
-    .backend = backend,
-    .dtype = dtype,
-    .chunk_ratios = chunk_ratios,
+      a.reduce == lod_reduce_median ? lod_reduce_max : a.reduce,
+    .backend = a.backend,
+    .dtype = a.dtype,
+    .chunk_ratios = spec.chunk_ratios,
     .target_chunk_bytes =
-      target_chunk_bytes ? target_chunk_bytes : default_chunk_bytes,
-    .min_chunk_bytes = min_chunk_bytes,
-    .memory_budget = memory_budget,
-    .min_shard_bytes = min_shard_bytes,
-    .max_concurrent_shards = max_concurrent_shards,
-    .json_output = json_output,
-    .io_bw_mbps = io_bw_mbps,
-    .io_latency_us = io_latency_us,
-    .backpressure_bytes = backpressure_bytes,
+      a.target_chunk_bytes ? a.target_chunk_bytes : spec.default_chunk_bytes,
+    .min_chunk_bytes = spec.min_chunk_bytes,
+    .memory_budget = a.memory_budget,
+    .min_shard_bytes = spec.min_shard_bytes,
+    .max_concurrent_shards = spec.max_concurrent_shards,
+    .json_output = a.json_output,
+    .io_bw_mbps = a.io_bw_mbps,
+    .io_latency_us = a.io_latency_us,
+    .backpressure_bytes = a.backpressure_bytes,
   };
   ecode = run_bench(&cfg);
 
-  if (backend == BENCH_GPU)
+  if (a.backend == BENCH_GPU)
     cuCtxDestroy(ctx);
   return ecode;
 
 Fail:
   printf("FAIL\n");
-  if (backend == BENCH_GPU)
+  if (a.backend == BENCH_GPU)
     cuCtxDestroy(ctx);
   return 1;
 }
@@ -1134,71 +1163,13 @@ Fail:
 int
 bench_two_streams_main(int ac, char* av[], struct bench_spec spec)
 {
-  const char* label = spec.label;
+  struct bench_cli_args a;
+  if (parse_bench_cli_args(ac, av, &a))
+    return 1;
+
   struct dimension* dims = spec.dims;
-  uint8_t rank = spec.rank;
-  const int* chunk_ratios = spec.chunk_ratios;
-  size_t default_chunk_bytes = spec.default_chunk_bytes;
-  size_t min_chunk_bytes = spec.min_chunk_bytes;
-  size_t min_shard_bytes = spec.min_shard_bytes;
-  uint32_t max_concurrent_shards = spec.max_concurrent_shards;
-
-  fill_fn fill = fill_xor;
-  struct codec_config codec = { .id = CODEC_ZSTD };
-  enum lod_reduce_method reduce = lod_reduce_mean;
-  enum dtype dtype = dtype_u16;
-  size_t target_chunk_bytes = 0;
-  size_t memory_budget = 0;
-  uint64_t frames = 0;
-  const char* output_path = NULL;
-  uint64_t io_bw_mbps = 0;
-  uint64_t io_latency_us = 0;
-  size_t backpressure_bytes = 0;
-
-  for (int i = 1; i < ac; ++i) {
-    if (strcmp(av[i], "--fill") == 0 && i + 1 < ac) {
-      fill = parse_fill(av[++i]);
-      if (!fill)
-        return 1;
-    } else if (strcmp(av[i], "--codec") == 0 && i + 1 < ac) {
-      if (!parse_codec(av[++i], &codec))
-        return 1;
-    } else if (strcmp(av[i], "--reduce") == 0 && i + 1 < ac) {
-      if (!parse_reduce(av[++i], &reduce))
-        return 1;
-    } else if (strcmp(av[i], "--dtype") == 0 && i + 1 < ac) {
-      if (!parse_dtype(av[++i], &dtype))
-        return 1;
-    } else if (strcmp(av[i], "--frames") == 0 && i + 1 < ac) {
-      frames = (uint64_t)strtoull(av[++i], NULL, 10);
-    } else if (strcmp(av[i], "--chunk-bytes") == 0 && i + 1 < ac) {
-      target_chunk_bytes = parse_bytes(av[++i]);
-    } else if (strcmp(av[i], "--memory-budget") == 0 && i + 1 < ac) {
-      memory_budget = parse_bytes(av[++i]);
-    } else if (strcmp(av[i], "-o") == 0 && i + 1 < ac) {
-      output_path = av[++i];
-    } else if (strcmp(av[i], "--io-bw-mbps") == 0 && i + 1 < ac) {
-      io_bw_mbps = strtoull(av[++i], NULL, 10);
-    } else if (strcmp(av[i], "--io-latency-us") == 0 && i + 1 < ac) {
-      io_latency_us = strtoull(av[++i], NULL, 10);
-    } else if (strcmp(av[i], "--backpressure") == 0 && i + 1 < ac) {
-      backpressure_bytes = parse_bytes(av[++i]);
-    } else {
-      fprintf(stderr, "Unknown option: %s\n", av[i]);
-      fprintf(stderr,
-              "Usage: %s [--fill xor|zeros|rand] [--codec none|lz4|zstd] "
-              "[--reduce mean|min|max|median|max_sup|min_sup] "
-              "[--dtype u8|u16|...] [--frames N] "
-              "[--chunk-bytes N] [--memory-budget N] [-o path] "
-              "[--io-bw-mbps N (MiB/s)] [--io-latency-us N] "
-              "[--backpressure N]\n",
-              av[0]);
-      return 1;
-    }
-  }
-
-  if (frames > 0)
-    dims[0].size = frames;
+  if (a.frames > 0)
+    dims[0].size = a.frames;
 
   CUdevice dev;
   CUcontext ctx = 0;
@@ -1207,28 +1178,28 @@ bench_two_streams_main(int ac, char* av[], struct bench_spec spec)
   CU(Fail, cuCtxCreate(&ctx, 0, dev));
 
   struct bench_config cfg = {
-    .label = label,
+    .label = spec.label,
     .dims = dims,
-    .rank = rank,
-    .fill = fill,
-    .output_path = output_path,
-    .array_name = label,
-    .codec = codec,
-    .reduce_method = reduce,
+    .rank = spec.rank,
+    .fill = a.fill,
+    .output_path = a.output_path,
+    .array_name = spec.label,
+    .codec = a.codec,
+    .reduce_method = a.reduce,
     .append_reduce_method =
-      reduce == lod_reduce_median ? lod_reduce_max : reduce,
-    .backend = BENCH_GPU,
-    .dtype = dtype,
-    .chunk_ratios = chunk_ratios,
+      a.reduce == lod_reduce_median ? lod_reduce_max : a.reduce,
+    .backend = BENCH_GPU, // two-streams is GPU-only
+    .dtype = a.dtype,
+    .chunk_ratios = spec.chunk_ratios,
     .target_chunk_bytes =
-      target_chunk_bytes ? target_chunk_bytes : default_chunk_bytes,
-    .min_chunk_bytes = min_chunk_bytes,
-    .memory_budget = memory_budget,
-    .min_shard_bytes = min_shard_bytes,
-    .max_concurrent_shards = max_concurrent_shards,
-    .io_bw_mbps = io_bw_mbps,
-    .io_latency_us = io_latency_us,
-    .backpressure_bytes = backpressure_bytes,
+      a.target_chunk_bytes ? a.target_chunk_bytes : spec.default_chunk_bytes,
+    .min_chunk_bytes = spec.min_chunk_bytes,
+    .memory_budget = a.memory_budget,
+    .min_shard_bytes = spec.min_shard_bytes,
+    .max_concurrent_shards = spec.max_concurrent_shards,
+    .io_bw_mbps = a.io_bw_mbps,
+    .io_latency_us = a.io_latency_us,
+    .backpressure_bytes = a.backpressure_bytes,
   };
   int ecode = run_bench_two_streams(&cfg);
 

@@ -280,15 +280,29 @@ dims_set_shard_geometry(struct dimension* dims,
     others_prod *= dims[d].chunks_per_shard;
   }
 
+  // Maximize cps_append subject to the byte floor and the backend parts cap.
+  //   - cps_floor = ceildiv(min_shard_bytes, row_bytes) respects the floor.
+  //   - cps_cap   = min(MAX_PARTS_PER_SHARD / inner_prod, n_chunks[0]) caps
+  //     the chunks-per-shard product and the actual dim extent.
+  // If cps_cap < cps_floor the two constraints conflict; we keep the floor
+  // and let advise_layout's cross-phase check signal PARTS_LIMIT_EXCEEDED so
+  // the outer loop retries with smaller chunks.
   // min_shard_bytes == 0 means "no byte floor": leave dims[0].chunks_per_shard
   // as the caller set it (0 means full span downstream).
   if (min_shard_bytes > 0) {
-    uint64_t row_bytes = (uint64_t)chunk_bytes * inner_cps_prod * others_prod;
-    uint64_t cps_0 =
+    const uint64_t row_bytes =
+      (uint64_t)chunk_bytes * inner_cps_prod * others_prod;
+    const uint64_t inner_prod = inner_cps_prod * others_prod;
+    uint64_t cps_floor =
       row_bytes ? ceildiv((uint64_t)min_shard_bytes, row_bytes) : 1;
-    if (cps_0 < 1)
-      cps_0 = 1;
-    dims[0].chunks_per_shard = cps_0;
+    if (cps_floor < 1)
+      cps_floor = 1;
+    uint64_t cps_cap = inner_prod ? (MAX_PARTS_PER_SHARD / inner_prod) : 1;
+    if (n_chunks[0] > 0 && cps_cap > n_chunks[0])
+      cps_cap = n_chunks[0];
+    if (cps_cap < 1)
+      cps_cap = 1;
+    dims[0].chunks_per_shard = cps_cap >= cps_floor ? cps_cap : cps_floor;
   }
 
   return 0;

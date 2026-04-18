@@ -347,9 +347,10 @@ test_shard_geom_no_inner_sharding(void)
   dims_set_chunk_sizes(dims, 3, cs);
 
   // chunk_bytes = 5*16*16*1 = 1280. row_bytes = 1280 (inner cps=1).
-  // cps_0 = ceildiv(4096, 1280) = 4.
+  // cps_floor = ceildiv(4096, 1280) = 4. cps_cap = min(MAX_PARTS/1,
+  // n_chunks[0]=20) = 20. Maximize policy -> cps_0 = 20.
   CHECK(Error, dims_set_shard_geometry(dims, 3, 4096, 1, 1) == 0);
-  CHECK(Error, dims[0].chunks_per_shard == 4);
+  CHECK(Error, dims[0].chunks_per_shard == 20);
   CHECK(Error, dims[1].chunks_per_shard == 1);
   CHECK(Error, dims[2].chunks_per_shard == 1);
 
@@ -410,9 +411,9 @@ test_shard_geom_splits_inner_greedy(void)
   // chunk_bytes = 5. n_chunks = (20, 8, 4). M=8.
   // Greedy: shards (1,1,1) -> (1,2,1) -> (1,3,1) -> (1,3,2) -> (1,4,2).
   // cps[1]=ceil(8/4)=2, cps[2]=ceil(4/2)=2. row_bytes = 5*2*2 = 20.
-  // cps_0 = ceildiv(80, 20) = 4.
+  // cps_floor = ceildiv(80, 20) = 4. cps_cap = min(MAX_PARTS/4, 20) = 20.
   CHECK(Error, dims_set_shard_geometry(dims, 3, 80, 8, 1) == 0);
-  CHECK(Error, dims[0].chunks_per_shard == 4);
+  CHECK(Error, dims[0].chunks_per_shard == 20);
   CHECK(Error, dims[1].chunks_per_shard == 2);
   CHECK(Error, dims[2].chunks_per_shard == 2);
 
@@ -436,9 +437,10 @@ test_shard_geom_caps_at_n_chunks(void)
   // chunk_bytes = 5. n_chunks = (20, 2, 2). M=16.
   // Greedy: d=1 first (tie, lower index wins) -> (_,2,1). Then d=1 can't grow
   // (shards+1=3 > n_chunks[1]=2), d=2 grows -> (_,2,2). Then neither grows.
-  // cps[1]=1, cps[2]=1; row_bytes=5. cps_0 = ceildiv(40, 5) = 8.
+  // cps[1]=1, cps[2]=1; row_bytes=5. cps_floor=ceildiv(40,5)=8. cps_cap =
+  // min(MAX_PARTS/1, n_chunks[0]=20) = 20.
   CHECK(Error, dims_set_shard_geometry(dims, 3, 40, 16, 1) == 0);
-  CHECK(Error, dims[0].chunks_per_shard == 8);
+  CHECK(Error, dims[0].chunks_per_shard == 20);
   CHECK(Error, dims[1].chunks_per_shard == 1);
   CHECK(Error, dims[2].chunks_per_shard == 1);
 
@@ -466,8 +468,8 @@ test_shard_geom_max_concurrent_zero_is_one(void)
   for (int d = 0; d < 3; ++d)
     CHECK(Error, dims_a[d].chunks_per_shard == dims_b[d].chunks_per_shard);
   // M=1 means no inner splitting: inner cps = n_chunks. row_bytes = 5*8*4=160.
-  // cps_0 = ceildiv(256, 160) = 2.
-  CHECK(Error, dims_a[0].chunks_per_shard == 2);
+  // cps_floor=ceildiv(256,160)=2. cps_cap = min(MAX_PARTS/32, 20) = 20.
+  CHECK(Error, dims_a[0].chunks_per_shard == 20);
   CHECK(Error, dims_a[1].chunks_per_shard == 8);
   CHECK(Error, dims_a[2].chunks_per_shard == 4);
 
@@ -495,9 +497,10 @@ test_shard_geom_multi_append(void)
   // inner_cps: y=2, x=2 -> inner_cps_prod = 4.
   // others_prod: dims[1].cps = 10 (n_chunks[1]).
   // row_bytes = 8192 * 4 * 10 = 327680.
-  // cps_0 = ceildiv(2 MiB, 327680) = ceildiv(2097152, 327680) = 7.
+  // cps_floor = ceildiv(2 MiB, 327680) = 7. n_chunks[0]=0 (unbounded) so the
+  // cap is MAX_PARTS/(4*10) = 10000/40 = 250. cps_0 = max(7, 250) = 250.
   CHECK(Error, dims_set_shard_geometry(dims, 4, 2 << 20, 1, 2) == 0);
-  CHECK(Error, dims[0].chunks_per_shard == 7);
+  CHECK(Error, dims[0].chunks_per_shard == 250);
   CHECK(Error, dims[1].chunks_per_shard == 10);
   CHECK(Error, dims[2].chunks_per_shard == 2);
   CHECK(Error, dims[3].chunks_per_shard == 2);

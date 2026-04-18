@@ -76,8 +76,11 @@ retry.
 2. **Maximize `concurrent_shards`** subject to (3). Use the fs-concurrency
    budget the caller specified; more inner shards produce finer shard cadence
    without inflating individual shards.
-3. **Minimize `shard_size_bytes`** subject to `shard_size_bytes ≥ min_shard_bytes`
-   and constraint (5). Smallest shard cadence that clears the byte floor.
+3. **Maximize `cps_append`** subject to `shard_size_bytes ≥ min_shard_bytes`
+   (byte floor) and `chunks_per_shard_total ≤ max_parts_per_shard` (parts cap)
+   and `cps_append ≤ n_chunks[0]`. Largest shards that stay inside the backend
+   parts limit; `min_shard_bytes` acts as a floor, not a target, so shards end
+   up as big as the parts cap (and dim extent) allow.
 
 ## Procedure
 
@@ -115,8 +118,12 @@ while concurrent_shards · 2 ≤ max_concurrent_shards:
     if no such d*: break
     shards[d*] *= 2
 
-# Append cadence from byte floor.
-cps_append = max(1, ceildiv(min_shard_bytes, append_row_bytes))
+# Append cadence: maximize subject to parts cap and byte floor.
+cps_floor = max(1, ceildiv(min_shard_bytes, append_row_bytes))
+cps_cap   = min(max_parts_per_shard / inner_prod, n_chunks[0] or ∞)
+cps_append = max(cps_floor, cps_cap)   # floor wins if parts cap can't
+                                        # accommodate it; cross-phase
+                                        # check below then retries.
 
 # If min_shard_bytes < chunk_bytes at this target, Phase 2 rejects. The outer
 # loop halves `target` and retries; this naturally recovers once chunk_bytes
@@ -173,21 +180,23 @@ inner_cps       = (c=1, y=ceildiv(80,4)=20, x=ceildiv(60,4)=15)
 inner_cps_prod  = 1 · 20 · 15 = 300
 append_row_bytes = 262 144 · 300 = 78 643 200   (75 MiB)
 
-cps_append       = max(1, ceildiv(1 GiB, 75 MiB)) = ceildiv(1073741824, 78643200) = 14
-shard_size_bytes = 14 · 78 643 200 ≈ 1.03 GiB      (just above the 1 GiB floor)
+cps_floor        = ceildiv(1 GiB, 75 MiB) = 14
+cps_cap          = min(10000/300 = 33, n_chunks[z] = 25) = 25
+cps_append       = max(14, 25) = 25
+shard_size_bytes = 25 · 78 643 200 ≈ 1.83 GiB      (above the 1 GiB floor)
 ```
 
-**Cross-phase check.** `chunks_per_shard_total = 14 · 300 = 4 200`. The filesystem sink imposes no parts limit, so accepted.
+**Cross-phase check.** `chunks_per_shard_total = 25 · 300 = 7 500 ≤ 10 000`, accepted.
 
 **Final output:**
 
 ```
 chunk_size         = (4, 1, 128, 256)
-chunks_per_shard   = (z=14, c=1, y=20, x=15)   (dim z is the outer append dim)
-shard_size_bytes   ≈ 1.03 GiB
+chunks_per_shard   = (z=25, c=1, y=20, x=15)   (dim z is the outer append dim)
+shard_size_bytes   ≈ 1.83 GiB
 
-# Total shards: ceildiv(25, 14) append-slots × 16 inner = 2 × 16 = 32 shards.
-# Total data:   100 · 10240 · 15360 · 2 B ≈ 30 GiB (matches 32 · ~1 GiB).
+# Total shards: ceildiv(25, 25) append-slots × 16 inner = 1 × 16 = 16 shards.
+# Total data:   100 · 10240 · 15360 · 2 B ≈ 30 GiB (matches 16 · ~1.8 GiB).
 ```
 
 ## Edge cases

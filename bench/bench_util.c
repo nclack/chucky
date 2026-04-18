@@ -250,6 +250,33 @@ print_advise_failure(const struct advise_layout_diagnostic* diag,
   }
 }
 
+// Print aggregate shard geometry: uncompressed bytes per shard (append-outer
+// close), total shards. Complements dims_print, which shows per-dim values.
+static void
+print_shard_summary(const struct dimension* dims,
+                    uint8_t rank,
+                    size_t bytes_per_element)
+{
+  uint64_t chunk_elements = 1;
+  uint64_t cps_total = 1;
+  uint64_t total_shards = 1;
+  for (uint8_t d = 0; d < rank; ++d) {
+    chunk_elements *= dims[d].chunk_size;
+    uint64_t tc = ceildiv(dims[d].size, dims[d].chunk_size);
+    uint64_t cps = dims[d].chunks_per_shard ? dims[d].chunks_per_shard : tc;
+    cps_total *= cps;
+    total_shards *= tc ? ceildiv(tc, cps) : 1;
+  }
+  const uint64_t chunk_bytes = chunk_elements * bytes_per_element;
+  const uint64_t shard_bytes = chunk_bytes * cps_total;
+  char buf[32];
+  format_bytes(buf, sizeof(buf), shard_bytes);
+  print_report("  shard:       %s uncompressed (%llu chunks), %llu total",
+               buf,
+               (unsigned long long)cps_total,
+               (unsigned long long)total_shards);
+}
+
 // --- Fill-pattern init (deferred until after chunk-fit succeeds) ---
 //
 // Pattern buffers can be several GiB for large arrays; initializing them in
@@ -307,6 +334,7 @@ run_bench(const struct bench_config* cfg)
     return 1;
 
   dims_print(dims, rank);
+  print_shard_summary(dims, rank, dtype_bpe(dtype));
 
   init_fill_pattern(fill, dims, rank);
 
@@ -802,6 +830,7 @@ run_bench_two_streams(const struct bench_config* cfg)
     return 1;
 
   dims_print(dims, rank);
+  print_shard_summary(dims, rank, dtype_bpe(dtype));
 
   init_fill_pattern(fill, dims, rank);
 

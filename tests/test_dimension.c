@@ -283,6 +283,172 @@ test_dims_print(void)
   return !ok;
 }
 
+// --- dims_set_shard_geometry tests ---
+
+static int
+test_shard_geom_no_inner_sharding(void)
+{
+  // 3D, na=1, M=1: inner dims stay at cps=n_chunks, cps_0 from byte floor.
+  int ok = 0;
+  struct dimension dims[3];
+  uint64_t sizes[] = { 100, 16, 16 };
+  dims_create(dims, "tyx", sizes);
+  uint64_t cs[] = { 5, 16, 16 };
+  dims_set_chunk_sizes(dims, 3, cs);
+
+  // chunk_bytes = 5*16*16*1 = 1280. row_bytes = 1280 (inner cps=1).
+  // cps_0 = ceildiv(4096, 1280) = 4.
+  CHECK(Error, dims_set_shard_geometry(dims, 3, 4096, 1, 1) == 0);
+  CHECK(Error, dims[0].chunks_per_shard == 4);
+  CHECK(Error, dims[1].chunks_per_shard == 1);
+  CHECK(Error, dims[2].chunks_per_shard == 1);
+
+  ok = 1;
+Error:
+  REPORT_TEST(ok);
+  return !ok;
+}
+
+static int
+test_shard_geom_errors(void)
+{
+  int ok = 0;
+  struct dimension dims[2];
+  uint64_t sizes[] = { 10, 10 };
+  dims_create(dims, "xy", sizes);
+  uint64_t cs[] = { 10, 10 }; // chunk_bytes = 10*10*8 = 800
+  dims_set_chunk_sizes(dims, 2, cs);
+
+  // NULL dims
+  CHECK(Error, dims_set_shard_geometry(NULL, 2, 4096, 1, 8) != 0);
+  // rank=0
+  CHECK(Error, dims_set_shard_geometry(dims, 0, 4096, 1, 8) != 0);
+  // bpe=0
+  CHECK(Error, dims_set_shard_geometry(dims, 2, 4096, 1, 0) != 0);
+  // min_shard_bytes < chunk_bytes (but > 0)
+  CHECK(Error, dims_set_shard_geometry(dims, 2, 100, 1, 8) != 0);
+  // min_shard_bytes = 0 is allowed (no byte floor; cps_0 clamps to 1)
+  CHECK(Error, dims_set_shard_geometry(dims, 2, 0, 1, 8) == 0);
+  CHECK(Error, dims[0].chunks_per_shard == 1);
+
+  ok = 1;
+Error:
+  REPORT_TEST(ok);
+  return !ok;
+}
+
+static int
+test_shard_geom_splits_inner_greedy(void)
+{
+  // Unbalanced inner n_chunks=(8,4) with M=8. Greedy prefers the larger
+  // n_chunks/shards ratio; ties favor the earlier-visited (lower-index) dim.
+  // Dim 0 uses chunk_size=5 so dims_n_append yields na=1.
+  int ok = 0;
+  struct dimension dims[3];
+  uint64_t sizes[] = { 100, 8, 4 };
+  dims_create(dims, "tyx", sizes);
+  uint64_t cs[] = { 5, 1, 1 };
+  dims_set_chunk_sizes(dims, 3, cs);
+
+  // chunk_bytes = 5. n_chunks = (20, 8, 4). M=8.
+  // Greedy: shards (1,1,1) -> (1,2,1) -> (1,3,1) -> (1,3,2) -> (1,4,2).
+  // cps[1]=ceil(8/4)=2, cps[2]=ceil(4/2)=2. row_bytes = 5*2*2 = 20.
+  // cps_0 = ceildiv(80, 20) = 4.
+  CHECK(Error, dims_set_shard_geometry(dims, 3, 80, 8, 1) == 0);
+  CHECK(Error, dims[0].chunks_per_shard == 4);
+  CHECK(Error, dims[1].chunks_per_shard == 2);
+  CHECK(Error, dims[2].chunks_per_shard == 2);
+
+  ok = 1;
+Error:
+  REPORT_TEST(ok);
+  return !ok;
+}
+
+static int
+test_shard_geom_caps_at_n_chunks(void)
+{
+  // M exceeds achievable Π n_chunks: greedy stops at actual ceiling.
+  int ok = 0;
+  struct dimension dims[3];
+  uint64_t sizes[] = { 100, 2, 2 };
+  dims_create(dims, "tyx", sizes);
+  uint64_t cs[] = { 5, 1, 1 };
+  dims_set_chunk_sizes(dims, 3, cs);
+
+  // chunk_bytes = 5. n_chunks = (20, 2, 2). M=16.
+  // Greedy: d=1 first (tie, lower index wins) -> (_,2,1). Then d=1 can't grow
+  // (shards+1=3 > n_chunks[1]=2), d=2 grows -> (_,2,2). Then neither grows.
+  // cps[1]=1, cps[2]=1; row_bytes=5. cps_0 = ceildiv(40, 5) = 8.
+  CHECK(Error, dims_set_shard_geometry(dims, 3, 40, 16, 1) == 0);
+  CHECK(Error, dims[0].chunks_per_shard == 8);
+  CHECK(Error, dims[1].chunks_per_shard == 1);
+  CHECK(Error, dims[2].chunks_per_shard == 1);
+
+  ok = 1;
+Error:
+  REPORT_TEST(ok);
+  return !ok;
+}
+
+static int
+test_shard_geom_max_concurrent_zero_is_one(void)
+{
+  // max_concurrent_shards=0 is treated as 1 (no inner splitting).
+  int ok = 0;
+  struct dimension dims_a[3], dims_b[3];
+  uint64_t sizes[] = { 100, 8, 4 };
+  dims_create(dims_a, "tyx", sizes);
+  dims_create(dims_b, "tyx", sizes);
+  uint64_t cs[] = { 5, 1, 1 };
+  dims_set_chunk_sizes(dims_a, 3, cs);
+  dims_set_chunk_sizes(dims_b, 3, cs);
+
+  CHECK(Error, dims_set_shard_geometry(dims_a, 3, 256, 0, 1) == 0);
+  CHECK(Error, dims_set_shard_geometry(dims_b, 3, 256, 1, 1) == 0);
+  for (int d = 0; d < 3; ++d)
+    CHECK(Error, dims_a[d].chunks_per_shard == dims_b[d].chunks_per_shard);
+  // M=1 means no inner splitting: inner cps = n_chunks.
+  CHECK(Error, dims_a[1].chunks_per_shard == 8);
+  CHECK(Error, dims_a[2].chunks_per_shard == 4);
+
+  ok = 1;
+Error:
+  REPORT_TEST(ok);
+  return !ok;
+}
+
+static int
+test_shard_geom_multi_append(void)
+{
+  // na=2: inner append dim (z) passes through at full span (cps = n_chunks[1]),
+  // inner non-append dims get greedy allocation as usual, cps_0 uses the
+  // row_bytes that includes both factors.
+  int ok = 0;
+  struct dimension dims[4];
+  uint64_t sizes[] = { 0, 10, 128, 128 };
+  dims_create(dims, "tzyx", sizes);
+  uint64_t cs[] = { 1, 1, 64, 64 };
+  dims_set_chunk_sizes(dims, 4, cs);
+
+  // bpe=2, chunk_bytes = 1*1*64*64*2 = 8192.
+  // n_chunks = (0, 10, 2, 2). M=1 -> shards stay at 1.
+  // inner_cps: y=2, x=2 -> inner_cps_prod = 4.
+  // others_prod: dims[1].cps = 10 (n_chunks[1]).
+  // row_bytes = 8192 * 4 * 10 = 327680.
+  // cps_0 = ceildiv(2 MiB, 327680) = ceildiv(2097152, 327680) = 7.
+  CHECK(Error, dims_set_shard_geometry(dims, 4, 2 << 20, 1, 2) == 0);
+  CHECK(Error, dims[0].chunks_per_shard == 7);
+  CHECK(Error, dims[1].chunks_per_shard == 10);
+  CHECK(Error, dims[2].chunks_per_shard == 2);
+  CHECK(Error, dims[3].chunks_per_shard == 2);
+
+  ok = 1;
+Error:
+  REPORT_TEST(ok);
+  return !ok;
+}
+
 // --- dim_info tests ---
 
 static int
@@ -707,6 +873,13 @@ main(void)
 
     { "dims_set_shard_counts", test_dims_set_shard_counts },
     { "dims_set_shard_counts_skip_zero", test_dims_set_shard_counts_skip_zero },
+    { "shard_geom_no_inner_sharding", test_shard_geom_no_inner_sharding },
+    { "shard_geom_errors", test_shard_geom_errors },
+    { "shard_geom_splits_inner_greedy", test_shard_geom_splits_inner_greedy },
+    { "shard_geom_caps_at_n_chunks", test_shard_geom_caps_at_n_chunks },
+    { "shard_geom_max_concurrent_zero_is_one",
+      test_shard_geom_max_concurrent_zero_is_one },
+    { "shard_geom_multi_append", test_shard_geom_multi_append },
     { "dims_set_storage_order", test_dims_set_storage_order },
     { "dims_set_downsample_by_name", test_dims_set_downsample_by_name },
     { "dims_print", test_dims_print },

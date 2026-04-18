@@ -4,6 +4,7 @@
 #include "cpu/compress.h"
 #include "cpu/compress_blosc.h"
 #include "cpu/transpose.h"
+#include "defs.limits.h"
 #include "platform/platform.h"
 #include "util/metric.h"
 #include "util/prelude.h"
@@ -479,25 +480,51 @@ tile_stream_cpu_memory_estimate(const struct tile_stream_configuration* config,
 }
 
 int
-tile_stream_cpu_advise_chunk_sizes(struct tile_stream_configuration* config,
-                                   size_t target_chunk_bytes,
-                                   const uint8_t* ratios,
-                                   size_t budget_bytes,
-                                   size_t shard_alignment)
+tile_stream_cpu_advise_layout(struct tile_stream_configuration* config,
+                              size_t target_chunk_bytes,
+                              size_t min_chunk_bytes,
+                              const uint8_t* ratios,
+                              size_t budget_bytes,
+                              size_t min_shard_bytes,
+                              uint32_t max_concurrent_shards,
+                              size_t shard_alignment)
 {
   const size_t bytes_per_element = dtype_bpe(config->dtype);
   if (bytes_per_element == 0 || budget_bytes == 0)
     return 1;
 
-  for (size_t target = target_chunk_bytes; target >= bytes_per_element;
-       target >>= 1) {
+  size_t floor =
+    min_chunk_bytes > bytes_per_element ? min_chunk_bytes : bytes_per_element;
+  for (size_t target = target_chunk_bytes; target >= floor; target >>= 1) {
+    // Phase 1: fit chunks to memory budget.
     dims_budget_chunk_bytes(
       config->dimensions, config->rank, target, bytes_per_element, ratios);
     struct tile_stream_cpu_memory_info mem;
     if (tile_stream_cpu_memory_estimate(config, shard_alignment, &mem))
       return 1;
-    if (mem.heap_bytes <= budget_bytes)
-      return 0;
+    if (mem.heap_bytes > budget_bytes)
+      continue;
+
+    // Phase 2: shard geometry.
+    if (dims_set_shard_geometry(config->dimensions,
+                                config->rank,
+                                min_shard_bytes,
+                                max_concurrent_shards,
+                                bytes_per_element))
+      return 1;
+
+    // Cross-phase (5): chunks_per_shard_total <= MAX_PARTS_PER_SHARD.
+    uint64_t cps_total = 1;
+    for (uint8_t d = 0; d < config->rank; ++d) {
+      uint64_t cps = config->dimensions[d].chunks_per_shard;
+      if (cps == 0)
+        cps = 1;
+      cps_total *= cps;
+    }
+    if (cps_total > MAX_PARTS_PER_SHARD)
+      continue;
+
+    return 0;
   }
   return 1;
 }

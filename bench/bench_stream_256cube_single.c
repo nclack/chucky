@@ -9,8 +9,17 @@ main(int ac, char* av[])
   uint8_t rank = dims_create(dims, "tzyxc", sizes);
 
   uint8_t ratios[] = { 1, 4, 4, 4, 0 };
-  uint64_t shard_counts[] = { 16, 2, 2, 2, 1 };
 
-  return bench_stream_main(
-    ac, av, "single", dims, rank, ratios, 1 << 18, shard_counts);
+  return bench_stream_main(ac,
+                           av,
+                           (struct bench_spec){
+                             .label = "single",
+                             .dims = dims,
+                             .rank = rank,
+                             .chunk_ratios = ratios,
+                             .default_chunk_bytes = 1 << 18,
+                             .min_chunk_bytes = 1 << 14,
+                             .min_shard_bytes = 1ull << 30,
+                             .max_concurrent_shards = 8,
+                           });
 }

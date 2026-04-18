@@ -8,17 +8,19 @@ main(int ac, char* av[])
   uint64_t sizes[] = { 100, 1, 10240, 15360 };
   uint8_t rank = dims_create(dims, "zcyx", sizes);
 
+  dims_set_downsample_by_name(dims, rank, "yx");
+
   uint8_t ratios[] = { 1, 0, 4, 4 };
 
   return bench_stream_main(ac,
                            av,
                            (struct bench_spec){
-                             .label = "single",
+                             .label = "multiscale",
                              .dims = dims,
                              .rank = rank,
                              .chunk_ratios = ratios,
                              .default_chunk_bytes = 1 << 18,
-                             .min_chunk_bytes = 1 << 14,
+                             .min_chunk_bytes = 1 << 12,
                              .min_shard_bytes = 1ull << 30,
                              .max_concurrent_shards = 16,
                            });

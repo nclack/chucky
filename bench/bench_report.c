@@ -1,5 +1,7 @@
 #include "bench_report.h"
 
+#include "util/format_bytes.h"
+
 // --- Throughput helpers ---
 
 double
@@ -49,21 +51,28 @@ log_bench_header(const struct tile_stream_layout* layout,
   const size_t num_epochs =
     (total_elements + layout->epoch_elements - 1) / layout->epoch_elements;
 
-  print_report("  total:       %.2f GiB (%zu elements, %zu epochs)",
-               (double)total_bytes / (1024.0 * 1024.0 * 1024.0),
+  char buf[32];
+  format_bytes(buf, sizeof(buf), (uint64_t)total_bytes);
+  print_report("  total:       %s (%zu elements, %zu epochs)",
+               buf,
                total_elements,
                num_epochs);
-  print_report("  chunk:       %lu elements = %lu KiB  (stride=%lu)",
+  format_bytes(
+    buf, sizeof(buf), (uint64_t)(layout->chunk_stride * dtype_bpe(dtype)));
+  print_report("  chunk:       %lu elements = %s  (stride=%lu)",
                (unsigned long)layout->chunk_elements,
-               (unsigned long)(layout->chunk_stride * dtype_bpe(dtype) / 1024),
+               buf,
                (unsigned long)layout->chunk_stride);
-  print_report("  epoch:       %lu slots, %lu MiB pool",
+  format_bytes(buf, sizeof(buf), (uint64_t)layout->chunk_pool_bytes);
+  print_report("  epoch:       %lu slots, %s pool",
                (unsigned long)layout->chunks_per_epoch,
-               (unsigned long)(layout->chunk_pool_bytes / (1024 * 1024)));
-  if (codec.id != CODEC_NONE && max_compressed_size > 0)
-    print_report("  compress:    max_output=%zu comp_pool=%zu MiB",
-                 max_compressed_size,
-                 (codec_batch_size * max_compressed_size) / (1024 * 1024));
+               buf);
+  if (codec.id != CODEC_NONE && max_compressed_size > 0) {
+    format_bytes(
+      buf, sizeof(buf), (uint64_t)(codec_batch_size * max_compressed_size));
+    print_report(
+      "  compress:    max_output=%zu comp_pool=%s", max_compressed_size, buf);
+  }
 }
 
 void
@@ -92,12 +101,11 @@ print_bench_report(const struct stream_metrics* metrics,
 
   print_report("");
   print_report("  --- Benchmark Results ---");
-  print_report("  Input:        %.2f GiB (%zu elements)",
-               (double)total_bytes / (1024.0 * 1024.0 * 1024.0),
-               total_elements);
-  print_report("  Compressed:   %.2f GiB (ratio: %.3f)",
-               (double)ss->total_bytes / (1024.0 * 1024.0 * 1024.0),
-               comp_ratio);
+  char fbuf[32];
+  format_bytes(fbuf, sizeof(fbuf), (uint64_t)total_bytes);
+  print_report("  Input:        %s (%zu elements)", fbuf, total_elements);
+  format_bytes(fbuf, sizeof(fbuf), (uint64_t)ss->total_bytes);
+  print_report("  Compressed:   %s (ratio: %.3f)", fbuf, comp_ratio);
   print_report("  Chunks:       %zu (%llu/epoch x %zu epochs)",
                total_chunks,
                (unsigned long long)chunks_per_epoch,
@@ -137,8 +145,9 @@ print_bench_report(const struct stream_metrics* metrics,
     print_metric_row(&metrics->io_fence_stall);
     print_metric_row(&metrics->backpressure);
     print_report("  max append ms:   %.2f", (double)metrics->max_append_ms);
-    print_report("  peak pending:    %.2f MiB",
-                 (double)metrics->peak_pending_bytes / (1024.0 * 1024.0));
+    char pbuf[32];
+    format_bytes(pbuf, sizeof(pbuf), (uint64_t)metrics->peak_pending_bytes);
+    print_report("  peak pending:    %s", pbuf);
   }
 
   double throughput_gib =

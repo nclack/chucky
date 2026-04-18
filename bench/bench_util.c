@@ -13,6 +13,7 @@
 #include "sink_throttled.h"
 #include "stream.cpu.h"
 #include "stream/layouts.h"
+#include "util/format_bytes.h"
 #include "util/metric.h"
 #include "util/prelude.h"
 #include "zarr/json_writer.h"
@@ -77,6 +78,29 @@ bench_destroy(struct bench_handle* h)
     tile_stream_gpu_destroy(h->gpu);
 }
 
+// --- Fill-pattern init (deferred until after chunk-fit succeeds) ---
+//
+// Pattern buffers can be several GiB for large arrays; initializing them in
+// the CLI driver would pay that cost even for runs that fail at auto-fit.
+
+static void
+init_fill_pattern(fill_fn fill, const struct dimension* dims, uint8_t rank)
+{
+  if (fill == fill_xor)
+    xor_pattern_init(dims, rank, 16);
+  else if (fill == fill_rand)
+    rand_pattern_init(dims, rank, 16);
+}
+
+static void
+free_fill_pattern(fill_fn fill)
+{
+  if (fill == fill_xor)
+    xor_pattern_free();
+  else if (fill == fill_rand)
+    rand_pattern_free();
+}
+
 // --- Reusable bench driver ---
 //
 // Runs a single benchmark with the given dimensions and fill function.
@@ -114,22 +138,23 @@ run_bench(const struct bench_config* cfg)
 
     // Auto-detect memory budget
     if (budget == 0) {
+      char buf[32];
       if (cfg->backend == BENCH_GPU) {
         size_t free_mem = 0, total_mem = 0;
         if (cuMemGetInfo(&free_mem, &total_mem) == CUDA_SUCCESS &&
             free_mem > 0) {
           budget = (size_t)((double)free_mem * 0.8);
-          print_report(
-            "  auto-detect: %.2f GiB free GPU memory (restrict to <80%%)",
-            (double)free_mem / (1024.0 * 1024.0 * 1024.0));
+          format_bytes(buf, sizeof(buf), free_mem);
+          print_report("  auto-detect: %s free GPU memory (restrict to <80%%)",
+                       buf);
         }
       } else {
         size_t avail = platform_available_memory();
         if (avail > 0) {
           budget = (size_t)((double)avail * 0.8);
-          print_report(
-            "  auto-detect: %.2f GiB available RAM (restrict to <80%%)",
-            (double)avail / (1024.0 * 1024.0 * 1024.0));
+          format_bytes(buf, sizeof(buf), avail);
+          print_report("  auto-detect: %s available RAM (restrict to <80%%)",
+                       buf);
         }
       }
     }
@@ -151,11 +176,23 @@ run_bench(const struct bench_config* cfg)
       };
       int advise_ok;
       if (cfg->backend == BENCH_GPU) {
-        advise_ok = tile_stream_gpu_advise_chunk_sizes(
-          &fit_config, target, cfg->chunk_ratios, budget, 0);
+        advise_ok = tile_stream_gpu_advise_layout(&fit_config,
+                                                  target,
+                                                  cfg->min_chunk_bytes,
+                                                  cfg->chunk_ratios,
+                                                  budget,
+                                                  cfg->min_shard_bytes,
+                                                  cfg->max_concurrent_shards,
+                                                  0);
       } else {
-        advise_ok = tile_stream_cpu_advise_chunk_sizes(
-          &fit_config, target, cfg->chunk_ratios, budget, 0);
+        advise_ok = tile_stream_cpu_advise_layout(&fit_config,
+                                                  target,
+                                                  cfg->min_chunk_bytes,
+                                                  cfg->chunk_ratios,
+                                                  budget,
+                                                  cfg->min_shard_bytes,
+                                                  cfg->max_concurrent_shards,
+                                                  0);
       }
       if (advise_ok == 0) {
         fitted = 1;
@@ -165,21 +202,39 @@ run_bench(const struct bench_config* cfg)
         print_report("  auto-fit: %zu bytes/chunk",
                      (size_t)(vol * bytes_per_element));
       } else {
-        print_report("  auto-fit: WARNING -- no chunk size fits in budget");
+        char budget_buf[32], shard_buf[32];
+        format_bytes(budget_buf, sizeof(budget_buf), budget);
+        format_bytes(shard_buf, sizeof(shard_buf), cfg->min_shard_bytes);
+        print_report(
+          "  auto-fit: ERROR -- no chunk size >= %zu bytes fits in budget "
+          "(%s) with min_shard_bytes=%s",
+          cfg->min_chunk_bytes ? cfg->min_chunk_bytes : bytes_per_element,
+          budget_buf,
+          shard_buf);
+        return 1;
       }
     }
 
-    // Fallback: just budget chunk sizes without memory constraint
-    if (!fitted)
+    // No budget specified: apply chunk budget + shard geometry directly.
+    if (!fitted) {
       dims_budget_chunk_bytes(
         dims, rank, target, bytes_per_element, cfg->chunk_ratios);
-
-    // Set shard counts after chunk sizing
-    if (cfg->shard_counts)
-      dims_set_shard_counts(dims, rank, cfg->shard_counts);
+      if (cfg->min_shard_bytes > 0 &&
+          dims_set_shard_geometry(dims,
+                                  rank,
+                                  cfg->min_shard_bytes,
+                                  cfg->max_concurrent_shards,
+                                  bytes_per_element)) {
+        print_report("  shard geometry: ERROR -- min_shard_bytes is smaller "
+                     "than one chunk");
+        return 1;
+      }
+    }
   }
 
   dims_print(dims, rank);
+
+  init_fill_pattern(fill, dims, rank);
 
   const size_t total_elements = dim_total_elements(dims, rank);
   const size_t total_bytes = total_elements * dtype_bpe(dtype);
@@ -250,19 +305,19 @@ run_bench(const struct bench_config* cfg)
     struct tile_stream_memory_info mem;
     if (tile_stream_gpu_memory_estimate(&config, 0, &mem) == 0) {
       est_total_chunks = mem.total_chunks;
-      print_report("  GPU memory:  %.2f GiB device, %.2f GiB pinned",
-                   (double)mem.device_bytes / (1024.0 * 1024.0 * 1024.0),
-                   (double)mem.host_pinned_bytes / (1024.0 * 1024.0 * 1024.0));
-      print_report("    staging:   %.2f MiB   chunk_pool: %.2f GiB",
-                   (double)mem.staging_bytes / (1024.0 * 1024.0),
-                   (double)mem.chunk_pool_bytes / (1024.0 * 1024.0 * 1024.0));
-      print_report("    comp_pool: %.2f GiB   aggregate: %.2f GiB",
-                   (double)mem.compressed_pool_bytes /
-                     (1024.0 * 1024.0 * 1024.0),
-                   (double)mem.aggregate_bytes / (1024.0 * 1024.0 * 1024.0));
-      print_report("    lod:       %.2f MiB   codec:     %.2f MiB",
-                   (double)mem.lod_bytes / (1024.0 * 1024.0),
-                   (double)mem.codec_bytes / (1024.0 * 1024.0));
+      char a[32], b[32];
+      format_bytes(a, sizeof(a), mem.device_bytes);
+      format_bytes(b, sizeof(b), mem.host_pinned_bytes);
+      print_report("  GPU memory:  %s device, %s pinned", a, b);
+      format_bytes(a, sizeof(a), mem.staging_bytes);
+      format_bytes(b, sizeof(b), mem.chunk_pool_bytes);
+      print_report("    staging:   %s   chunk_pool: %s", a, b);
+      format_bytes(a, sizeof(a), mem.compressed_pool_bytes);
+      format_bytes(b, sizeof(b), mem.aggregate_bytes);
+      print_report("    comp_pool: %s   aggregate: %s", a, b);
+      format_bytes(a, sizeof(a), mem.lod_bytes);
+      format_bytes(b, sizeof(b), mem.codec_bytes);
+      print_report("    lod:       %s   codec:     %s", a, b);
       print_report(
         "    chunks:    %llu/epoch, %llu total (%d LOD levels, batch=%u)",
         (unsigned long long)mem.chunks_per_epoch,
@@ -276,18 +331,18 @@ run_bench(const struct bench_config* cfg)
     struct tile_stream_cpu_memory_info mem;
     if (tile_stream_cpu_memory_estimate(&config, 0, &mem) == 0) {
       est_total_chunks = mem.total_chunks;
-      print_report("  CPU memory:  %.2f GiB heap",
-                   (double)mem.heap_bytes / (1024.0 * 1024.0 * 1024.0));
-      print_report("    chunk_pool: %.2f GiB   comp_pool: %.2f GiB",
-                   (double)mem.chunk_pool_bytes / (1024.0 * 1024.0 * 1024.0),
-                   (double)mem.compressed_pool_bytes /
-                     (1024.0 * 1024.0 * 1024.0));
-      print_report("    comp_sizes: %.2f MiB   aggregate: %.2f MiB",
-                   (double)mem.comp_sizes_bytes / (1024.0 * 1024.0),
-                   (double)mem.aggregate_bytes / (1024.0 * 1024.0));
-      print_report("    lod:       %.2f MiB   shards:    %.2f MiB",
-                   (double)mem.lod_bytes / (1024.0 * 1024.0),
-                   (double)mem.shard_bytes / (1024.0 * 1024.0));
+      char a[32], b[32];
+      format_bytes(a, sizeof(a), mem.heap_bytes);
+      print_report("  CPU memory:  %s heap", a);
+      format_bytes(a, sizeof(a), mem.chunk_pool_bytes);
+      format_bytes(b, sizeof(b), mem.compressed_pool_bytes);
+      print_report("    chunk_pool: %s   comp_pool: %s", a, b);
+      format_bytes(a, sizeof(a), mem.comp_sizes_bytes);
+      format_bytes(b, sizeof(b), mem.aggregate_bytes);
+      print_report("    comp_sizes: %s   aggregate: %s", a, b);
+      format_bytes(a, sizeof(a), mem.lod_bytes);
+      format_bytes(b, sizeof(b), mem.shard_bytes);
+      print_report("    lod:       %s   shards:    %s", a, b);
       print_report(
         "    chunks:    %llu/epoch, %llu total (%d LOD levels, batch=%u)",
         (unsigned long long)mem.chunks_per_epoch,
@@ -535,21 +590,24 @@ Cleanup:
   bench_zarr_close(&zarr);
   if (use_throttled)
     throttled_shard_sink_teardown(&tss);
+  free_fill_pattern(fill);
   return rc;
 }
 
 // --- CLI driver ---
 
 int
-bench_stream_main(int ac,
-                  char* av[],
-                  const char* label,
-                  struct dimension* dims,
-                  uint8_t rank,
-                  const uint8_t* chunk_ratios,
-                  size_t default_chunk_bytes,
-                  const uint64_t* shard_counts)
+bench_stream_main(int ac, char* av[], struct bench_spec spec)
 {
+  const char* label = spec.label;
+  struct dimension* dims = spec.dims;
+  uint8_t rank = spec.rank;
+  const uint8_t* chunk_ratios = spec.chunk_ratios;
+  size_t default_chunk_bytes = spec.default_chunk_bytes;
+  size_t min_chunk_bytes = spec.min_chunk_bytes;
+  size_t min_shard_bytes = spec.min_shard_bytes;
+  uint32_t max_concurrent_shards = spec.max_concurrent_shards;
+
   fill_fn fill = fill_xor;
   struct codec_config codec = { .id = CODEC_ZSTD };
   enum lod_reduce_method reduce = lod_reduce_mean;
@@ -642,13 +700,6 @@ bench_stream_main(int ac,
     CU(Fail, cuCtxCreate(&ctx, 0, dev));
   }
 
-  int need_xor = (fill == fill_xor);
-  int need_rand = (fill == fill_rand);
-  if (need_xor)
-    xor_pattern_init(dims, rank, 16);
-  if (need_rand)
-    rand_pattern_init(dims, rank, 16);
-
   struct bench_config cfg = {
     .label = label,
     .dims = dims,
@@ -670,19 +721,16 @@ bench_stream_main(int ac,
     .chunk_ratios = chunk_ratios,
     .target_chunk_bytes =
       target_chunk_bytes ? target_chunk_bytes : default_chunk_bytes,
+    .min_chunk_bytes = min_chunk_bytes,
     .memory_budget = memory_budget,
-    .shard_counts = shard_counts,
+    .min_shard_bytes = min_shard_bytes,
+    .max_concurrent_shards = max_concurrent_shards,
     .json_output = json_output,
     .io_bw_mbps = io_bw_mbps,
     .io_latency_us = io_latency_us,
     .backpressure_bytes = backpressure_bytes,
   };
   ecode = run_bench(&cfg);
-
-  if (need_xor)
-    xor_pattern_free();
-  if (need_rand)
-    rand_pattern_free();
 
   if (backend == BENCH_GPU)
     cuCtxDestroy(ctx);
@@ -782,9 +830,10 @@ run_bench_two_streams(const struct bench_config* cfg)
       if (cuMemGetInfo(&free_mem, &total_mem) == CUDA_SUCCESS && free_mem > 0) {
         // Reserve half for each stream (80% total, split two ways)
         budget = (size_t)((double)free_mem * 0.4);
+        char buf[32];
+        format_bytes(buf, sizeof(buf), free_mem);
         print_report(
-          "  auto-detect: %.2f GiB free GPU memory (2 streams, ~40%% each)",
-          (double)free_mem / (1024.0 * 1024.0 * 1024.0));
+          "  auto-detect: %s free GPU memory (2 streams, ~40%% each)", buf);
       }
     }
 
@@ -801,25 +850,50 @@ run_bench_two_streams(const struct bench_config* cfg)
 
     int fitted = 0;
     if (budget > 0) {
-      fitted = tile_stream_gpu_advise_chunk_sizes(
-                 &fit_config, target, cfg->chunk_ratios, budget, 0) == 0;
+      fitted = tile_stream_gpu_advise_layout(&fit_config,
+                                             target,
+                                             cfg->min_chunk_bytes,
+                                             cfg->chunk_ratios,
+                                             budget,
+                                             cfg->min_shard_bytes,
+                                             cfg->max_concurrent_shards,
+                                             0) == 0;
       if (fitted) {
         uint64_t vol = 1;
         for (uint8_t d = 0; d < rank; ++d)
           vol *= dims[d].chunk_size;
         print_report("  auto-fit: %zu bytes/chunk", (size_t)(vol * bpe));
       } else {
-        print_report("  auto-fit: WARNING -- no chunk size fits in budget");
+        char budget_buf[32], shard_buf[32];
+        format_bytes(budget_buf, sizeof(budget_buf), budget);
+        format_bytes(shard_buf, sizeof(shard_buf), cfg->min_shard_bytes);
+        print_report(
+          "  auto-fit: ERROR -- no chunk size >= %zu bytes fits in budget "
+          "(%s) with min_shard_bytes=%s",
+          cfg->min_chunk_bytes ? cfg->min_chunk_bytes : bpe,
+          budget_buf,
+          shard_buf);
+        return 1;
       }
     }
-    if (!fitted)
+    if (!fitted) {
       dims_budget_chunk_bytes(dims, rank, target, bpe, cfg->chunk_ratios);
-
-    if (cfg->shard_counts)
-      dims_set_shard_counts(dims, rank, cfg->shard_counts);
+      if (cfg->min_shard_bytes > 0 &&
+          dims_set_shard_geometry(dims,
+                                  rank,
+                                  cfg->min_shard_bytes,
+                                  cfg->max_concurrent_shards,
+                                  bpe)) {
+        print_report("  shard geometry: ERROR -- min_shard_bytes is smaller "
+                     "than one chunk");
+        return 1;
+      }
+    }
   }
 
   dims_print(dims, rank);
+
+  init_fill_pattern(fill, dims, rank);
 
   const size_t total_elements = dim_total_elements(dims, rank);
   const size_t total_bytes = total_elements * bpe;
@@ -887,14 +961,13 @@ run_bench_two_streams(const struct bench_config* cfg)
   {
     struct tile_stream_memory_info mem;
     if (tile_stream_gpu_memory_estimate(&config, 0, &mem) == 0) {
-      print_report(
-        "  GPU memory (per stream): %.2f GiB device, %.2f GiB pinned",
-        (double)mem.device_bytes / (1024.0 * 1024.0 * 1024.0),
-        (double)mem.host_pinned_bytes / (1024.0 * 1024.0 * 1024.0));
-      print_report(
-        "  GPU memory (total x2):   %.2f GiB device, %.2f GiB pinned",
-        2.0 * (double)mem.device_bytes / (1024.0 * 1024.0 * 1024.0),
-        2.0 * (double)mem.host_pinned_bytes / (1024.0 * 1024.0 * 1024.0));
+      char a[32], b[32];
+      format_bytes(a, sizeof(a), mem.device_bytes);
+      format_bytes(b, sizeof(b), mem.host_pinned_bytes);
+      print_report("  GPU memory (per stream): %s device, %s pinned", a, b);
+      format_bytes(a, sizeof(a), 2 * mem.device_bytes);
+      format_bytes(b, sizeof(b), 2 * mem.host_pinned_bytes);
+      print_report("  GPU memory (total x2):   %s device, %s pinned", a, b);
     }
   }
 
@@ -956,11 +1029,14 @@ run_bench_two_streams(const struct bench_config* cfg)
   // --- Combined summary ---
   print_report("");
   print_report("  --- Combined ---");
-  print_report("  Input:        %.2f GiB (%zu elements x 2 streams)",
-               combined_gib,
-               total_elements);
-  print_report("  Compressed:   %.2f GiB",
-               (double)(sink_bytes[0] + sink_bytes[1]) / GIB);
+  {
+    char buf[32];
+    format_bytes(buf, sizeof(buf), 2 * (uint64_t)total_bytes);
+    print_report(
+      "  Input:        %s (%zu elements x 2 streams)", buf, total_elements);
+    format_bytes(buf, sizeof(buf), (uint64_t)(sink_bytes[0] + sink_bytes[1]));
+    print_report("  Compressed:   %s", buf);
+  }
   print_report("  Init time:     %.3f s", (double)init_s);
   if (flush_s > 0)
     print_report("  Flush time:    %.3f s", (double)flush_s);
@@ -974,7 +1050,9 @@ run_bench_two_streams(const struct bench_config* cfg)
     print_report("  --- stream-%d ---", k);
     print_report("  Throughput:    %.2f GiB/s",
                  wall_s > 0 ? per_stream_gib / wall_s : 0.0);
-    print_report("  Compressed:    %.2f GiB", (double)sink_bytes[k] / GIB);
+    char cbuf[32];
+    format_bytes(cbuf, sizeof(cbuf), (uint64_t)sink_bytes[k]);
+    print_report("  Compressed:    %s", cbuf);
     print_report("");
     print_report("  %-12s %8s %8s %10s %10s",
                  "Stage",
@@ -1006,8 +1084,9 @@ run_bench_two_streams(const struct bench_config* cfg)
       print_metric_row(&m[k].io_fence_stall);
       print_metric_row(&m[k].backpressure);
       print_report("  max append ms:   %.2f", (double)m[k].max_append_ms);
-      print_report("  peak pending:    %.2f MiB",
-                   (double)m[k].peak_pending_bytes / (1024.0 * 1024.0));
+      char pbuf[32];
+      format_bytes(pbuf, sizeof(pbuf), (uint64_t)m[k].peak_pending_bytes);
+      print_report("  peak pending:    %s", pbuf);
     }
   }
 
@@ -1020,6 +1099,7 @@ run_bench_two_streams(const struct bench_config* cfg)
     throttled_shard_sink_teardown(&tss[0]);
     throttled_shard_sink_teardown(&tss[1]);
   }
+  free_fill_pattern(fill);
   return 0;
 
 Fail:
@@ -1038,19 +1118,22 @@ Fail:
     throttled_shard_sink_teardown(&tss[0]);
     throttled_shard_sink_teardown(&tss[1]);
   }
+  free_fill_pattern(fill);
   return 1;
 }
 
 int
-bench_two_streams_main(int ac,
-                       char* av[],
-                       const char* label,
-                       struct dimension* dims,
-                       uint8_t rank,
-                       const uint8_t* chunk_ratios,
-                       size_t default_chunk_bytes,
-                       const uint64_t* shard_counts)
+bench_two_streams_main(int ac, char* av[], struct bench_spec spec)
 {
+  const char* label = spec.label;
+  struct dimension* dims = spec.dims;
+  uint8_t rank = spec.rank;
+  const uint8_t* chunk_ratios = spec.chunk_ratios;
+  size_t default_chunk_bytes = spec.default_chunk_bytes;
+  size_t min_chunk_bytes = spec.min_chunk_bytes;
+  size_t min_shard_bytes = spec.min_shard_bytes;
+  uint32_t max_concurrent_shards = spec.max_concurrent_shards;
+
   fill_fn fill = fill_xor;
   struct codec_config codec = { .id = CODEC_ZSTD };
   enum lod_reduce_method reduce = lod_reduce_mean;
@@ -1114,13 +1197,6 @@ bench_two_streams_main(int ac,
   CU(Fail, cuDeviceGet(&dev, 0));
   CU(Fail, cuCtxCreate(&ctx, 0, dev));
 
-  int need_xor = (fill == fill_xor);
-  int need_rand = (fill == fill_rand);
-  if (need_xor)
-    xor_pattern_init(dims, rank, 16);
-  if (need_rand)
-    rand_pattern_init(dims, rank, 16);
-
   struct bench_config cfg = {
     .label = label,
     .dims = dims,
@@ -1137,18 +1213,15 @@ bench_two_streams_main(int ac,
     .chunk_ratios = chunk_ratios,
     .target_chunk_bytes =
       target_chunk_bytes ? target_chunk_bytes : default_chunk_bytes,
+    .min_chunk_bytes = min_chunk_bytes,
     .memory_budget = memory_budget,
-    .shard_counts = shard_counts,
+    .min_shard_bytes = min_shard_bytes,
+    .max_concurrent_shards = max_concurrent_shards,
     .io_bw_mbps = io_bw_mbps,
     .io_latency_us = io_latency_us,
     .backpressure_bytes = backpressure_bytes,
   };
   int ecode = run_bench_two_streams(&cfg);
-
-  if (need_xor)
-    xor_pattern_free();
-  if (need_rand)
-    rand_pattern_free();
 
   cuCtxDestroy(ctx);
   return ecode;

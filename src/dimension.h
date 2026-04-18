@@ -69,6 +69,51 @@ dims_set_shard_counts(struct dimension* dims,
                       uint8_t rank,
                       const uint64_t* shard_counts);
 
+// Choose shard geometry from a byte floor and a concurrency bound.
+//
+// Policy:
+//   - Inner dims (d >= n_append): integer-greedy allocation of shard count
+//     to dims, bounded so the product <= max_concurrent_shards (no pow2
+//     rounding). Each step increments the inner dim with the largest
+//     remaining n_chunks[d]/shards[d] ratio while staying within
+//     n_chunks[d].
+//   - Outer append dim (d = 0): chunks_per_shard = ceildiv(min_shard_bytes,
+//     row_bytes), where row_bytes is the bytes written per append step
+//     across one inner shard. Clamped to >= 1.
+//   - Inner append dims (d in 1..na-1): pass through at chunks_per_shard =
+//     n_chunks[d] so the downstream product (config.c) evaluates correctly.
+//
+// Requires chunk_size to be set first (e.g. via dims_budget_chunk_bytes).
+// max_concurrent_shards of 0 is treated as 1 (no multiplexing).
+//
+// Returns 0 on success, non-zero if min_shard_bytes < chunk_bytes (floor
+// is meaningless below one chunk).
+int
+dims_set_shard_geometry(struct dimension* dims,
+                        uint8_t rank,
+                        size_t min_shard_bytes,
+                        uint32_t max_concurrent_shards,
+                        size_t bytes_per_element);
+
+// Combined chunk + shard layout policy.
+//
+// When chunk_ratios != NULL: runs dims_budget_chunk_bytes first.
+// Always runs dims_set_shard_geometry second. No ordering concerns
+// for callers.
+struct dims_layout_policy
+{
+  size_t bytes_per_element;
+  size_t target_chunk_bytes;   // ignored when chunk_ratios == NULL
+  const uint8_t* chunk_ratios; // NULL = leave chunk_size unchanged
+  size_t min_shard_bytes;
+  uint32_t max_concurrent_shards;
+};
+
+int
+dims_set_layout(struct dimension* dims,
+                uint8_t rank,
+                const struct dims_layout_policy* p);
+
 // Distribute target_chunk_bytes across dims using power-of-2 ratios.
 // Like dims_budget_chunk_size but accepts a byte target instead of elements.
 // Computes nelem = target_chunk_bytes / bytes_per_element, then delegates.

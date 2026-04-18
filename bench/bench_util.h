@@ -34,40 +34,42 @@ struct bench_config
   enum lod_reduce_method reduce_method;
   enum lod_reduce_method append_reduce_method;
   enum bench_backend backend;
-  enum dtype dtype;             // element type (default dtype_u16)
-  const uint8_t* chunk_ratios;  // power-of-2 distribution ratios
-  size_t target_chunk_bytes;    // 0 = use 1MB default
-  size_t memory_budget;         // 0 = auto-detect
-  const uint64_t* shard_counts; // per-dim target shard counts (NULL = skip)
-  int json_output;              // print JSON to stdout after run
-  uint64_t io_bw_mbps;          // 0 = no bandwidth cap (MiB/s)
-  uint64_t io_latency_us;       // 0 = no fixed per-job latency
-  size_t backpressure_bytes;    // 0 = disabled; >0 = stall when pending > N
+  enum dtype dtype;               // element type (default dtype_u16)
+  const uint8_t* chunk_ratios;    // power-of-2 distribution ratios
+  size_t target_chunk_bytes;      // 0 = use 1MB default
+  size_t min_chunk_bytes;         // auto-fit floor; 0 = no floor
+  size_t memory_budget;           // 0 = auto-detect
+  size_t min_shard_bytes;         // minimum uncompressed bytes per shard
+  uint32_t max_concurrent_shards; // cap on inner shard product (active files)
+  int json_output;                // print JSON to stdout after run
+  uint64_t io_bw_mbps;            // 0 = no bandwidth cap (MiB/s)
+  uint64_t io_latency_us;         // 0 = no fixed per-job latency
+  size_t backpressure_bytes;      // 0 = disabled; >0 = stall when pending > N
 };
 
 int
 run_bench(const struct bench_config* cfg);
 
+// Bench-author-facing spec: everything a bench main() picks before CLI parsing.
+struct bench_spec
+{
+  const char* label;
+  struct dimension* dims;
+  uint8_t rank;
+  const uint8_t* chunk_ratios;
+  size_t default_chunk_bytes;
+  size_t min_chunk_bytes;         // auto-fit floor; bench fails if budget
+                                  // can't meet it (0 = no floor)
+  size_t min_shard_bytes;         // minimum uncompressed bytes per shard
+  uint32_t max_concurrent_shards; // cap on inner shard product (active files)
+};
+
 // CLI driver: parses --fill, --codec, --reduce, --dtype, --frames, --json,
 // -o flags, inits CUDA, calls run_bench, handles xor_pattern_init/free.
 int
-bench_stream_main(int ac,
-                  char* av[],
-                  const char* label,
-                  struct dimension* dims,
-                  uint8_t rank,
-                  const uint8_t* chunk_ratios,
-                  size_t default_chunk_bytes,
-                  const uint64_t* shard_counts);
+bench_stream_main(int ac, char* av[], struct bench_spec spec);
 
 // Two-stream variant: creates two GPU pipelines on the same CUDA context and
 // interleaves writer_append calls for balanced GPU utilisation.
 int
-bench_two_streams_main(int ac,
-                       char* av[],
-                       const char* label,
-                       struct dimension* dims,
-                       uint8_t rank,
-                       const uint8_t* chunk_ratios,
-                       size_t default_chunk_bytes,
-                       const uint64_t* shard_counts);
+bench_two_streams_main(int ac, char* av[], struct bench_spec spec);

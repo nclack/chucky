@@ -173,3 +173,99 @@ dims_set_shard_counts(struct dimension* dims,
     dims[i].chunks_per_shard = ceildiv(n_chunks, shard_counts[i]);
   }
 }
+
+int
+dims_set_shard_geometry(struct dimension* dims,
+                        uint8_t rank,
+                        size_t min_shard_bytes,
+                        uint32_t max_concurrent_shards,
+                        size_t bytes_per_element)
+{
+  if (!dims || rank == 0 || bytes_per_element == 0)
+    return 1;
+
+  size_t chunk_bytes = bytes_per_element;
+  for (uint8_t d = 0; d < rank; ++d)
+    chunk_bytes *= dims[d].chunk_size;
+
+  if (min_shard_bytes > 0 && min_shard_bytes < chunk_bytes) {
+    log_error("min_shard_bytes (%zu) is smaller than one chunk (%zu bytes)",
+              min_shard_bytes,
+              chunk_bytes);
+    return 1;
+  }
+
+  uint8_t na = dims_n_append(dims, rank);
+  uint32_t M = max_concurrent_shards ? max_concurrent_shards : 1;
+
+  uint64_t n_chunks[HALF_MAX_RANK];
+  uint64_t shards[HALF_MAX_RANK];
+  for (uint8_t d = 0; d < rank; ++d) {
+    n_chunks[d] = ceildiv(dims[d].size, dims[d].chunk_size);
+    shards[d] = 1;
+  }
+
+  // Integer-greedy allocation across inner dims: each step increments the
+  // inner dim with the largest remaining n_chunks/shards ratio, provided
+  // incrementing stays within its chunk count and the running product stays
+  // within max_concurrent_shards. Gives any M_active in [1, M_max] — no
+  // power-of-2 rounding waste.
+  uint64_t prod = 1;
+  while (prod < (uint64_t)M) {
+    int best = -1;
+    for (uint8_t d = na; d < rank; ++d) {
+      if (shards[d] + 1 > n_chunks[d])
+        continue;
+      if (prod / shards[d] * (shards[d] + 1) > (uint64_t)M)
+        continue;
+      if (best < 0 || n_chunks[d] * shards[best] > n_chunks[best] * shards[d])
+        best = d;
+    }
+    if (best < 0)
+      break;
+    prod = prod / shards[best] * (shards[best] + 1);
+    shards[best] += 1;
+  }
+
+  uint64_t inner_cps_prod = 1;
+  for (uint8_t d = na; d < rank; ++d) {
+    dims[d].chunks_per_shard = ceildiv(n_chunks[d], shards[d]);
+    inner_cps_prod *= dims[d].chunks_per_shard;
+  }
+
+  // For multi-append configs (na > 1), the outer append dim gets the
+  // byte-target cadence; inner append dims pass through at full span so
+  // the downstream product (config.c:361) evaluates to the intended total.
+  uint64_t others_prod = 1;
+  for (uint8_t d = 1; d < na; ++d) {
+    dims[d].chunks_per_shard = n_chunks[d] ? n_chunks[d] : 1;
+    others_prod *= dims[d].chunks_per_shard;
+  }
+
+  uint64_t row_bytes = (uint64_t)chunk_bytes * inner_cps_prod * others_prod;
+  uint64_t cps_0 =
+    row_bytes ? ceildiv((uint64_t)min_shard_bytes, row_bytes) : 1;
+  if (cps_0 < 1)
+    cps_0 = 1;
+  if (na > 0)
+    dims[0].chunks_per_shard = cps_0;
+
+  return 0;
+}
+
+int
+dims_set_layout(struct dimension* dims,
+                uint8_t rank,
+                const struct dims_layout_policy* p)
+{
+  if (!dims || !p || rank == 0)
+    return 1;
+  if (p->chunk_ratios)
+    dims_budget_chunk_bytes(
+      dims, rank, p->target_chunk_bytes, p->bytes_per_element, p->chunk_ratios);
+  return dims_set_shard_geometry(dims,
+                                 rank,
+                                 p->min_shard_bytes,
+                                 p->max_concurrent_shards,
+                                 p->bytes_per_element);
+}

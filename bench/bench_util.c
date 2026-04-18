@@ -505,137 +505,18 @@ run_bench(const struct bench_config* cfg)
                        pending_bytes);
 
     if (cfg->json_output) {
-      const size_t chunk_bytes = layout->chunk_stride * dtype_bpe(dtype);
-      const size_t num_epochs =
-        (total_elements + layout->epoch_elements - 1) / layout->epoch_elements;
-      const uint64_t chunks_per_epoch =
-        ss.total_chunks ? ss.total_chunks : layout->chunks_per_epoch;
-      const size_t total_chunks = num_epochs * chunks_per_epoch;
-      const size_t total_decompressed = total_chunks * chunk_bytes;
-      const double comp_fold =
-        ss.total_bytes > 0 ? (double)total_decompressed / (double)ss.total_bytes
-                           : 0.0;
-      const double GIB = 1024.0 * 1024.0 * 1024.0;
-      double input_gib = (double)total_bytes / GIB;
-      double compressed_gib = (double)ss.total_bytes / GIB;
-      double throughput_gib = wall_s > 0 ? input_gib / wall_s : 0.0;
-      double throughput_out_gib = wall_s > 0 ? compressed_gib / wall_s : 0.0;
-
-      char json_buf[8192];
-      struct json_writer jw;
-      jw_init(&jw, json_buf, sizeof(json_buf));
-
-      jw_object_begin(&jw);
-      jw_key(&jw, "status");
-      jw_string(&jw, "pass");
-      jw_key(&jw, "throughput_in_gibs");
-      jw_float(&jw, throughput_gib);
-      jw_key(&jw, "throughput_out_gibs");
-      jw_float(&jw, throughput_out_gib);
-      jw_key(&jw, "compression_fold");
-      jw_float(&jw, comp_fold);
-      jw_key(&jw, "input_gib");
-      jw_float(&jw, input_gib);
-      jw_key(&jw, "compressed_gib");
-      jw_float(&jw, compressed_gib);
-      jw_key(&jw, "total_chunks");
-      jw_uint(&jw, total_chunks);
-      jw_key(&jw, "chunks_per_epoch");
-      jw_uint(&jw, chunks_per_epoch);
-      jw_key(&jw, "wall_s");
-      jw_float(&jw, (double)wall_s);
-      jw_key(&jw, "init_s");
-      jw_float(&jw, (double)init_s);
-      jw_key(&jw, "flush_s");
-      jw_float(&jw, (double)flush_s);
-
-      // Per-stage metrics
-      jw_key(&jw, "stages");
-      jw_object_begin(&jw);
-      const char* stage_names[] = {
-        "memcpy",           "h2d",
-        "scatter",          "lod_gather",
-        "lod_reduce",       "lod_append_fold",
-        "lod_morton_chunk", "compress",
-        "aggregate",        "d2h",
-      };
-      const struct stream_metric* stage_ptrs[] = {
-        &m.memcpy,           &m.h2d,
-        &m.scatter,          &m.lod_gather,
-        &m.lod_reduce,       &m.lod_append_fold,
-        &m.lod_morton_chunk, &m.compress,
-        &m.aggregate,        &m.d2h,
-      };
-      int nstages = sizeof(stage_ptrs) / sizeof(stage_ptrs[0]);
-      for (int si = 0; si < nstages; ++si) {
-        if (stage_ptrs[si]->count <= 0)
-          continue;
-        const struct stream_metric* sm = stage_ptrs[si];
-        double avg_ms = (double)sm->ms / sm->count;
-        double in_gibs = gb_per_s(sm->input_bytes, (double)sm->ms);
-        double out_gibs = gb_per_s(sm->output_bytes, (double)sm->ms);
-        jw_key(&jw, stage_names[si]);
-        jw_object_begin(&jw);
-        jw_key(&jw, "avg_ms");
-        jw_float(&jw, avg_ms);
-        if (sm->best_ms < 1e29f) {
-          jw_key(&jw, "best_ms");
-          jw_float(&jw, (double)sm->best_ms);
-        }
-        jw_key(&jw, "in_gibs");
-        jw_float(&jw, in_gibs);
-        jw_key(&jw, "out_gibs");
-        jw_float(&jw, out_gibs);
-        jw_object_end(&jw);
-      }
-      if (meter.metric.count > 0) {
-        const struct stream_metric* sm = &meter.metric;
-        double avg_ms = (double)sm->ms / sm->count;
-        double in_gibs = gb_per_s(sm->input_bytes, (double)sm->ms);
-        double out_gibs = gb_per_s(sm->output_bytes, (double)sm->ms);
-        jw_key(&jw, "sink");
-        jw_object_begin(&jw);
-        jw_key(&jw, "avg_ms");
-        jw_float(&jw, avg_ms);
-        if (sm->best_ms < 1e29f) {
-          jw_key(&jw, "best_ms");
-          jw_float(&jw, (double)sm->best_ms);
-        }
-        jw_key(&jw, "in_gibs");
-        jw_float(&jw, in_gibs);
-        jw_key(&jw, "out_gibs");
-        jw_float(&jw, out_gibs);
-        jw_object_end(&jw);
-      }
-      jw_object_end(&jw); // stages
-
-      // Stall metrics — total wall-clock ms blocked at each sync point.
-      jw_key(&jw, "stalls");
-      jw_object_begin(&jw);
-      jw_key(&jw, "flush_stall_ms");
-      jw_float(&jw, (double)m.flush_stall.ms);
-      jw_key(&jw, "flush_stall_count");
-      jw_uint(&jw, (uint64_t)m.flush_stall.count);
-      jw_key(&jw, "kick_sync_ms");
-      jw_float(&jw, (double)m.kick_sync_stall.ms);
-      jw_key(&jw, "kick_sync_count");
-      jw_uint(&jw, (uint64_t)m.kick_sync_stall.count);
-      jw_key(&jw, "io_fence_ms");
-      jw_float(&jw, (double)m.io_fence_stall.ms);
-      jw_key(&jw, "io_fence_count");
-      jw_uint(&jw, (uint64_t)m.io_fence_stall.count);
-      jw_key(&jw, "backpressure_ms");
-      jw_float(&jw, (double)m.backpressure.ms);
-      jw_key(&jw, "backpressure_count");
-      jw_uint(&jw, (uint64_t)m.backpressure.count);
-      jw_key(&jw, "max_append_ms");
-      jw_float(&jw, (double)m.max_append_ms);
-      jw_key(&jw, "peak_pending_mib");
-      jw_float(&jw, (double)m.peak_pending_bytes / (1024.0 * 1024.0));
-      jw_object_end(&jw); // stalls
-
-      jw_object_end(&jw); // root
-      printf("%.*s\n", (int)jw_length(&jw), json_buf);
+      const struct stream_metric* sink_metric =
+        meter.metric.count > 0 ? &meter.metric : NULL;
+      print_bench_json_pass(&m,
+                            sink_metric,
+                            layout,
+                            config.dtype,
+                            &ss,
+                            total_bytes,
+                            total_elements,
+                            wall_s,
+                            init_s,
+                            flush_s);
     }
   }
 
@@ -644,16 +525,8 @@ run_bench(const struct bench_config* cfg)
   goto Cleanup;
 
 Fail:
-  if (cfg->json_output) {
-    char err_buf[64];
-    struct json_writer ejw;
-    jw_init(&ejw, err_buf, sizeof(err_buf));
-    jw_object_begin(&ejw);
-    jw_key(&ejw, "status");
-    jw_string(&ejw, "error");
-    jw_object_end(&ejw);
-    printf("%.*s\n", (int)jw_length(&ejw), err_buf);
-  }
+  if (cfg->json_output)
+    print_bench_json_error();
   print_report("  FAIL");
   rc = 1;
 

@@ -115,37 +115,72 @@ void
 dims_budget_chunk_size(struct dimension* dims,
                        uint8_t rank,
                        uint64_t nelem,
-                       const uint8_t* ratios)
+                       const int* ratios)
 {
   if (nelem == 0)
     return;
 
-  // total_bits = floor(log2(nelem))
-  int total_bits = 63 - clzll(nelem);
+  // Classify dims. effective[i]:
+  //   >0  : bit-budget participant with this weight
+  //    0  : chunk_size = 1 (no bits)
+  //   -1  : pin at dims[i].size (only for bounded dims; unbounded falls back
+  //         to weight=1 so the dim absorbs the remaining budget).
+  int effective[HALF_MAX_RANK];
+  uint64_t pinned_prod = 1;
+  int any_participant = 0;
 
-  uint32_t sum_ratios = 0;
+  for (uint8_t i = 0; i < rank; ++i) {
+    if (ratios[i] == -1) {
+      if (dims[i].size == 0) {
+        effective[i] = 1; // unbounded: absorb remaining budget
+        any_participant = 1;
+      } else {
+        effective[i] = -1; // pin at size
+        pinned_prod *= dims[i].size;
+      }
+    } else if (ratios[i] == 0) {
+      effective[i] = 0;
+    } else {
+      effective[i] = ratios[i];
+      any_participant = 1;
+    }
+  }
+
+  // Apply pins.
   for (uint8_t i = 0; i < rank; ++i)
-    sum_ratios += ratios[i];
+    if (effective[i] == -1)
+      dims[i].chunk_size = dims[i].size;
 
-  if (sum_ratios == 0)
+  if (!any_participant)
     return;
 
+  // Remaining element budget for participants.
+  uint64_t remaining = pinned_prod ? nelem / pinned_prod : nelem;
+  if (remaining < 1)
+    remaining = 1;
+  int total_bits = 63 - clzll(remaining);
+
   // Greedy bit allocation: each bit goes to the most underserved
-  // dimension (lowest bits[i]/ratio[i]). Ties favor higher indices.
+  // participant (lowest bits[i]/effective[i]). Ties favor higher indices.
   int bits[HALF_MAX_RANK] = { 0 };
   for (int b = 0; b < total_bits; ++b) {
     int best = -1;
     for (uint8_t i = 0; i < rank; ++i) {
-      if (ratios[i] == 0)
+      if (effective[i] <= 0)
         continue;
-      if (best < 0 || bits[i] * ratios[best] <= bits[best] * ratios[i])
+      if (best < 0 || bits[i] * effective[best] <= bits[best] * effective[i])
         best = i;
     }
     bits[best]++;
   }
 
-  for (uint8_t i = 0; i < rank; ++i)
-    dims[i].chunk_size = (uint64_t)1 << bits[i];
+  for (uint8_t i = 0; i < rank; ++i) {
+    if (effective[i] > 0)
+      dims[i].chunk_size = (uint64_t)1 << bits[i];
+    else if (effective[i] == 0)
+      dims[i].chunk_size = 1;
+    // effective == -1: already set to size above.
+  }
 }
 
 void
@@ -153,7 +188,7 @@ dims_budget_chunk_bytes(struct dimension* dims,
                         uint8_t rank,
                         size_t target_chunk_bytes,
                         size_t bytes_per_element,
-                        const uint8_t* ratios)
+                        const int* ratios)
 {
   if (bytes_per_element == 0 || target_chunk_bytes < bytes_per_element)
     return;

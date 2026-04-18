@@ -70,7 +70,7 @@ int
 tile_stream_gpu_advise_layout(struct tile_stream_configuration* config,
                               size_t target_chunk_bytes,
                               size_t min_chunk_bytes,
-                              const uint8_t* ratios,
+                              const int* ratios,
                               size_t budget_bytes,
                               size_t min_shard_bytes,
                               uint32_t max_concurrent_shards,

@@ -51,15 +51,19 @@ dims_set_chunk_sizes(struct dimension* dims,
 
 // Distribute nelem across dims using power-of-2 ratios.
 //
-// ratio 0 -> chunk_size = 1 (that dim doesn't contribute to chunk volume).
-// For non-zero ratios: bits_per_part = ceil(log2(nelem) / sum(ratios)).
-// Each dim gets chunk_size = 1 << (ratio[i] * bits_per_part).
-// Remainder bits (may be negative) go to the lowest-indexed non-zero-ratio dim.
+// ratios[i] > 0  -> participates in the bit budget with this weight.
+// ratios[i] == 0 -> chunk_size = 1 (no bits allocated).
+// ratios[i] == -1-> pin chunk_size at dims[i].size. If dims[i].size == 0
+//                  (unbounded dim 0), treated as weight=1: the dim absorbs
+//                  the remaining bit budget. Only dim 0 may be unbounded.
+//
+// Bit allocation is greedy over budget participants. The remaining element
+// budget for participants is nelem / prod(pinned sizes).
 void
 dims_budget_chunk_size(struct dimension* dims,
                        uint8_t rank,
                        uint64_t nelem,
-                       const uint8_t* ratios);
+                       const int* ratios);
 
 // Set chunks_per_shard to achieve target shard counts.
 // shard_counts has rank elements. 0 means "skip" (don't modify).
@@ -103,8 +107,8 @@ dims_set_shard_geometry(struct dimension* dims,
 struct dims_layout_policy
 {
   size_t bytes_per_element;
-  size_t target_chunk_bytes;   // ignored when chunk_ratios == NULL
-  const uint8_t* chunk_ratios; // NULL = leave chunk_size unchanged
+  size_t target_chunk_bytes; // ignored when chunk_ratios == NULL
+  const int* chunk_ratios;   // NULL = leave chunk_size unchanged
   size_t min_shard_bytes;
   uint32_t max_concurrent_shards;
 };
@@ -122,4 +126,4 @@ dims_budget_chunk_bytes(struct dimension* dims,
                         uint8_t rank,
                         size_t target_chunk_bytes,
                         size_t bytes_per_element,
-                        const uint8_t* ratios);
+                        const int* ratios);

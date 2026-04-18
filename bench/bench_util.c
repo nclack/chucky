@@ -656,7 +656,7 @@ bench_stream_main(int ac, char* av[], struct bench_spec spec)
   const char* label = spec.label;
   struct dimension* dims = spec.dims;
   uint8_t rank = spec.rank;
-  const uint8_t* chunk_ratios = spec.chunk_ratios;
+  const int* chunk_ratios = spec.chunk_ratios;
   size_t default_chunk_bytes = spec.default_chunk_bytes;
   size_t min_chunk_bytes = spec.min_chunk_bytes;
   size_t min_shard_bytes = spec.min_shard_bytes;
@@ -1181,7 +1181,7 @@ bench_two_streams_main(int ac, char* av[], struct bench_spec spec)
   const char* label = spec.label;
   struct dimension* dims = spec.dims;
   uint8_t rank = spec.rank;
-  const uint8_t* chunk_ratios = spec.chunk_ratios;
+  const int* chunk_ratios = spec.chunk_ratios;
   size_t default_chunk_bytes = spec.default_chunk_bytes;
   size_t min_chunk_bytes = spec.min_chunk_bytes;
   size_t min_shard_bytes = spec.min_shard_bytes;

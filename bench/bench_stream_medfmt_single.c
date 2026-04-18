@@ -8,7 +8,7 @@ main(int ac, char* av[])
   uint64_t sizes[] = { 100, 1, 10240, 15360 };
   uint8_t rank = dims_create(dims, "zcyx", sizes);
 
-  uint8_t ratios[] = { 1, 0, 4, 4 };
+  int ratios[] = { 1, 0, 4, 4 };
 
   return bench_stream_main(ac,
                            av,

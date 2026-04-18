@@ -81,7 +81,7 @@ test_dims_budget_chunk_size(void)
   // dim 1 (ratio 0): 0 bits -> 1
   // dim 2 (ratio 2): 7 bits -> 128
   // dim 3 (ratio 2): 8 bits -> 256
-  uint8_t ratios[] = { 1, 0, 2, 2 };
+  int ratios[] = { 1, 0, 2, 2 };
   dims_budget_chunk_size(dims, 4, 1ULL << 19, ratios);
 
   CHECK(Error, dims[0].chunk_size == 16);
@@ -112,10 +112,60 @@ test_dims_budget_chunk_size_uniform(void)
   // nelem=1<<12, ratios=[1,1,1], sum=3
   // bits_per_part = ceil(12/3) = 4, remainder = 0
   // each dim: 1<<4 = 16
-  uint8_t ratios[] = { 1, 1, 1 };
+  int ratios[] = { 1, 1, 1 };
   dims_budget_chunk_size(dims, 3, 1ULL << 12, ratios);
 
   CHECK(Error, dims[0].chunk_size == 16);
+  CHECK(Error, dims[1].chunk_size == 16);
+  CHECK(Error, dims[2].chunk_size == 16);
+
+  ok = 1;
+Error:
+  REPORT_TEST(ok);
+  return !ok;
+}
+
+static int
+test_dims_budget_chunk_size_pin(void)
+{
+  // ratios[i] == -1 pins chunk_size to dims[i].size. Remaining participants
+  // share the bit budget after accounting for pinned dims' element footprint.
+  int ok = 0;
+  struct dimension dims[3];
+  uint64_t sizes[] = { 1000, 16, 16 };
+  dims_create(dims, "tyx", sizes);
+
+  // nelem = 2^20. Pinned y*x = 256 (2^8), so t gets 2^12 = 4096.
+  int ratios[] = { 1, -1, -1 };
+  dims_budget_chunk_size(dims, 3, 1ULL << 20, ratios);
+
+  CHECK(Error, dims[0].chunk_size == 4096);
+  CHECK(Error, dims[1].chunk_size == 16);
+  CHECK(Error, dims[2].chunk_size == 16);
+
+  ok = 1;
+Error:
+  REPORT_TEST(ok);
+  return !ok;
+}
+
+static int
+test_dims_budget_chunk_size_pin_unbounded(void)
+{
+  // -1 on an unbounded dim (size=0) is a graceful fallback: that dim becomes
+  // a weight=1 budget participant instead of pinning (which would be zero).
+  int ok = 0;
+  struct dimension dims[3];
+  uint64_t sizes[] = { 0, 16, 16 }; // t unbounded
+  dims_create(dims, "tyx", sizes);
+  // dims_create sets chunk_size = size, so t starts at 0. We fix it.
+  dims[0].chunk_size = 1;
+
+  // nelem = 2^20. y,x pin at 16 (prod=256). Remaining 2^12 all to t.
+  int ratios[] = { -1, -1, -1 };
+  dims_budget_chunk_size(dims, 3, 1ULL << 20, ratios);
+
+  CHECK(Error, dims[0].chunk_size == 4096);
   CHECK(Error, dims[1].chunk_size == 16);
   CHECK(Error, dims[2].chunk_size == 16);
 
@@ -133,7 +183,7 @@ test_dims_set_shard_counts(void)
   uint64_t sizes[] = { 1000, 2, 2048, 2304 };
   dims_create(dims, "tcyx", sizes);
 
-  uint8_t ratios[] = { 1, 0, 2, 2 };
+  int ratios[] = { 1, 0, 2, 2 };
   dims_budget_chunk_size(dims, 4, 1ULL << 19, ratios);
   // chunk_sizes: 16, 1, 128, 256
   // chunk_counts: ceil(1000/16)=63, ceil(2/1)=2, ceil(2048/128)=16,
@@ -189,7 +239,7 @@ test_dims_budget_chunk_bytes(void)
   dims_create(dims_a, "tcyx", sizes);
   dims_create(dims_b, "tcyx", sizes);
 
-  uint8_t ratios[] = { 1, 0, 2, 2 };
+  int ratios[] = { 1, 0, 2, 2 };
   // 1MB / 2 bytes_per_element = 2^19 elements
   dims_budget_chunk_bytes(dims_a, 4, 1 << 20, 2, ratios);
   dims_budget_chunk_size(dims_b, 4, 1ULL << 19, ratios);
@@ -267,7 +317,7 @@ test_dims_print(void)
   uint64_t sizes[] = { 1000, 2, 2048, 2304 };
   dims_create(dims, "tcyx", sizes);
 
-  uint8_t ratios[] = { 1, 0, 2, 2 };
+  int ratios[] = { 1, 0, 2, 2 };
   dims_budget_chunk_size(dims, 4, 1ULL << 19, ratios);
 
   uint64_t shard_counts[] = { 1, 1, 4, 4 };
@@ -878,6 +928,9 @@ main(void)
     { "dims_create_errors", test_dims_create_errors },
     { "dims_budget_chunk_size", test_dims_budget_chunk_size },
     { "dims_budget_chunk_size_uniform", test_dims_budget_chunk_size_uniform },
+    { "dims_budget_chunk_size_pin", test_dims_budget_chunk_size_pin },
+    { "dims_budget_chunk_size_pin_unbounded",
+      test_dims_budget_chunk_size_pin_unbounded },
     { "dims_budget_chunk_bytes", test_dims_budget_chunk_bytes },
 
     { "dims_set_shard_counts", test_dims_set_shard_counts },

@@ -35,7 +35,9 @@ struct bench_config
   enum lod_reduce_method append_reduce_method;
   enum bench_backend backend;
   enum dtype dtype;               // element type (default dtype_u16)
-  const uint8_t* chunk_ratios;    // power-of-2 distribution ratios
+  const int* chunk_ratios;        // power-of-2 distribution ratios; see
+                                  // dims_budget_chunk_size for the -1/0/>0
+                                  // conventions
   size_t target_chunk_bytes;      // 0 = use 1MB default
   size_t min_chunk_bytes;         // auto-fit floor; 0 = no floor
   size_t memory_budget;           // 0 = auto-detect
@@ -56,7 +58,7 @@ struct bench_spec
   const char* label;
   struct dimension* dims;
   uint8_t rank;
-  const uint8_t* chunk_ratios;
+  const int* chunk_ratios;
   size_t default_chunk_bytes;
   size_t min_chunk_bytes;         // auto-fit floor; bench fails if budget
                                   // can't meet it (0 = no floor)

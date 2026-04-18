@@ -11,7 +11,7 @@ main(int ac, char* av[])
   dims_set_storage_order(dims, rank, "tczyx");
   dims_set_downsample_by_name(dims, rank, "tzyx");
 
-  uint8_t ratios[] = { 0, 1, 1, 1, 0 };
+  int ratios[] = { 0, 1, 1, 1, 0 };
 
   return bench_stream_main(ac,
                            av,

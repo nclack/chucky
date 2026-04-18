@@ -10,7 +10,7 @@ main(int ac, char* av[])
 
   dims_set_downsample_by_name(dims, rank, "zyx");
 
-  uint8_t ratios[] = { 6, 0, 6, 6 };
+  int ratios[] = { 6, 0, 6, 6 };
 
   return bench_stream_main(ac,
                            av,

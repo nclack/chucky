@@ -237,7 +237,7 @@ test_advise_basic_fit(void)
     .target_batch_chunks = 64,
   };
 
-  uint8_t ratios[] = { 1, 1, 1 };
+  int ratios[] = { 1, 1, 1 };
   struct advise_layout_diagnostic diag = { 0 };
   CHECK(Fail,
         tile_stream_cpu_advise_layout(
@@ -273,7 +273,7 @@ test_advise_invalid_config(void)
     .codec = { .id = CODEC_NONE },
   };
 
-  uint8_t ratios[] = { 1, 1 };
+  int ratios[] = { 1, 1 };
   struct advise_layout_diagnostic diag = { 0 };
 
   // budget=0 -> INVALID_CONFIG.
@@ -306,7 +306,7 @@ test_advise_min_shard_too_small(void)
     .target_batch_chunks = 64,
   };
 
-  uint8_t ratios[] = { 1, 1, 1 };
+  int ratios[] = { 1, 1, 1 };
   struct advise_layout_diagnostic diag = { 0 };
 
   // target=1 MiB chunks but min_shard=512 B < chunk_bytes ->
@@ -344,7 +344,7 @@ test_advise_parts_limit(void)
     .target_batch_chunks = 64,
   };
 
-  uint8_t ratios[] = { 1, 0, 0 };
+  int ratios[] = { 1, 0, 0 };
   struct advise_layout_diagnostic diag = { 0 };
 
   CHECK(
@@ -383,7 +383,7 @@ test_advise_halves_k(void)
     .target_batch_chunks = 128,
   };
 
-  uint8_t ratios[] = { 1, 1, 1 };
+  int ratios[] = { 1, 1, 1 };
   struct advise_layout_diagnostic diag = { 0 };
 
   // Step 1: huge budget -> auto K. Preserves the advised chunk geometry.
@@ -445,7 +445,7 @@ test_advise_user_k_respected(void)
     .epochs_per_batch = 4, // user-pinned
   };
 
-  uint8_t ratios[] = { 1, 1, 1 };
+  int ratios[] = { 1, 1, 1 };
   struct advise_layout_diagnostic diag = { 0 };
   CHECK(Fail,
         tile_stream_cpu_advise_layout(

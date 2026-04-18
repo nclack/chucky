@@ -18,7 +18,7 @@ Given an array's shape and dtype, pick:
 |---|---|---|
 | `size[d]`, `downsample[d]`, append-prefix | array geometry | caller |
 | `bytes_per_element` | dtype size | caller |
-| `chunk_ratios[d]` | per-dim chunk-size preference (power-of-2 distribution) | caller |
+| `chunk_ratios[d]` | per-dim chunk-size preference (power-of-2 distribution). `-1` pins chunk_size to full size (for bounded dims; unbounded treated as weight 1). `0` means chunk_size = 1. `>0` = bit-budget weight. | caller |
 | `min_chunk_bytes` | chunk-size floor; solve fails if budget can't meet this | caller |
 | `target_chunk_bytes` | starting chunk size for the auto-fit loop | caller |
 | `memory_max_bytes` | device / heap memory ceiling | caller, or auto-detected |

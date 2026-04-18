@@ -183,6 +183,9 @@ dims_set_shard_geometry(struct dimension* dims,
 {
   if (!dims || rank == 0 || bytes_per_element == 0)
     return 1;
+  for (uint8_t d = 0; d < rank; ++d)
+    if (dims[d].chunk_size == 0)
+      return 1;
 
   size_t chunk_bytes = bytes_per_element;
   for (uint8_t d = 0; d < rank; ++d)
@@ -242,13 +245,16 @@ dims_set_shard_geometry(struct dimension* dims,
     others_prod *= dims[d].chunks_per_shard;
   }
 
-  uint64_t row_bytes = (uint64_t)chunk_bytes * inner_cps_prod * others_prod;
-  uint64_t cps_0 =
-    row_bytes ? ceildiv((uint64_t)min_shard_bytes, row_bytes) : 1;
-  if (cps_0 < 1)
-    cps_0 = 1;
-  if (na > 0)
+  // min_shard_bytes == 0 means "no byte floor": leave dims[0].chunks_per_shard
+  // as the caller set it (0 means full span downstream).
+  if (min_shard_bytes > 0) {
+    uint64_t row_bytes = (uint64_t)chunk_bytes * inner_cps_prod * others_prod;
+    uint64_t cps_0 =
+      row_bytes ? ceildiv((uint64_t)min_shard_bytes, row_bytes) : 1;
+    if (cps_0 < 1)
+      cps_0 = 1;
     dims[0].chunks_per_shard = cps_0;
+  }
 
   return 0;
 }

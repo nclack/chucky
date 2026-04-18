@@ -327,9 +327,16 @@ test_shard_geom_errors(void)
   CHECK(Error, dims_set_shard_geometry(dims, 2, 4096, 1, 0) != 0);
   // min_shard_bytes < chunk_bytes (but > 0)
   CHECK(Error, dims_set_shard_geometry(dims, 2, 100, 1, 8) != 0);
-  // min_shard_bytes = 0 is allowed (no byte floor; cps_0 clamps to 1)
+  // min_shard_bytes = 0 is allowed (no byte floor): dims[0].chunks_per_shard
+  // is not modified. Pre-set 0 (from dims_create) stays 0, meaning full span.
+  CHECK(Error, dims[0].chunks_per_shard == 0);
   CHECK(Error, dims_set_shard_geometry(dims, 2, 0, 1, 8) == 0);
-  CHECK(Error, dims[0].chunks_per_shard == 1);
+  CHECK(Error, dims[0].chunks_per_shard == 0);
+
+  // chunk_size == 0 is rejected (undefined ceildiv).
+  dims_create(dims, "xy", sizes);
+  dims[0].chunk_size = 0;
+  CHECK(Error, dims_set_shard_geometry(dims, 2, 4096, 1, 8) != 0);
 
   ok = 1;
 Error:
@@ -408,7 +415,9 @@ test_shard_geom_max_concurrent_zero_is_one(void)
   CHECK(Error, dims_set_shard_geometry(dims_b, 3, 256, 1, 1) == 0);
   for (int d = 0; d < 3; ++d)
     CHECK(Error, dims_a[d].chunks_per_shard == dims_b[d].chunks_per_shard);
-  // M=1 means no inner splitting: inner cps = n_chunks.
+  // M=1 means no inner splitting: inner cps = n_chunks. row_bytes = 5*8*4=160.
+  // cps_0 = ceildiv(256, 160) = 2.
+  CHECK(Error, dims_a[0].chunks_per_shard == 2);
   CHECK(Error, dims_a[1].chunks_per_shard == 8);
   CHECK(Error, dims_a[2].chunks_per_shard == 4);
 

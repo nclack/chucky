@@ -99,6 +99,7 @@ struct advise_layout_diagnostic
   size_t chunk_bytes;              // per-chunk bytes at the failing iteration
   uint32_t epochs_per_batch;       // K at failure
   size_t device_bytes;             // BUDGET_EXCEEDED: memory needed at failure
+                                   // (device_bytes on GPU, heap_bytes on CPU)
   size_t budget_bytes;             // caller's budget (echoed)
   uint64_t chunks_per_shard_total; // PARTS_LIMIT_EXCEEDED: observed total
   uint64_t parts_limit;            // PARTS_LIMIT_EXCEEDED: MAX_PARTS_PER_SHARD

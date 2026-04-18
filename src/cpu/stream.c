@@ -547,6 +547,7 @@ tile_stream_cpu_advise_layout(struct tile_stream_configuration* config,
         break;
       }
       last_reason = ADVISE_BUDGET_EXCEEDED;
+      last_cps_total = 0;
       if (user_k || mem.epochs_per_batch <= 1)
         break;
       config->epochs_per_batch = (uint8_t)(mem.epochs_per_batch / 2);
@@ -554,18 +555,16 @@ tile_stream_cpu_advise_layout(struct tile_stream_configuration* config,
     if (!fit)
       continue;
 
-    // Phase 2: shard geometry.
+    // Phase 2: shard geometry. If min_shard_bytes < chunk_bytes at this
+    // target, shrink chunks and retry.
     if (dims_set_shard_geometry(config->dimensions,
                                 config->rank,
                                 min_shard_bytes,
                                 max_concurrent_shards,
                                 bytes_per_element)) {
-      if (diag) {
-        diag->reason = ADVISE_MIN_SHARD_TOO_SMALL;
-        diag->chunk_bytes = last_chunk_bytes;
-        diag->epochs_per_batch = last_k;
-      }
-      return 1;
+      last_reason = ADVISE_MIN_SHARD_TOO_SMALL;
+      last_cps_total = 0;
+      continue;
     }
 
     // Cross-phase (5): chunks_per_shard_total <= MAX_PARTS_PER_SHARD.

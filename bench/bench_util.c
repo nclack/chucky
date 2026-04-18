@@ -78,6 +78,123 @@ bench_destroy(struct bench_handle* h)
     tile_stream_gpu_destroy(h->gpu);
 }
 
+static void
+print_advise_failure(const struct advise_layout_diagnostic* diag,
+                     size_t budget,
+                     size_t min_shard_bytes);
+
+// Resolve the chunk + shard geometry for cfg->dims using cfg->chunk_ratios.
+// When cfg->memory_budget is 0, auto-detects from backend free memory using
+// budget_fraction (e.g. 0.8 for single-stream, 0.4 per stream for the
+// two-stream driver). auto_detect_suffix is appended to the auto-detect log
+// message (e.g. "(restrict to <80%)" or "(2 streams, ~40% each)").
+// On success returns 0 and writes the chosen epochs_per_batch (0 if no
+// auto-fit ran) to *out_epb. On failure returns 1 (message already printed).
+// No-op if cfg->chunk_ratios is NULL.
+static int
+resolve_chunk_sizing(const struct bench_config* cfg,
+                     enum dtype dtype,
+                     double budget_fraction,
+                     const char* auto_detect_suffix,
+                     uint8_t* out_epb)
+{
+  *out_epb = 0;
+  if (!cfg->chunk_ratios)
+    return 0;
+
+  const size_t bytes_per_element = dtype_bpe(dtype);
+  const size_t target =
+    cfg->target_chunk_bytes ? cfg->target_chunk_bytes : (1 << 20);
+  size_t budget = cfg->memory_budget;
+
+  if (budget == 0) {
+    char buf[32];
+    if (cfg->backend == BENCH_GPU) {
+      size_t free_mem = 0, total_mem = 0;
+      if (cuMemGetInfo(&free_mem, &total_mem) == CUDA_SUCCESS && free_mem > 0) {
+        budget = (size_t)((double)free_mem * budget_fraction);
+        format_bytes(buf, sizeof(buf), free_mem);
+        print_report(
+          "  auto-detect: %s free GPU memory %s", buf, auto_detect_suffix);
+      }
+    } else {
+      size_t avail = platform_available_memory();
+      if (avail > 0) {
+        budget = (size_t)((double)avail * budget_fraction);
+        format_bytes(buf, sizeof(buf), avail);
+        print_report(
+          "  auto-detect: %s available RAM %s", buf, auto_detect_suffix);
+      }
+    }
+  }
+
+  struct dimension* dims = cfg->dims;
+  const uint8_t rank = cfg->rank;
+
+  if (budget > 0) {
+    struct tile_stream_configuration fit_config = {
+      .buffer_capacity_bytes = 128 << 20,
+      .dtype = dtype,
+      .rank = rank,
+      .dimensions = dims,
+      .codec = cfg->codec,
+      .reduce_method = cfg->reduce_method,
+      .append_reduce_method = cfg->append_reduce_method,
+      .target_batch_chunks = 2048,
+    };
+    struct advise_layout_diagnostic diag = { 0 };
+    int advise_ok;
+    if (cfg->backend == BENCH_GPU) {
+      advise_ok = tile_stream_gpu_advise_layout(&fit_config,
+                                                target,
+                                                cfg->min_chunk_bytes,
+                                                cfg->chunk_ratios,
+                                                budget,
+                                                cfg->min_shard_bytes,
+                                                cfg->max_concurrent_shards,
+                                                0,
+                                                &diag);
+    } else {
+      advise_ok = tile_stream_cpu_advise_layout(&fit_config,
+                                                target,
+                                                cfg->min_chunk_bytes,
+                                                cfg->chunk_ratios,
+                                                budget,
+                                                cfg->min_shard_bytes,
+                                                cfg->max_concurrent_shards,
+                                                0,
+                                                &diag);
+    }
+    if (advise_ok != 0) {
+      print_advise_failure(&diag, budget, cfg->min_shard_bytes);
+      return 1;
+    }
+    *out_epb = fit_config.epochs_per_batch;
+    uint64_t vol = 1;
+    for (uint8_t d = 0; d < rank; ++d)
+      vol *= dims[d].chunk_size;
+    print_report("  auto-fit: %zu bytes/chunk (batch=%u)",
+                 (size_t)(vol * bytes_per_element),
+                 (unsigned)*out_epb);
+    return 0;
+  }
+
+  // No budget: apply chunk budget + shard geometry directly.
+  dims_budget_chunk_bytes(
+    dims, rank, target, bytes_per_element, cfg->chunk_ratios);
+  if (cfg->min_shard_bytes > 0 &&
+      dims_set_shard_geometry(dims,
+                              rank,
+                              cfg->min_shard_bytes,
+                              cfg->max_concurrent_shards,
+                              bytes_per_element)) {
+    print_report(
+      "  shard geometry: ERROR -- min_shard_bytes is smaller than one chunk");
+    return 1;
+  }
+  return 0;
+}
+
 // Emit a reason-specific explanation after advise_layout fails.
 static void
 print_advise_failure(const struct advise_layout_diagnostic* diag,
@@ -185,105 +302,9 @@ run_bench(const struct bench_config* cfg)
   const enum dtype dtype = cfg->dtype ? cfg->dtype : dtype_u16;
   uint8_t chosen_epochs_per_batch = 0; // 0 = auto; set by advise_layout on fit
 
-  // --- Chunk sizing ---
-  if (cfg->chunk_ratios) {
-    size_t bytes_per_element = dtype_bpe(dtype);
-    size_t target =
-      cfg->target_chunk_bytes ? cfg->target_chunk_bytes : (1 << 20);
-    size_t budget = cfg->memory_budget;
-
-    // Auto-detect memory budget
-    if (budget == 0) {
-      char buf[32];
-      if (cfg->backend == BENCH_GPU) {
-        size_t free_mem = 0, total_mem = 0;
-        if (cuMemGetInfo(&free_mem, &total_mem) == CUDA_SUCCESS &&
-            free_mem > 0) {
-          budget = (size_t)((double)free_mem * 0.8);
-          format_bytes(buf, sizeof(buf), free_mem);
-          print_report("  auto-detect: %s free GPU memory (restrict to <80%%)",
-                       buf);
-        }
-      } else {
-        size_t avail = platform_available_memory();
-        if (avail > 0) {
-          budget = (size_t)((double)avail * 0.8);
-          format_bytes(buf, sizeof(buf), avail);
-          print_report("  auto-detect: %s available RAM (restrict to <80%%)",
-                       buf);
-        }
-      }
-    }
-
-    // Auto-fit: try shrinking chunks to fit budget
-    int fitted = 0;
-    if (budget > 0) {
-      struct discard_shard_sink fit_dss;
-      discard_shard_sink_init(&fit_dss);
-      struct tile_stream_configuration fit_config = {
-        .buffer_capacity_bytes = 128 << 20,
-        .dtype = dtype,
-        .rank = rank,
-        .dimensions = dims,
-        .codec = cfg->codec,
-        .reduce_method = cfg->reduce_method,
-        .append_reduce_method = cfg->append_reduce_method,
-        .target_batch_chunks = 2048,
-      };
-      int advise_ok;
-      struct advise_layout_diagnostic diag = { 0 };
-      if (cfg->backend == BENCH_GPU) {
-        advise_ok = tile_stream_gpu_advise_layout(&fit_config,
-                                                  target,
-                                                  cfg->min_chunk_bytes,
-                                                  cfg->chunk_ratios,
-                                                  budget,
-                                                  cfg->min_shard_bytes,
-                                                  cfg->max_concurrent_shards,
-                                                  0,
-                                                  &diag);
-      } else {
-        advise_ok = tile_stream_cpu_advise_layout(&fit_config,
-                                                  target,
-                                                  cfg->min_chunk_bytes,
-                                                  cfg->chunk_ratios,
-                                                  budget,
-                                                  cfg->min_shard_bytes,
-                                                  cfg->max_concurrent_shards,
-                                                  0,
-                                                  &diag);
-      }
-      if (advise_ok == 0) {
-        fitted = 1;
-        chosen_epochs_per_batch = fit_config.epochs_per_batch;
-        uint64_t vol = 1;
-        for (uint8_t d = 0; d < rank; ++d)
-          vol *= dims[d].chunk_size;
-        print_report("  auto-fit: %zu bytes/chunk (batch=%u)",
-                     (size_t)(vol * bytes_per_element),
-                     (unsigned)chosen_epochs_per_batch);
-      } else {
-        print_advise_failure(&diag, budget, cfg->min_shard_bytes);
-        return 1;
-      }
-    }
-
-    // No budget specified: apply chunk budget + shard geometry directly.
-    if (!fitted) {
-      dims_budget_chunk_bytes(
-        dims, rank, target, bytes_per_element, cfg->chunk_ratios);
-      if (cfg->min_shard_bytes > 0 &&
-          dims_set_shard_geometry(dims,
-                                  rank,
-                                  cfg->min_shard_bytes,
-                                  cfg->max_concurrent_shards,
-                                  bytes_per_element)) {
-        print_report("  shard geometry: ERROR -- min_shard_bytes is smaller "
-                     "than one chunk");
-        return 1;
-      }
-    }
-  }
+  if (resolve_chunk_sizing(
+        cfg, dtype, 0.8, "(restrict to <80%)", &chosen_epochs_per_batch))
+    return 1;
 
   dims_print(dims, rank);
 
@@ -874,74 +895,9 @@ run_bench_two_streams(const struct bench_config* cfg)
   const size_t bpe = dtype_bpe(dtype);
   uint8_t chosen_epochs_per_batch = 0; // 0 = auto; set by advise_layout on fit
 
-  // --- Chunk sizing (shared config, applied once) ---
-  if (cfg->chunk_ratios) {
-    size_t target =
-      cfg->target_chunk_bytes ? cfg->target_chunk_bytes : (1 << 20);
-    size_t budget = cfg->memory_budget;
-
-    if (budget == 0) {
-      size_t free_mem = 0, total_mem = 0;
-      if (cuMemGetInfo(&free_mem, &total_mem) == CUDA_SUCCESS && free_mem > 0) {
-        // Reserve half for each stream (80% total, split two ways)
-        budget = (size_t)((double)free_mem * 0.4);
-        char buf[32];
-        format_bytes(buf, sizeof(buf), free_mem);
-        print_report(
-          "  auto-detect: %s free GPU memory (2 streams, ~40%% each)", buf);
-      }
-    }
-
-    struct tile_stream_configuration fit_config = {
-      .buffer_capacity_bytes = 128 << 20,
-      .dtype = dtype,
-      .rank = rank,
-      .dimensions = dims,
-      .codec = cfg->codec,
-      .reduce_method = cfg->reduce_method,
-      .append_reduce_method = cfg->append_reduce_method,
-      .target_batch_chunks = 2048,
-    };
-
-    int fitted = 0;
-    if (budget > 0) {
-      struct advise_layout_diagnostic diag = { 0 };
-      fitted = tile_stream_gpu_advise_layout(&fit_config,
-                                             target,
-                                             cfg->min_chunk_bytes,
-                                             cfg->chunk_ratios,
-                                             budget,
-                                             cfg->min_shard_bytes,
-                                             cfg->max_concurrent_shards,
-                                             0,
-                                             &diag) == 0;
-      if (fitted) {
-        chosen_epochs_per_batch = fit_config.epochs_per_batch;
-        uint64_t vol = 1;
-        for (uint8_t d = 0; d < rank; ++d)
-          vol *= dims[d].chunk_size;
-        print_report("  auto-fit: %zu bytes/chunk (batch=%u)",
-                     (size_t)(vol * bpe),
-                     (unsigned)chosen_epochs_per_batch);
-      } else {
-        print_advise_failure(&diag, budget, cfg->min_shard_bytes);
-        return 1;
-      }
-    }
-    if (!fitted) {
-      dims_budget_chunk_bytes(dims, rank, target, bpe, cfg->chunk_ratios);
-      if (cfg->min_shard_bytes > 0 &&
-          dims_set_shard_geometry(dims,
-                                  rank,
-                                  cfg->min_shard_bytes,
-                                  cfg->max_concurrent_shards,
-                                  bpe)) {
-        print_report("  shard geometry: ERROR -- min_shard_bytes is smaller "
-                     "than one chunk");
-        return 1;
-      }
-    }
-  }
+  if (resolve_chunk_sizing(
+        cfg, dtype, 0.4, "(2 streams, ~40% each)", &chosen_epochs_per_batch))
+    return 1;
 
   dims_print(dims, rank);
 

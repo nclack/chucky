@@ -78,3 +78,28 @@ struct tile_stream_status
   int pool_current;
   int flush_pending;
 };
+
+// Why tile_stream_{gpu,cpu}_advise_layout returned non-zero.
+enum advise_layout_reason
+{
+  ADVISE_OK = 0,
+  ADVISE_INVALID_CONFIG,       // memory_estimate rejected the configuration
+  ADVISE_MIN_SHARD_TOO_SMALL,  // min_shard_bytes < chunk_bytes (phase 2)
+  ADVISE_BUDGET_EXCEEDED,      // no (chunk, K) combination fits budget
+  ADVISE_PARTS_LIMIT_EXCEEDED, // chunks_per_shard_total > MAX_PARTS_PER_SHARD
+};
+
+// Optional diagnostic out-param for advise_layout. Caller may pass NULL.
+// On failure, reason is set and the other fields describe the last iteration
+// the solver tried (closest to min_chunk_bytes). Units: bytes unless noted.
+struct advise_layout_diagnostic
+{
+  enum advise_layout_reason reason;
+  size_t floor_chunk_bytes;        // effective floor: max(min_chunk_bytes, bpe)
+  size_t chunk_bytes;              // per-chunk bytes at the failing iteration
+  uint32_t epochs_per_batch;       // K at failure
+  size_t device_bytes;             // BUDGET_EXCEEDED: memory needed at failure
+  size_t budget_bytes;             // caller's budget (echoed)
+  uint64_t chunks_per_shard_total; // PARTS_LIMIT_EXCEEDED: observed total
+  uint64_t parts_limit;            // PARTS_LIMIT_EXCEEDED: MAX_PARTS_PER_SHARD
+};

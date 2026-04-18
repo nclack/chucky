@@ -506,22 +506,73 @@ tile_stream_gpu_advise_layout(struct tile_stream_configuration* config,
                               size_t budget_bytes,
                               size_t min_shard_bytes,
                               uint32_t max_concurrent_shards,
-                              size_t shard_alignment)
+                              size_t shard_alignment,
+                              struct advise_layout_diagnostic* diag)
 {
-  const size_t bytes_per_element = dtype_bpe(config->dtype);
-  if (bytes_per_element == 0 || budget_bytes == 0)
-    return 1;
+  if (diag) {
+    memset(diag, 0, sizeof(*diag));
+    diag->budget_bytes = budget_bytes;
+    diag->parts_limit = MAX_PARTS_PER_SHARD;
+  }
 
-  size_t floor =
+  const size_t bytes_per_element = dtype_bpe(config->dtype);
+  if (bytes_per_element == 0 || budget_bytes == 0) {
+    if (diag)
+      diag->reason = ADVISE_INVALID_CONFIG;
+    return 1;
+  }
+
+  const uint8_t user_k = config->epochs_per_batch;
+  const size_t floor =
     min_chunk_bytes > bytes_per_element ? min_chunk_bytes : bytes_per_element;
+  if (diag)
+    diag->floor_chunk_bytes = floor;
+
+  // Track last-iteration context so the diagnostic can describe the reason the
+  // solver bailed after exhausting all chunk sizes.
+  enum advise_layout_reason last_reason = ADVISE_BUDGET_EXCEEDED;
+  size_t last_chunk_bytes = 0;
+  uint32_t last_k = 0;
+  size_t last_device_bytes = 0;
+  uint64_t last_cps_total = 0;
+
   for (size_t target = target_chunk_bytes; target >= floor; target >>= 1) {
-    // Phase 1: fit chunks to memory budget.
+    // Phase 1: fit chunks + K to memory budget. Start with auto-derived K
+    // (or user-supplied K if non-zero); if device_bytes exceeds budget, halve
+    // K and retry. User-supplied K is authoritative and isn't reduced.
     dims_budget_chunk_bytes(
       config->dimensions, config->rank, target, bytes_per_element, ratios);
-    struct tile_stream_memory_info mem;
-    if (tile_stream_gpu_memory_estimate(config, shard_alignment, &mem))
-      return 1;
-    if (mem.device_bytes > budget_bytes)
+
+    uint64_t chunk_vol = 1;
+    for (uint8_t d = 0; d < config->rank; ++d)
+      chunk_vol *= config->dimensions[d].chunk_size;
+    last_chunk_bytes = (size_t)(chunk_vol * bytes_per_element);
+
+    config->epochs_per_batch = user_k;
+    int fit = 0;
+    for (;;) {
+      struct tile_stream_memory_info mem;
+      if (tile_stream_gpu_memory_estimate(config, shard_alignment, &mem)) {
+        if (diag) {
+          diag->reason = ADVISE_INVALID_CONFIG;
+          diag->chunk_bytes = last_chunk_bytes;
+          diag->epochs_per_batch = config->epochs_per_batch;
+        }
+        return 1;
+      }
+      last_k = mem.epochs_per_batch;
+      last_device_bytes = mem.device_bytes;
+      if (mem.device_bytes <= budget_bytes) {
+        config->epochs_per_batch = (uint8_t)mem.epochs_per_batch;
+        fit = 1;
+        break;
+      }
+      last_reason = ADVISE_BUDGET_EXCEEDED;
+      if (user_k || mem.epochs_per_batch <= 1)
+        break;
+      config->epochs_per_batch = (uint8_t)(mem.epochs_per_batch / 2);
+    }
+    if (!fit)
       continue;
 
     // Phase 2: shard geometry (byte floor + concurrency bound).
@@ -529,8 +580,14 @@ tile_stream_gpu_advise_layout(struct tile_stream_configuration* config,
                                 config->rank,
                                 min_shard_bytes,
                                 max_concurrent_shards,
-                                bytes_per_element))
+                                bytes_per_element)) {
+      if (diag) {
+        diag->reason = ADVISE_MIN_SHARD_TOO_SMALL;
+        diag->chunk_bytes = last_chunk_bytes;
+        diag->epochs_per_batch = last_k;
+      }
       return 1;
+    }
 
     // Cross-phase (5): chunks_per_shard_total <= MAX_PARTS_PER_SHARD.
     uint64_t cps_total = 1;
@@ -540,10 +597,22 @@ tile_stream_gpu_advise_layout(struct tile_stream_configuration* config,
         cps = 1;
       cps_total *= cps;
     }
-    if (cps_total > MAX_PARTS_PER_SHARD)
+    if (cps_total > MAX_PARTS_PER_SHARD) {
+      last_reason = ADVISE_PARTS_LIMIT_EXCEEDED;
+      last_cps_total = cps_total;
       continue;
+    }
 
     return 0;
+  }
+
+  config->epochs_per_batch = user_k;
+  if (diag) {
+    diag->reason = last_reason;
+    diag->chunk_bytes = last_chunk_bytes;
+    diag->epochs_per_batch = last_k;
+    diag->device_bytes = last_device_bytes;
+    diag->chunks_per_shard_total = last_cps_total;
   }
   return 1;
 }

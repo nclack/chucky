@@ -82,14 +82,24 @@ retry.
 ## Procedure
 
 ```
-# --- Phase 1: chunks (auto-fit loop) ---
+# --- Phase 1: chunks + K (auto-fit loop) ---
 target = target_chunk_bytes
 loop:
     distribute log2(target / bytes_per_element) bits across dims per chunk_ratios
     → sets chunk_size[d] and thus chunk_bytes, n_chunks[d]
 
     if chunk_bytes > max_bytes_per_part:   halve target, continue
-    if device_bytes > memory_max_bytes:    halve target, continue
+
+    # K sub-loop: start with auto-derived K (ceildiv(target_batch_chunks,
+    # chunks_per_epoch), pow2, clamped to MAX_BATCH_EPOCHS). If device_bytes
+    # exceeds memory_max_bytes, halve K (down to 1) and re-estimate. Pools
+    # scale linearly in K, so this is the cheapest relief before shrinking
+    # chunks. A user-supplied K is authoritative and is not reduced.
+    K = auto_K(target_batch_chunks, chunks_per_epoch)
+    while device_bytes(K) > memory_max_bytes:
+        if K == 1: break    # K-alone can't fit, shrink chunks instead
+        K /= 2
+    if device_bytes(K) > memory_max_bytes: halve target, continue
     break
     # If target falls below min_chunk_bytes before breaking:
     # ERROR "no chunk size ≥ min_chunk_bytes fits in budget".

@@ -47,9 +47,12 @@ tile_stream_gpu_memory_estimate(const struct tile_stream_configuration* config,
 
 // Solve chunk + shard layout for the GPU backend.
 //
-// Phase 1: starting from target_chunk_bytes, halves until the device memory
-//   estimate fits within budget_bytes or target falls below
-//   max(min_chunk_bytes, bpe).
+// Phase 1: starting from target_chunk_bytes, halves chunk bytes until the
+//   device memory estimate fits within budget_bytes or target falls below
+//   max(min_chunk_bytes, bpe). At each chunk size, if the auto-derived
+//   epochs_per_batch (K) overshoots the budget, K is halved (down to 1)
+//   before shrinking chunks further. A non-zero config->epochs_per_batch
+//   on entry is treated as user-authoritative and is not reduced.
 // Phase 2: with chunks set, computes shard geometry from min_shard_bytes and
 //   max_concurrent_shards (see dims_set_shard_geometry).
 // Cross-phase: checks that chunks_per_shard_total <= MAX_PARTS_PER_SHARD.
@@ -58,7 +61,10 @@ tile_stream_gpu_memory_estimate(const struct tile_stream_configuration* config,
 //
 // shard_alignment: 0 = no alignment constraint.
 // min_chunk_bytes: floor on per-chunk bytes; 0 = no floor (clamped to bpe).
-// Modifies config->dimensions in place (chunk_size and chunks_per_shard).
+// diag: optional out-param describing the failure reason and relevant context
+//   when the solver returns non-zero; caller may pass NULL.
+// Modifies config->dimensions in place (chunk_size and chunks_per_shard) and
+// config->epochs_per_batch (set to the chosen K on success).
 // Returns 0 on success.
 int
 tile_stream_gpu_advise_layout(struct tile_stream_configuration* config,
@@ -68,7 +74,8 @@ tile_stream_gpu_advise_layout(struct tile_stream_configuration* config,
                               size_t budget_bytes,
                               size_t min_shard_bytes,
                               uint32_t max_concurrent_shards,
-                              size_t shard_alignment);
+                              size_t shard_alignment,
+                              struct advise_layout_diagnostic* diag);
 
 // Allocate and initialize a tile_stream_gpu. Returns pointer on success,
 // NULL on failure. Caller must free with tile_stream_gpu_destroy.

@@ -78,6 +78,61 @@ bench_destroy(struct bench_handle* h)
     tile_stream_gpu_destroy(h->gpu);
 }
 
+// Emit a reason-specific explanation after advise_layout fails.
+static void
+print_advise_failure(const struct advise_layout_diagnostic* diag,
+                     size_t budget,
+                     size_t min_shard_bytes)
+{
+  char budget_buf[32], shard_buf[32], chunk_buf[32], dev_buf[32];
+  format_bytes(budget_buf, sizeof(budget_buf), budget);
+  format_bytes(shard_buf, sizeof(shard_buf), min_shard_bytes);
+  format_bytes(chunk_buf, sizeof(chunk_buf), diag->chunk_bytes);
+  format_bytes(dev_buf, sizeof(dev_buf), diag->device_bytes);
+
+  switch (diag->reason) {
+    case ADVISE_BUDGET_EXCEEDED:
+      print_report(
+        "  auto-fit: ERROR -- memory budget exceeded at floor chunk size");
+      print_report("    needed %s at chunk=%s, K=%u; budget=%s",
+                   dev_buf,
+                   chunk_buf,
+                   diag->epochs_per_batch,
+                   budget_buf);
+      print_report(
+        "    fix: raise memory_budget, lower min_chunk_bytes, or simplify "
+        "codec/LOD");
+      break;
+    case ADVISE_PARTS_LIMIT_EXCEEDED:
+      print_report("  auto-fit: ERROR -- %llu chunks per shard exceeds backend "
+                   "limit of %llu",
+                   (unsigned long long)diag->chunks_per_shard_total,
+                   (unsigned long long)diag->parts_limit);
+      print_report("    at chunk=%s, min_shard_bytes=%s", chunk_buf, shard_buf);
+      print_report(
+        "    fix: lower min_shard_bytes, raise max_concurrent_shards, "
+        "or lower min_chunk_bytes");
+      break;
+    case ADVISE_MIN_SHARD_TOO_SMALL:
+      print_report(
+        "  auto-fit: ERROR -- min_shard_bytes (%s) is smaller than one chunk "
+        "(%s)",
+        shard_buf,
+        chunk_buf);
+      print_report("    fix: raise min_shard_bytes or lower target chunk size");
+      break;
+    case ADVISE_INVALID_CONFIG:
+      print_report(
+        "  auto-fit: ERROR -- invalid configuration rejected by memory "
+        "estimate");
+      break;
+    default:
+      print_report("  auto-fit: ERROR -- unknown failure (reason=%d)",
+                   (int)diag->reason);
+      break;
+  }
+}
+
 // --- Fill-pattern init (deferred until after chunk-fit succeeds) ---
 //
 // Pattern buffers can be several GiB for large arrays; initializing them in
@@ -128,6 +183,7 @@ run_bench(const struct bench_config* cfg)
   }
 
   const enum dtype dtype = cfg->dtype ? cfg->dtype : dtype_u16;
+  uint8_t chosen_epochs_per_batch = 0; // 0 = auto; set by advise_layout on fit
 
   // --- Chunk sizing ---
   if (cfg->chunk_ratios) {
@@ -175,6 +231,7 @@ run_bench(const struct bench_config* cfg)
         .target_batch_chunks = 2048,
       };
       int advise_ok;
+      struct advise_layout_diagnostic diag = { 0 };
       if (cfg->backend == BENCH_GPU) {
         advise_ok = tile_stream_gpu_advise_layout(&fit_config,
                                                   target,
@@ -183,7 +240,8 @@ run_bench(const struct bench_config* cfg)
                                                   budget,
                                                   cfg->min_shard_bytes,
                                                   cfg->max_concurrent_shards,
-                                                  0);
+                                                  0,
+                                                  &diag);
       } else {
         advise_ok = tile_stream_cpu_advise_layout(&fit_config,
                                                   target,
@@ -192,25 +250,20 @@ run_bench(const struct bench_config* cfg)
                                                   budget,
                                                   cfg->min_shard_bytes,
                                                   cfg->max_concurrent_shards,
-                                                  0);
+                                                  0,
+                                                  &diag);
       }
       if (advise_ok == 0) {
         fitted = 1;
+        chosen_epochs_per_batch = fit_config.epochs_per_batch;
         uint64_t vol = 1;
         for (uint8_t d = 0; d < rank; ++d)
           vol *= dims[d].chunk_size;
-        print_report("  auto-fit: %zu bytes/chunk",
-                     (size_t)(vol * bytes_per_element));
+        print_report("  auto-fit: %zu bytes/chunk (batch=%u)",
+                     (size_t)(vol * bytes_per_element),
+                     (unsigned)chosen_epochs_per_batch);
       } else {
-        char budget_buf[32], shard_buf[32];
-        format_bytes(budget_buf, sizeof(budget_buf), budget);
-        format_bytes(shard_buf, sizeof(shard_buf), cfg->min_shard_bytes);
-        print_report(
-          "  auto-fit: ERROR -- no chunk size >= %zu bytes fits in budget "
-          "(%s) with min_shard_bytes=%s",
-          cfg->min_chunk_bytes ? cfg->min_chunk_bytes : bytes_per_element,
-          budget_buf,
-          shard_buf);
+        print_advise_failure(&diag, budget, cfg->min_shard_bytes);
         return 1;
       }
     }
@@ -295,6 +348,7 @@ run_bench(const struct bench_config* cfg)
     .codec = cfg->codec,
     .reduce_method = cfg->reduce_method,
     .append_reduce_method = cfg->append_reduce_method,
+    .epochs_per_batch = chosen_epochs_per_batch,
     .target_batch_chunks = 2048,
     .backpressure_bytes = cfg->backpressure_bytes,
   };
@@ -818,6 +872,7 @@ run_bench_two_streams(const struct bench_config* cfg)
 
   const enum dtype dtype = cfg->dtype ? cfg->dtype : dtype_u16;
   const size_t bpe = dtype_bpe(dtype);
+  uint8_t chosen_epochs_per_batch = 0; // 0 = auto; set by advise_layout on fit
 
   // --- Chunk sizing (shared config, applied once) ---
   if (cfg->chunk_ratios) {
@@ -850,6 +905,7 @@ run_bench_two_streams(const struct bench_config* cfg)
 
     int fitted = 0;
     if (budget > 0) {
+      struct advise_layout_diagnostic diag = { 0 };
       fitted = tile_stream_gpu_advise_layout(&fit_config,
                                              target,
                                              cfg->min_chunk_bytes,
@@ -857,22 +913,18 @@ run_bench_two_streams(const struct bench_config* cfg)
                                              budget,
                                              cfg->min_shard_bytes,
                                              cfg->max_concurrent_shards,
-                                             0) == 0;
+                                             0,
+                                             &diag) == 0;
       if (fitted) {
+        chosen_epochs_per_batch = fit_config.epochs_per_batch;
         uint64_t vol = 1;
         for (uint8_t d = 0; d < rank; ++d)
           vol *= dims[d].chunk_size;
-        print_report("  auto-fit: %zu bytes/chunk", (size_t)(vol * bpe));
+        print_report("  auto-fit: %zu bytes/chunk (batch=%u)",
+                     (size_t)(vol * bpe),
+                     (unsigned)chosen_epochs_per_batch);
       } else {
-        char budget_buf[32], shard_buf[32];
-        format_bytes(budget_buf, sizeof(budget_buf), budget);
-        format_bytes(shard_buf, sizeof(shard_buf), cfg->min_shard_bytes);
-        print_report(
-          "  auto-fit: ERROR -- no chunk size >= %zu bytes fits in budget "
-          "(%s) with min_shard_bytes=%s",
-          cfg->min_chunk_bytes ? cfg->min_chunk_bytes : bpe,
-          budget_buf,
-          shard_buf);
+        print_advise_failure(&diag, budget, cfg->min_shard_bytes);
         return 1;
       }
     }
@@ -953,6 +1005,7 @@ run_bench_two_streams(const struct bench_config* cfg)
     .codec = cfg->codec,
     .reduce_method = cfg->reduce_method,
     .append_reduce_method = cfg->append_reduce_method,
+    .epochs_per_batch = chosen_epochs_per_batch,
     .target_batch_chunks = 2048,
     .backpressure_bytes = cfg->backpressure_bytes,
   };

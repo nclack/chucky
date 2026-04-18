@@ -62,4 +62,5 @@ tile_stream_cpu_advise_layout(struct tile_stream_configuration* config,
                               size_t budget_bytes,
                               size_t min_shard_bytes,
                               uint32_t max_concurrent_shards,
-                              size_t shard_alignment);
+                              size_t shard_alignment,
+                              struct advise_layout_diagnostic* diag);

@@ -74,6 +74,7 @@ tile_stream_gpu_advise_layout(struct tile_stream_configuration* config,
                               size_t budget_bytes,
                               size_t min_shard_bytes,
                               uint32_t max_concurrent_shards,
+                              uint32_t min_append_shards,
                               size_t shard_alignment,
                               struct advise_layout_diagnostic* diag);
 

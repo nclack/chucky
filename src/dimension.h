@@ -81,14 +81,19 @@ dims_set_shard_counts(struct dimension* dims,
 //     rounding). Each step increments the inner dim with the largest
 //     remaining n_chunks[d]/shards[d] ratio while staying within
 //     n_chunks[d].
-//   - Outer append dim (d = 0): chunks_per_shard = ceildiv(min_shard_bytes,
-//     row_bytes), where row_bytes is the bytes written per append step
-//     across one inner shard. Clamped to >= 1.
+//   - Outer append dim (d = 0): chunks_per_shard is maximized subject to
+//     (a) shard_bytes >= min_shard_bytes (byte floor), (b) chunks_per_shard
+//     total <= MAX_PARTS_PER_SHARD (backend parts cap), (c) cps <=
+//     n_chunks[0] (dim extent), and (d) ceildiv(n_chunks[0], cps) >=
+//     min_append_shards when set — forces at least N append-direction
+//     shards so benches exercise shard switching. Ignored for unbounded
+//     dim 0 (size == 0).
 //   - Inner append dims (d in 1..na-1): pass through at chunks_per_shard =
 //     n_chunks[d] so the downstream product (config.c) evaluates correctly.
 //
 // Requires chunk_size to be set first (e.g. via dims_budget_chunk_bytes).
 // max_concurrent_shards of 0 is treated as 1 (no multiplexing).
+// min_append_shards of 0 is treated as 1 (no minimum).
 //
 // Returns 0 on success, non-zero if min_shard_bytes < chunk_bytes (floor
 // is meaningless below one chunk).
@@ -97,6 +102,7 @@ dims_set_shard_geometry(struct dimension* dims,
                         uint8_t rank,
                         size_t min_shard_bytes,
                         uint32_t max_concurrent_shards,
+                        uint32_t min_append_shards,
                         size_t bytes_per_element);
 
 // Combined chunk + shard layout policy.
@@ -111,6 +117,7 @@ struct dims_layout_policy
   const int* chunk_ratios;   // NULL = leave chunk_size unchanged
   size_t min_shard_bytes;
   uint32_t max_concurrent_shards;
+  uint32_t min_append_shards; // 0 = no minimum
 };
 
 int

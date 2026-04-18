@@ -214,6 +214,7 @@ dims_set_shard_geometry(struct dimension* dims,
                         uint8_t rank,
                         size_t min_shard_bytes,
                         uint32_t max_concurrent_shards,
+                        uint32_t min_append_shards,
                         size_t bytes_per_element)
 {
   if (!dims || rank == 0 || bytes_per_element == 0)
@@ -300,6 +301,16 @@ dims_set_shard_geometry(struct dimension* dims,
     uint64_t cps_cap = inner_prod ? (MAX_PARTS_PER_SHARD / inner_prod) : 1;
     if (n_chunks[0] > 0 && cps_cap > n_chunks[0])
       cps_cap = n_chunks[0];
+    // Enforce minimum number of append-direction shards: ceildiv(n_chunks[0],
+    // cps_cap) >= min_append_shards. Only meaningful for bounded dim 0.
+    const uint32_t min_shards = min_append_shards ? min_append_shards : 1;
+    if (min_shards > 1 && n_chunks[0] > 0) {
+      uint64_t cap_for_shards = n_chunks[0] / min_shards;
+      if (cap_for_shards < 1)
+        cap_for_shards = 1; // can't get N shards; fall back to cps=1.
+      if (cps_cap > cap_for_shards)
+        cps_cap = cap_for_shards;
+    }
     if (cps_cap < 1)
       cps_cap = 1;
     dims[0].chunks_per_shard = cps_cap >= cps_floor ? cps_cap : cps_floor;
@@ -322,5 +333,6 @@ dims_set_layout(struct dimension* dims,
                                  rank,
                                  p->min_shard_bytes,
                                  p->max_concurrent_shards,
+                                 p->min_append_shards,
                                  p->bytes_per_element);
 }

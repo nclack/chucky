@@ -24,6 +24,7 @@ Given an array's shape and dtype, pick:
 | `memory_max_bytes` | device / heap memory ceiling | caller, or auto-detected |
 | `max_concurrent_shards` | cap on concurrently-open shards (fs pressure) | caller |
 | `min_shard_bytes` | minimum uncompressed bytes per shard (cadence floor) | caller |
+| `min_append_shards` | minimum number of shards along the outer append dim; 0 = no minimum. Forces shard-switching in benches that would otherwise collapse to a single shard. | caller |
 | `max_parts_per_shard` | backend part-count limit (e.g. S3 multipart = 10000); 0 = unlimited | sink |
 | `max_bytes_per_part` | backend per-part byte limit (e.g. S3 = 5 GiB); 0 = unlimited | sink |
 
@@ -121,6 +122,8 @@ while concurrent_shards · 2 ≤ max_concurrent_shards:
 # Append cadence: maximize subject to parts cap and byte floor.
 cps_floor = max(1, ceildiv(min_shard_bytes, append_row_bytes))
 cps_cap   = min(max_parts_per_shard / inner_prod, n_chunks[0] or ∞)
+if min_append_shards > 1 and n_chunks[0] > 0:
+    cps_cap = min(cps_cap, floor(n_chunks[0] / min_append_shards))
 cps_append = max(cps_floor, cps_cap)   # floor wins if parts cap can't
                                         # accommodate it; cross-phase
                                         # check below then retries.

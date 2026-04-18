@@ -239,10 +239,11 @@ test_advise_basic_fit(void)
 
   int ratios[] = { 1, 1, 1 };
   struct advise_layout_diagnostic diag = { 0 };
-  CHECK(Fail,
-        tile_stream_cpu_advise_layout(
-          &config, 1 << 15, 1024, ratios, 1ull << 30, 1 << 20, 1, 0, &diag) ==
-          0);
+  CHECK(
+    Fail,
+    tile_stream_cpu_advise_layout(
+      &config, 1 << 15, 1024, ratios, 1ull << 30, 1 << 20, 1, 0, 0, &diag) ==
+      0);
   CHECK(Fail, diag.reason == ADVISE_OK);
   CHECK(Fail, config.epochs_per_batch >= 1);
   for (int d = 0; d < 3; ++d) {
@@ -279,7 +280,7 @@ test_advise_invalid_config(void)
   // budget=0 -> INVALID_CONFIG.
   CHECK(Fail,
         tile_stream_cpu_advise_layout(
-          &config, 1 << 14, 1024, ratios, 0, 1 << 20, 1, 0, &diag) != 0);
+          &config, 1 << 14, 1024, ratios, 0, 1 << 20, 1, 0, 0, &diag) != 0);
   CHECK(Fail, diag.reason == ADVISE_INVALID_CONFIG);
 
   log_info("  PASS");
@@ -313,7 +314,7 @@ test_advise_min_shard_too_small(void)
   // MIN_SHARD_TOO_SMALL
   CHECK(Fail,
         tile_stream_cpu_advise_layout(
-          &config, 1 << 20, 1 << 20, ratios, 1ull << 30, 512, 1, 0, &diag) !=
+          &config, 1 << 20, 1 << 20, ratios, 1ull << 30, 512, 1, 0, 0, &diag) !=
           0);
   CHECK(Fail, diag.reason == ADVISE_MIN_SHARD_TOO_SMALL);
 
@@ -347,11 +348,17 @@ test_advise_parts_limit(void)
   int ratios[] = { 1, 0, 0 };
   struct advise_layout_diagnostic diag = { 0 };
 
-  CHECK(
-    Fail,
-    tile_stream_cpu_advise_layout(
-      &config, 1 << 16, 1 << 16, ratios, 1ull << 30, 1ull << 30, 1, 0, &diag) !=
-      0);
+  CHECK(Fail,
+        tile_stream_cpu_advise_layout(&config,
+                                      1 << 16,
+                                      1 << 16,
+                                      ratios,
+                                      1ull << 30,
+                                      1ull << 30,
+                                      1,
+                                      0,
+                                      0,
+                                      &diag) != 0);
   CHECK(Fail, diag.reason == ADVISE_PARTS_LIMIT_EXCEEDED);
   CHECK(Fail, diag.chunks_per_shard_total > diag.parts_limit);
 
@@ -387,10 +394,11 @@ test_advise_halves_k(void)
   struct advise_layout_diagnostic diag = { 0 };
 
   // Step 1: huge budget -> auto K. Preserves the advised chunk geometry.
-  CHECK(Fail,
-        tile_stream_cpu_advise_layout(
-          &config, target, target, ratios, 1ull << 40, 1 << 20, 1, 0, &diag) ==
-          0);
+  CHECK(
+    Fail,
+    tile_stream_cpu_advise_layout(
+      &config, target, target, ratios, 1ull << 40, 1 << 20, 1, 0, 0, &diag) ==
+      0);
   const uint32_t auto_k = config.epochs_per_batch;
   CHECK(Fail, auto_k > 1);
 
@@ -408,7 +416,7 @@ test_advise_halves_k(void)
   CHECK(
     Fail,
     tile_stream_cpu_advise_layout(
-      &config, target, target, ratios, tight_budget, 1 << 20, 1, 0, &diag) ==
+      &config, target, target, ratios, tight_budget, 1 << 20, 1, 0, 0, &diag) ==
       0);
   CHECK(Fail, diag.reason == ADVISE_OK);
   CHECK(Fail, config.epochs_per_batch < auto_k);
@@ -447,10 +455,11 @@ test_advise_user_k_respected(void)
 
   int ratios[] = { 1, 1, 1 };
   struct advise_layout_diagnostic diag = { 0 };
-  CHECK(Fail,
-        tile_stream_cpu_advise_layout(
-          &config, 1 << 15, 1024, ratios, 1ull << 30, 1 << 20, 1, 0, &diag) ==
-          0);
+  CHECK(
+    Fail,
+    tile_stream_cpu_advise_layout(
+      &config, 1 << 15, 1024, ratios, 1ull << 30, 1 << 20, 1, 0, 0, &diag) ==
+      0);
   CHECK(Fail, config.epochs_per_batch == 4);
   CHECK(Fail, diag.reason == ADVISE_OK);
 

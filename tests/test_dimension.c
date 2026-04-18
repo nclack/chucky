@@ -349,7 +349,7 @@ test_shard_geom_no_inner_sharding(void)
   // chunk_bytes = 5*16*16*1 = 1280. row_bytes = 1280 (inner cps=1).
   // cps_floor = ceildiv(4096, 1280) = 4. cps_cap = min(MAX_PARTS/1,
   // n_chunks[0]=20) = 20. Maximize policy -> cps_0 = 20.
-  CHECK(Error, dims_set_shard_geometry(dims, 3, 4096, 1, 1) == 0);
+  CHECK(Error, dims_set_shard_geometry(dims, 3, 4096, 1, 0, 1) == 0);
   CHECK(Error, dims[0].chunks_per_shard == 20);
   CHECK(Error, dims[1].chunks_per_shard == 1);
   CHECK(Error, dims[2].chunks_per_shard == 1);
@@ -371,23 +371,23 @@ test_shard_geom_errors(void)
   dims_set_chunk_sizes(dims, 2, cs);
 
   // NULL dims
-  CHECK(Error, dims_set_shard_geometry(NULL, 2, 4096, 1, 8) != 0);
+  CHECK(Error, dims_set_shard_geometry(NULL, 2, 4096, 1, 0, 8) != 0);
   // rank=0
-  CHECK(Error, dims_set_shard_geometry(dims, 0, 4096, 1, 8) != 0);
+  CHECK(Error, dims_set_shard_geometry(dims, 0, 4096, 1, 0, 8) != 0);
   // bpe=0
-  CHECK(Error, dims_set_shard_geometry(dims, 2, 4096, 1, 0) != 0);
+  CHECK(Error, dims_set_shard_geometry(dims, 2, 4096, 1, 0, 0) != 0);
   // min_shard_bytes < chunk_bytes (but > 0)
-  CHECK(Error, dims_set_shard_geometry(dims, 2, 100, 1, 8) != 0);
+  CHECK(Error, dims_set_shard_geometry(dims, 2, 100, 1, 0, 8) != 0);
   // min_shard_bytes = 0 is allowed (no byte floor): dims[0].chunks_per_shard
   // is not modified. Pre-set 0 (from dims_create) stays 0, meaning full span.
   CHECK(Error, dims[0].chunks_per_shard == 0);
-  CHECK(Error, dims_set_shard_geometry(dims, 2, 0, 1, 8) == 0);
+  CHECK(Error, dims_set_shard_geometry(dims, 2, 0, 1, 0, 8) == 0);
   CHECK(Error, dims[0].chunks_per_shard == 0);
 
   // chunk_size == 0 is rejected (undefined ceildiv).
   dims_create(dims, "xy", sizes);
   dims[0].chunk_size = 0;
-  CHECK(Error, dims_set_shard_geometry(dims, 2, 4096, 1, 8) != 0);
+  CHECK(Error, dims_set_shard_geometry(dims, 2, 4096, 1, 0, 8) != 0);
 
   ok = 1;
 Error:
@@ -412,7 +412,7 @@ test_shard_geom_splits_inner_greedy(void)
   // Greedy: shards (1,1,1) -> (1,2,1) -> (1,3,1) -> (1,3,2) -> (1,4,2).
   // cps[1]=ceil(8/4)=2, cps[2]=ceil(4/2)=2. row_bytes = 5*2*2 = 20.
   // cps_floor = ceildiv(80, 20) = 4. cps_cap = min(MAX_PARTS/4, 20) = 20.
-  CHECK(Error, dims_set_shard_geometry(dims, 3, 80, 8, 1) == 0);
+  CHECK(Error, dims_set_shard_geometry(dims, 3, 80, 8, 0, 1) == 0);
   CHECK(Error, dims[0].chunks_per_shard == 20);
   CHECK(Error, dims[1].chunks_per_shard == 2);
   CHECK(Error, dims[2].chunks_per_shard == 2);
@@ -439,7 +439,7 @@ test_shard_geom_caps_at_n_chunks(void)
   // (shards+1=3 > n_chunks[1]=2), d=2 grows -> (_,2,2). Then neither grows.
   // cps[1]=1, cps[2]=1; row_bytes=5. cps_floor=ceildiv(40,5)=8. cps_cap =
   // min(MAX_PARTS/1, n_chunks[0]=20) = 20.
-  CHECK(Error, dims_set_shard_geometry(dims, 3, 40, 16, 1) == 0);
+  CHECK(Error, dims_set_shard_geometry(dims, 3, 40, 16, 0, 1) == 0);
   CHECK(Error, dims[0].chunks_per_shard == 20);
   CHECK(Error, dims[1].chunks_per_shard == 1);
   CHECK(Error, dims[2].chunks_per_shard == 1);
@@ -463,8 +463,8 @@ test_shard_geom_max_concurrent_zero_is_one(void)
   dims_set_chunk_sizes(dims_a, 3, cs);
   dims_set_chunk_sizes(dims_b, 3, cs);
 
-  CHECK(Error, dims_set_shard_geometry(dims_a, 3, 256, 0, 1) == 0);
-  CHECK(Error, dims_set_shard_geometry(dims_b, 3, 256, 1, 1) == 0);
+  CHECK(Error, dims_set_shard_geometry(dims_a, 3, 256, 0, 0, 1) == 0);
+  CHECK(Error, dims_set_shard_geometry(dims_b, 3, 256, 1, 0, 1) == 0);
   for (int d = 0; d < 3; ++d)
     CHECK(Error, dims_a[d].chunks_per_shard == dims_b[d].chunks_per_shard);
   // M=1 means no inner splitting: inner cps = n_chunks. row_bytes = 5*8*4=160.
@@ -499,11 +499,56 @@ test_shard_geom_multi_append(void)
   // row_bytes = 8192 * 4 * 10 = 327680.
   // cps_floor = ceildiv(2 MiB, 327680) = 7. n_chunks[0]=0 (unbounded) so the
   // cap is MAX_PARTS/(4*10) = 10000/40 = 250. cps_0 = max(7, 250) = 250.
-  CHECK(Error, dims_set_shard_geometry(dims, 4, 2 << 20, 1, 2) == 0);
+  CHECK(Error, dims_set_shard_geometry(dims, 4, 2 << 20, 1, 0, 2) == 0);
   CHECK(Error, dims[0].chunks_per_shard == 250);
   CHECK(Error, dims[1].chunks_per_shard == 10);
   CHECK(Error, dims[2].chunks_per_shard == 2);
   CHECK(Error, dims[3].chunks_per_shard == 2);
+
+  ok = 1;
+Error:
+  REPORT_TEST(ok);
+  return !ok;
+}
+
+static int
+test_shard_geom_min_append_shards(void)
+{
+  // min_append_shards > 1 clamps cps_append down so that ceildiv(n_chunks[0],
+  // cps) >= min. Forces shard-switching even when the parts cap would allow
+  // packing everything into one outer shard.
+  int ok = 0;
+  struct dimension dims[3];
+  uint64_t sizes[] = { 100, 16, 16 };
+  dims_create(dims, "tyx", sizes);
+  uint64_t cs[] = { 5, 16, 16 };
+  dims_set_chunk_sizes(dims, 3, cs);
+
+  // n_chunks[0] = 20. Without min_append_shards, cps_cap would pick 20
+  // (one shard). With min=4 the cap becomes floor(20/4)=5.
+  CHECK(Error, dims_set_shard_geometry(dims, 3, 4096, 1, 4, 1) == 0);
+  CHECK(Error, dims[0].chunks_per_shard == 5);
+  // ceildiv(20, 5) = 4 append shards exactly.
+
+  // min=3 → floor(20/3)=6.
+  dims_create(dims, "tyx", sizes);
+  dims_set_chunk_sizes(dims, 3, cs);
+  CHECK(Error, dims_set_shard_geometry(dims, 3, 4096, 1, 3, 1) == 0);
+  CHECK(Error, dims[0].chunks_per_shard == 6);
+
+  // min > n_chunks[0]: cap falls to cps=1 (best we can do). The byte floor
+  // still wins if it's higher, so use min_shard_bytes=chunk_bytes (=1280) to
+  // get cps_floor=1 and observe the cap in isolation.
+  dims_create(dims, "tyx", sizes);
+  dims_set_chunk_sizes(dims, 3, cs);
+  CHECK(Error, dims_set_shard_geometry(dims, 3, 1280, 1, 999, 1) == 0);
+  CHECK(Error, dims[0].chunks_per_shard == 1);
+
+  // min_append_shards = 0 is "no minimum" (same as the baseline test).
+  dims_create(dims, "tyx", sizes);
+  dims_set_chunk_sizes(dims, 3, cs);
+  CHECK(Error, dims_set_shard_geometry(dims, 3, 4096, 1, 0, 1) == 0);
+  CHECK(Error, dims[0].chunks_per_shard == 20);
 
   ok = 1;
 Error:
@@ -945,6 +990,7 @@ main(void)
     { "shard_geom_max_concurrent_zero_is_one",
       test_shard_geom_max_concurrent_zero_is_one },
     { "shard_geom_multi_append", test_shard_geom_multi_append },
+    { "shard_geom_min_append_shards", test_shard_geom_min_append_shards },
     { "dims_set_storage_order", test_dims_set_storage_order },
     { "dims_set_downsample_by_name", test_dims_set_downsample_by_name },
     { "dims_print", test_dims_print },

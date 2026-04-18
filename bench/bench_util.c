@@ -152,6 +152,7 @@ resolve_chunk_sizing(const struct bench_config* cfg,
                                                 budget,
                                                 cfg->min_shard_bytes,
                                                 cfg->max_concurrent_shards,
+                                                cfg->min_append_shards,
                                                 0,
                                                 &diag);
     } else {
@@ -162,6 +163,7 @@ resolve_chunk_sizing(const struct bench_config* cfg,
                                                 budget,
                                                 cfg->min_shard_bytes,
                                                 cfg->max_concurrent_shards,
+                                                cfg->min_append_shards,
                                                 0,
                                                 &diag);
     }
@@ -187,6 +189,7 @@ resolve_chunk_sizing(const struct bench_config* cfg,
                               rank,
                               cfg->min_shard_bytes,
                               cfg->max_concurrent_shards,
+                              cfg->min_append_shards,
                               bytes_per_element)) {
     print_report(
       "  shard geometry: ERROR -- min_shard_bytes is smaller than one chunk");
@@ -730,6 +733,7 @@ bench_stream_main(int ac, char* av[], struct bench_spec spec)
     .memory_budget = a.memory_budget,
     .min_shard_bytes = spec.min_shard_bytes,
     .max_concurrent_shards = spec.max_concurrent_shards,
+    .min_append_shards = spec.min_append_shards,
     .json_output = a.json_output,
     .io_bw_mbps = a.io_bw_mbps,
     .io_latency_us = a.io_latency_us,
@@ -1099,6 +1103,7 @@ bench_two_streams_main(int ac, char* av[], struct bench_spec spec)
     .memory_budget = a.memory_budget,
     .min_shard_bytes = spec.min_shard_bytes,
     .max_concurrent_shards = spec.max_concurrent_shards,
+    .min_append_shards = spec.min_append_shards,
     .io_bw_mbps = a.io_bw_mbps,
     .io_latency_us = a.io_latency_us,
     .backpressure_bytes = a.backpressure_bytes,

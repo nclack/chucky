@@ -43,6 +43,10 @@ struct bench_config
   size_t memory_budget;           // 0 = auto-detect
   size_t min_shard_bytes;         // minimum uncompressed bytes per shard
   uint32_t max_concurrent_shards; // cap on inner shard product (active files)
+  uint32_t min_append_shards;     // require at least N shards along the outer
+                                  // append dim (0 = no minimum). Forces
+                                  // shard-switching in benchmarks that would
+                                  // otherwise collapse to a single shard.
   int json_output;                // print JSON to stdout after run
   uint64_t io_bw_mbps;            // 0 = no bandwidth cap (MiB/s)
   uint64_t io_latency_us;         // 0 = no fixed per-job latency
@@ -64,6 +68,7 @@ struct bench_spec
                                   // can't meet it (0 = no floor)
   size_t min_shard_bytes;         // minimum uncompressed bytes per shard
   uint32_t max_concurrent_shards; // cap on inner shard product (active files)
+  uint32_t min_append_shards;     // 0 = no minimum (see bench_config)
 };
 
 // CLI driver: parses --fill, --codec, --reduce, --dtype, --frames, --json,

@@ -22,6 +22,7 @@ main(int ac, char* av[])
                              .default_chunk_bytes = 1 << 18,
                              .min_chunk_bytes = 1 << 14,
                              .min_shard_bytes = 1ull << 30,
-                             .max_concurrent_shards = 20,
+                             .max_concurrent_shards = 16,
+                             .min_append_shards = 4,
                            });
 }

@@ -82,12 +82,12 @@ dims_set_shard_counts(struct dimension* dims,
 //     remaining n_chunks[d]/shards[d] ratio while staying within
 //     n_chunks[d].
 //   - Outer append dim (d = 0): chunks_per_shard is maximized subject to
-//     (a) shard_bytes >= min_shard_bytes (byte floor), (b) chunks_per_shard
-//     total <= MAX_PARTS_PER_SHARD (backend parts cap), (c) cps <=
-//     n_chunks[0] (dim extent), and (d) ceildiv(n_chunks[0], cps) >=
-//     min_append_shards when set — forces at least N append-direction
-//     shards so benches exercise shard switching. Ignored for unbounded
-//     dim 0 (size == 0).
+//     (a) chunks_per_shard_total <= MAX_PARTS_PER_SHARD (backend parts cap)
+//     and (b) cps <= n_chunks[0] (dim extent). When min_append_shards > 1
+//     it's an authoritative cap (ceildiv(n_chunks[0], cps) >= N); it wins
+//     over the byte floor if they conflict. When unset, min_shard_bytes is
+//     a byte floor: cps >= ceildiv(min_shard_bytes, row_bytes).
+//     Unbounded dim 0 (size == 0) ignores the min_append_shards cap.
 //   - Inner append dims (d in 1..na-1): pass through at chunks_per_shard =
 //     n_chunks[d] so the downstream product (config.c) evaluates correctly.
 //

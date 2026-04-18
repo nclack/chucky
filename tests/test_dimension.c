@@ -536,13 +536,20 @@ test_shard_geom_min_append_shards(void)
   CHECK(Error, dims_set_shard_geometry(dims, 3, 4096, 1, 3, 1) == 0);
   CHECK(Error, dims[0].chunks_per_shard == 6);
 
-  // min > n_chunks[0]: cap falls to cps=1 (best we can do). The byte floor
-  // still wins if it's higher, so use min_shard_bytes=chunk_bytes (=1280) to
-  // get cps_floor=1 and observe the cap in isolation.
+  // min > n_chunks[0]: cap falls to cps=1 (best we can do). min_append_shards
+  // is authoritative, so cps stays at 1 even if the byte floor would pick
+  // higher.
   dims_create(dims, "tyx", sizes);
   dims_set_chunk_sizes(dims, 3, cs);
-  CHECK(Error, dims_set_shard_geometry(dims, 3, 1280, 1, 999, 1) == 0);
+  CHECK(Error, dims_set_shard_geometry(dims, 3, 4096, 1, 999, 1) == 0);
   CHECK(Error, dims[0].chunks_per_shard == 1);
+
+  // min_append_shards dominates the byte floor. With min=4, cps=5 (4 shards)
+  // even though the 1 GiB floor would want cps much larger.
+  dims_create(dims, "tyx", sizes);
+  dims_set_chunk_sizes(dims, 3, cs);
+  CHECK(Error, dims_set_shard_geometry(dims, 3, 1ull << 30, 1, 4, 1) == 0);
+  CHECK(Error, dims[0].chunks_per_shard == 5);
 
   // min_append_shards = 0 is "no minimum" (same as the baseline test).
   dims_create(dims, "tyx", sizes);

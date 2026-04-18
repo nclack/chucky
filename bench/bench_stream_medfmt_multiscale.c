@@ -10,7 +10,7 @@ main(int ac, char* av[])
 
   dims_set_downsample_by_name(dims, rank, "yx");
 
-  int ratios[] = { 1, 0, 4, 4 };
+  int ratios[] = { 1, 0, 8, 8 };
 
   return bench_stream_main(ac,
                            av,
@@ -22,6 +22,7 @@ main(int ac, char* av[])
                              .default_chunk_bytes = 1 << 18,
                              .min_chunk_bytes = 1 << 12,
                              .min_shard_bytes = 1ull << 30,
-                             .max_concurrent_shards = 16,
+                             .max_concurrent_shards = 20,
+                             .min_append_shards = 4,
                            });
 }

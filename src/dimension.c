@@ -301,11 +301,13 @@ dims_set_shard_geometry(struct dimension* dims,
     uint64_t cps_cap = inner_prod ? (MAX_PARTS_PER_SHARD / inner_prod) : 1;
     if (n_chunks[0] > 0 && cps_cap > n_chunks[0])
       cps_cap = n_chunks[0];
-    // Enforce minimum number of append-direction shards: ceildiv(n_chunks[0],
-    // cps_cap) >= min_append_shards. Only meaningful for bounded dim 0.
-    const uint32_t min_shards = min_append_shards ? min_append_shards : 1;
-    if (min_shards > 1 && n_chunks[0] > 0) {
-      uint64_t cap_for_shards = n_chunks[0] / min_shards;
+    // When min_append_shards > 1 the caller has asked for at least N
+    // append-direction shards; clamp cps_cap accordingly and let it override
+    // the byte floor on conflict (the caller's shard-switching ask is hard,
+    // the byte floor is soft).
+    const int min_shards_set = min_append_shards > 1;
+    if (min_shards_set && n_chunks[0] > 0) {
+      uint64_t cap_for_shards = n_chunks[0] / min_append_shards;
       if (cap_for_shards < 1)
         cap_for_shards = 1; // can't get N shards; fall back to cps=1.
       if (cps_cap > cap_for_shards)
@@ -313,7 +315,10 @@ dims_set_shard_geometry(struct dimension* dims,
     }
     if (cps_cap < 1)
       cps_cap = 1;
-    dims[0].chunks_per_shard = cps_cap >= cps_floor ? cps_cap : cps_floor;
+    if (min_shards_set)
+      dims[0].chunks_per_shard = cps_cap;
+    else
+      dims[0].chunks_per_shard = cps_cap >= cps_floor ? cps_cap : cps_floor;
   }
 
   return 0;

@@ -90,7 +90,7 @@ print_bench_report(const struct stream_metrics* metrics,
       ? (double)ss->total_bytes / (double)total_decompressed
       : 0.0;
 
-  print_report("");
+  fputc('\n', stderr);
   print_report("  --- Benchmark Results ---");
   print_report("  Input:        %.2f GiB (%zu elements)",
                (double)total_bytes / (1024.0 * 1024.0 * 1024.0),
@@ -103,7 +103,7 @@ print_bench_report(const struct stream_metrics* metrics,
                (unsigned long long)chunks_per_epoch,
                num_epochs);
 
-  print_report("");
+  fputc('\n', stderr);
   print_report("  %-12s %8s %8s %10s %10s",
                "Stage",
                "avg GB/s",
@@ -130,7 +130,7 @@ print_bench_report(const struct stream_metrics* metrics,
     metrics->io_fence_stall.count > 0 || metrics->backpressure.count > 0 ||
     metrics->max_append_ms > 0 || metrics->peak_pending_bytes > 0;
   if (have_stalls) {
-    print_report("");
+    fputc('\n', stderr);
     print_report("  --- Stall stats ---");
     print_metric_row(&metrics->flush_stall);
     print_metric_row(&metrics->kick_sync_stall);
@@ -144,7 +144,7 @@ print_bench_report(const struct stream_metrics* metrics,
   double throughput_gib =
     wall_s > 0 ? ((double)total_bytes / (1024.0 * 1024.0 * 1024.0)) / wall_s
                : 0.0;
-  print_report("");
+  fputc('\n', stderr);
   print_report("  Init time:     %.3f s", (double)init_s);
   if (flush_pending_bytes > 0 && flush_s > 0) {
     double flush_gib =

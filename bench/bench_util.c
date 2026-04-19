@@ -828,8 +828,8 @@ run_bench_two_streams(const struct bench_config* cfg)
   // ---
   struct discard_shard_sink dss[2];
   struct bench_zarr_handle zarr[2] = { { 0 }, { 0 } };
-  struct metering_sink meter[2] = { { 0 }, { 0 } };
-  struct throttled_shard_sink tss[2] = { { 0 }, { 0 } };
+  struct metering_sink meter[2] = { 0 };
+  struct throttled_shard_sink tss[2] = { 0 };
   int use_throttled = 0;
   struct shard_sink* sink[2];
 
@@ -954,7 +954,7 @@ run_bench_two_streams(const struct bench_config* cfg)
   double combined_gib = 2.0 * per_stream_gib;
 
   // --- Combined summary ---
-  print_report("");
+  fputc('\n', stderr);
   print_report("  --- Combined ---");
   print_report("  Input:        %.2f GiB (%zu elements x 2 streams)",
                combined_gib,
@@ -970,12 +970,12 @@ run_bench_two_streams(const struct bench_config* cfg)
 
   // --- Per-stream reports ---
   for (int k = 0; k < 2; ++k) {
-    print_report("");
+    fputc('\n', stderr);
     print_report("  --- stream-%d ---", k);
     print_report("  Throughput:    %.2f GiB/s",
                  wall_s > 0 ? per_stream_gib / wall_s : 0.0);
     print_report("  Compressed:    %.2f GiB", (double)sink_bytes[k] / GIB);
-    print_report("");
+    fputc('\n', stderr);
     print_report("  %-12s %8s %8s %10s %10s",
                  "Stage",
                  "avg GB/s",
@@ -999,7 +999,7 @@ run_bench_two_streams(const struct bench_config* cfg)
       m[k].io_fence_stall.count > 0 || m[k].backpressure.count > 0 ||
       m[k].max_append_ms > 0 || m[k].peak_pending_bytes > 0;
     if (have_stalls) {
-      print_report("");
+      fputc('\n', stderr);
       print_report("  --- Stall stats (stream-%d) ---", k);
       print_metric_row(&m[k].flush_stall);
       print_metric_row(&m[k].kick_sync_stall);

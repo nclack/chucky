@@ -134,6 +134,7 @@ drain_bulk_d2h(struct d2h_deliver_stage* stage,
                const struct dim_info* dims,
                const struct tile_stream_configuration* config)
 {
+  (void)config;
   const int fc = handoff->fc;
   const uint32_t n_epochs = handoff->n_epochs;
   const uint32_t level_mask = handoff->active_levels_mask;
